@@ -1,0 +1,57 @@
+{
+  "name": "@adastracomputing/aer-emit",
+  "version": "0.1.0",
+  "description": "Shared best-effort AER emit core: an EventSink that lazily opens an AER session, batches events and completes on close. Fail-open, never throws. Used by aer-mcp-recorder and aer-hooks for consistent behavior.",
+  "type": "module",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "author": "Ad Astra Computing",
+  "homepage": "https://aer.run",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ad-Astra-Computing/aer.git",
+    "directory": "packages/aer-emit"
+  },
+  "bugs": {
+    "url": "https://github.com/Ad-Astra-Computing/aer/issues"
+  },
+  "keywords": [
+    "aer",
+    "agent",
+    "observability",
+    "event-sink",
+    "instrumentation"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepublishOnly": "pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

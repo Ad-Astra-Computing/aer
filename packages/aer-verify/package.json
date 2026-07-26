@@ -1,0 +1,62 @@
+{
+  "name": "@adastracomputing/aer-verify",
+  "version": "0.1.0",
+  "description": "Independent, dependency-free verifier for AER bundles. Recompute the canonical hash and check the Ed25519 signature against a pinned key set, in any Web Crypto runtime (Node, Workers, browsers).",
+  "type": "module",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "author": "Ad Astra Computing",
+  "homepage": "https://aer.run",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ad-Astra-Computing/aer.git",
+    "directory": "packages/aer-verify"
+  },
+  "bugs": {
+    "url": "https://github.com/Ad-Astra-Computing/aer/issues"
+  },
+  "keywords": [
+    "aer",
+    "verification",
+    "ed25519",
+    "canonicalization",
+    "transparency",
+    "zero-trust"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src",
+    "prepublishOnly": "pnpm test && pnpm build"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@aer-oss/attestation-test-utils": "workspace:*",
+    "@aer/schemas": "workspace:*",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
