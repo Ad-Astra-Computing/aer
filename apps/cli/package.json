@@ -1,0 +1,59 @@
+{
+  "name": "@adastracomputing/aer",
+  "version": "0.1.0",
+  "description": "AER command line: wire auto-instrumentation into a project, ingest and import agent runs, and independently verify signed execution records",
+  "type": "module",
+  "private": false,
+  "bin": {
+    "aer": "./dist/main.js"
+  },
+  "files": [
+    "dist/main.js",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "author": "Ad Astra Computing",
+  "homepage": "https://aer.run",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ad-Astra-Computing/aer.git",
+    "directory": "apps/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/Ad-Astra-Computing/aer/issues"
+  },
+  "keywords": [
+    "aer",
+    "agent",
+    "cli",
+    "auto-instrumentation",
+    "signed-execution-record",
+    "verify"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "rm -rf dist && node bundle.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepublishOnly": "pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@adastracomputing/aer-auto-node": "workspace:*",
+    "@adastracomputing/aer-verify": "workspace:*",
+    "@aer/schemas": "workspace:*",
+    "@types/node": "^20.14.0",
+    "esbuild": "^0.28.0",
+    "msw": "^2.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
+  }
+}

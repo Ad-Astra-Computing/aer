@@ -1,0 +1,66 @@
+{
+  "name": "@adastracomputing/aer-hooks",
+  "version": "0.1.0",
+  "description": "Fail-open, redaction-by-default hook adapters that record the tool events a coding harness fires (Claude Code, OpenAI Codex CLI) or its plugins load (opencode) into AER. Tool and argument-key names only by default, never values.",
+  "type": "module",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "aer-hook": "./dist/cli.js",
+    "aer-hooks": "./dist/install-cli.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "author": "Ad Astra Computing",
+  "homepage": "https://aer.run",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ad-Astra-Computing/aer.git",
+    "directory": "packages/aer-hooks"
+  },
+  "bugs": {
+    "url": "https://github.com/Ad-Astra-Computing/aer/issues"
+  },
+  "keywords": [
+    "aer",
+    "agent",
+    "claude-code",
+    "codex",
+    "opencode",
+    "hooks",
+    "observability"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@adastracomputing/aer-emit": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepublishOnly": "pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

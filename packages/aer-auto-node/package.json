@@ -1,0 +1,69 @@
+{
+  "name": "@adastracomputing/aer-auto-node",
+  "version": "0.2.0",
+  "description": "Auto-instrumentation for Node agents: drop it in and AER records what your agent is actually doing, with zero manual emit()",
+  "type": "module",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./register": {
+      "types": "./dist/register.d.ts",
+      "import": "./dist/register.js"
+    },
+    "./commitment": {
+      "types": "./dist/commitment.d.ts",
+      "import": "./dist/commitment.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "author": "Ad Astra Computing",
+  "homepage": "https://aer.run",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ad-Astra-Computing/aer.git",
+    "directory": "packages/aer-auto-node"
+  },
+  "bugs": {
+    "url": "https://github.com/Ad-Astra-Computing/aer/issues"
+  },
+  "keywords": [
+    "aer",
+    "agent",
+    "auto-instrumentation",
+    "observability",
+    "signed-execution-record",
+    "tracing"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src",
+    "prepublishOnly": "pnpm test && pnpm build"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
