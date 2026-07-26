@@ -1,0 +1,83 @@
+{
+  "name": "@adastracomputing/aer-resource-node",
+  "version": "0.1.1",
+  "description": "Verify AER Attestation tokens at a protected resource or MCP server, offline against cached JWKS, fail-closed.",
+  "type": "module",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./hono": {
+      "types": "./dist/hono.d.ts",
+      "import": "./dist/hono.js"
+    },
+    "./express": {
+      "types": "./dist/express.d.ts",
+      "import": "./dist/express.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "author": "Ad Astra Computing",
+  "homepage": "https://aer.run",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ad-Astra-Computing/aer.git",
+    "directory": "packages/aer-resource-node"
+  },
+  "bugs": {
+    "url": "https://github.com/Ad-Astra-Computing/aer/issues"
+  },
+  "keywords": [
+    "aer",
+    "attestation",
+    "verification",
+    "jwks",
+    "mcp",
+    "zero-trust"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src",
+    "prepublishOnly": "pnpm test && pnpm build"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "hono": "*",
+    "express": "*"
+  },
+  "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    },
+    "express": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aer-oss/attestation-test-utils": "workspace:*",
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.14.0",
+    "hono": "^4.12.25",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
