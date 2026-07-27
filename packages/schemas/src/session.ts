@@ -66,7 +66,7 @@ export const CreateSessionRequest = z
     agent_id: Uuid,
     agent_version: z.string().min(1).max(128),
     environment_id: Uuid,
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
     principal: Principal.optional(),
     // Loose payload bound only (dupes may push raw length past the distinct cap);
     // business rules — charset, length, distinct count, []→null — live in
