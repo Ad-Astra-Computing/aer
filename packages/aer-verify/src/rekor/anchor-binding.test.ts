@@ -141,7 +141,7 @@ describe('verifyAnchoredEvidence', () => {
 
   it('stays UNANCHORED when the rekor inclusion evidence fails', async () => {
     const s = await buildAnchor();
-    s.anchor.verification.inclusionProof.rootHash = s.anchor.verification.inclusionProof.rootHash.replace(/^./, '0');
+    s.anchor.verification.inclusionProof.rootHash = s.anchor.verification.inclusionProof.rootHash.replace(/^./, (c) => (c === '0' ? '1' : '0'));
     const res = await verifyAnchoredEvidence(s.anchor, s.bundle, optsFor(s.rekorKey, s.aerKey));
     expect(res.anchored).toBe(false);
     expect(res.reasons).toContain(ANCHOR_REASONS.REKOR_UNVERIFIED);

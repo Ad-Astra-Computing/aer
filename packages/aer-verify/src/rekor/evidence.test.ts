@@ -91,7 +91,7 @@ describe('verifyRekorEvidence', () => {
     const s = await buildScenario(8, 2);
     const cp = await s.makeCheckpoint(s.root, s.size);
     const a = s.anchor(cp);
-    a.verification.inclusionProof.rootHash = a.verification.inclusionProof.rootHash.replace(/^./, '0');
+    a.verification.inclusionProof.rootHash = a.verification.inclusionProof.rootHash.replace(/^./, (c) => (c === '0' ? '1' : '0'));
     const res = await verifyRekorEvidence(a, { keys: [s.key] });
     expect(res.verified).toBe(false);
     expect(res.reasons).toContain(REKOR_REASONS.ROOT_MISMATCH);
