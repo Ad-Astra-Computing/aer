@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aer-sdk"
+version = "0.1.0"
+description = "AER Python SDK: signed, independently verifiable execution records for AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Ad Astra Computing", email = "support@aer.run" }]
+keywords = ["ai-agents", "audit", "observability", "signed-records", "provenance"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+# Deliberately dependency-free: the SDK speaks plain HTTPS with the stdlib.
+dependencies = []
+
+[project.urls]
+Homepage = "https://aer.run"
+Documentation = "https://aer.run/docs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aer_sdk"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
