@@ -64,8 +64,10 @@ const defaultSpawn: SpawnFn = (command, args, env) => {
  */
 export function createStdioProxy(opts: StdioProxyOptions): StdioProxyHandle {
   const spawnFn = opts.spawn ?? defaultSpawn;
-  const parentIn = opts.stdin ?? process.stdin;
-  const parentOut = opts.stdout ?? process.stdout;
+  // Annotated: with @types/node >= 26 the raw union of the injected stream and
+  // process.stdin has incompatible .on() overloads; the interface type is all we use.
+  const parentIn: NodeJS.ReadableStream = opts.stdin ?? process.stdin;
+  const parentOut: NodeJS.WritableStream = opts.stdout ?? process.stdout;
   const recorder = opts.recorder ?? null;
   const closeTimeoutMs = opts.closeTimeoutMs ?? 3000;
   const handleSignals = opts.handleSignals ?? true;
