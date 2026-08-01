@@ -49,7 +49,7 @@
     "@adastracomputing/aer-auto-node": "workspace:*",
     "@adastracomputing/aer-verify": "workspace:*",
     "@aer/schemas": "workspace:*",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "esbuild": "^0.28.0",
     "msw": "^2.7.0",
     "tsx": "^4.19.0",
