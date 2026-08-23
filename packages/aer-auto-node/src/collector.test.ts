@@ -183,7 +183,7 @@ describe('createCollector', () => {
   it('does not re-instrument its own wire traffic under a live fetch patch (no self-capture loop)', async () => {
     // Regression for the withSession self-instrumentation loop: a withSession
     // transport is built AFTER the global fetch patch installs, so it must still
-    // send over the PRISTINE fetch — never the patched one — or the collector's
+    // send over the PRISTINE fetch - never the patched one - or the collector's
     // own /events POSTs would be captured as http.requested and loop.
     const originalFetch = globalThis.fetch;
     const g = globalThis as Record<symbol, unknown>;
@@ -219,7 +219,7 @@ describe('createCollector', () => {
         collector.capture({ event_type: 'custom.marker', payload: {} });
       });
 
-      // None of the emitted events may be an http.requested for the AER host —
+      // None of the emitted events may be an http.requested for the AER host -
       // that would mean the transport's own POSTs were re-instrumented.
       const selfCaptures = wireEvents.filter(
         (e) => e.type === 'http.requested' && String(e.host).includes('aer-api.test'),
