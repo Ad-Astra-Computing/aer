@@ -1,4 +1,4 @@
-// Best-effort AER event sinks — the shared emit core.
+// Best-effort AER event sinks - the shared emit core.
 //
 // A producer emits typed events into an `EventSink`. Two are provided:
 //  - `NullSink`: no-op, used when emit is unconfigured.
@@ -189,7 +189,7 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
     // Wire shape MUST match the API's EventSchema: BaseEvent fields (event_id,
     // agent_session_id, source_type, timestamp_observed, severity_hint) plus
     // event_type + payload, posted as a BARE ARRAY. The variant schema is
-    // .strict(), so stray keys (an old seq/type/ts) are rejected — send none.
+    // .strict(), so stray keys (an old seq/type/ts) are rejected - send none.
     const ts = clock().toISOString();
     const batch = pending.splice(0, pending.length).map((e) => ({
       event_id: genId(),

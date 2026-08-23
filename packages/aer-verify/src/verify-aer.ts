@@ -1,4 +1,4 @@
-// verifyAerBundle — the shared, origin-independent bundle verifier.
+// verifyAerBundle - the shared, origin-independent bundle verifier.
 //
 // Phase 1 scope: recompute the canonical hash, verify the Ed25519 signature over
 // the hash bytes, assert the signing-key-id binds to the public key, and (when a
@@ -103,7 +103,7 @@ export async function verifyAerBundle(
   const requirePinnedKey = opts.policy?.requirePinnedKey ?? (opts.pinnedKeys !== undefined && opts.pinnedKeys.length > 0);
   if (requirePinnedKey && !keyPinned) reasons.push(REASONS.KEY_NOT_PINNED);
 
-  // 3. Key-id binding + 4. signature — only meaningful once we have a key.
+  // 3. Key-id binding + 4. signature - only meaningful once we have a key.
   let keyIdBinding = false;
   let signatureValid = false;
   if (publicKeyHex) {
@@ -143,12 +143,12 @@ export async function verifyAerBundle(
   let anchorStatus: AnchorStatus;
   if (opts.anchorEvidenceMalformed) {
     // Evidence exists but is corrupt: a hard failure that downgrades the verdict.
-    // Never softened to `claimed` — that state is reserved for evidence that is
+    // Never softened to `claimed` - that state is reserved for evidence that is
     // legitimately incomplete, not evidence that contradicts itself.
     anchorStatus = 'invalid';
     reasons.push(REASONS.ANCHOR_EVIDENCE_INVALID);
   } else if (opts.anchorEvidence) {
-    // The anchor's DSSE signature MUST chain to a PINNED AER key — never the
+    // The anchor's DSSE signature MUST chain to a PINNED AER key - never the
     // caller-supplied fallback key. Otherwise an attacker who controls the bundle,
     // its served key, the DSSE envelope and a matching Rekor entry could self-verify
     // as anchored. No pinned key ⇒ empty set ⇒ verifyAnchoredEvidence returns
@@ -167,7 +167,7 @@ export async function verifyAerBundle(
     // Evidence present but the chain did not fully verify. Distinguish a
     // legitimately-INCOMPLETE anchor (claimed) from a genuine CONTRADICTION (invalid):
     // a missing stored body (pre-backfill) or an un-pinned signing key means we simply
-    // cannot confirm — not that the record is bad. But `claimed` specifically
+    // cannot confirm - not that the record is bad. But `claimed` specifically
     // represents the bundle's OWN anchoring claim, so we only soften to it when the
     // signed integrity block actually asserts anchored:true. Evidence
     // that is unverifiable for one of these reasons on a bundle that does NOT claim

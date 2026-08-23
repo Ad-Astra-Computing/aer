@@ -1,5 +1,5 @@
 /**
- * opencode plugin factory — one AER session sink per opencode session, tool events
+ * opencode plugin factory - one AER session sink per opencode session, tool events
  * emitted across the session, completed on session.deleted / dispose. Uses a fake
  * sink so no network or opencode runtime is needed. Locks fail-open + bodies-off.
  */

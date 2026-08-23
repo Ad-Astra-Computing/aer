@@ -1,10 +1,10 @@
-// AER trust root — the set of keys a verifier pins to check AER evidence without
+// AER trust root - the set of keys a verifier pins to check AER evidence without
 // trusting aer.run at verification time: the platform AER signing keys (for the
 // bundle Ed25519 signature) and the transparency-log keys (for anchor checkpoints).
 //
 // The builtin root ships with the public Rekor log key baked in and an empty AER
 // signing-key set (those are fetched/pinned per deployment). A future SIGNED trust
-// root — the owner's offline root key over this document, with rotation + expiry —
+// root - the owner's offline root key over this document, with rotation + expiry -
 // lets third parties pin a single root and trust delegated keys transitively; that
 // signing step is owner-gated, so `loadTrustRoot` already models version/expiry and
 // an optional signature envelope so the format is stable before the key exists.

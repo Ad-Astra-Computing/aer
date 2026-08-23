@@ -4,14 +4,14 @@
 // harness messages under a PROVIDER-held key, so that state becomes opaque to
 // the customer AND to third-party auditors. AER cannot (and never claims to)
 // recover hidden reasoning. What it CAN do is commit to the facts visible at the
-// boundary the customer controls — the request the collector is about to submit
-// and the assembled response text — and sign those commitments into the bundle.
+// boundary the customer controls - the request the collector is about to submit
+// and the assembled response text - and sign those commitments into the bundle.
 //
 // The commitment is an HMAC-SHA256 tag under a per-tenant COMMITMENT KEY the
 // CUSTOMER holds (AER_COMMITMENT_KEY). This module runs COLLECTOR-SIDE, in the
 // customer's own process. Only the tag leaves the process; the plaintext never
 // does (bodies-OFF, ADR-008, still holds). Because the key is customer-held, AER
-// can neither open a commitment (no preimage) nor brute-force it (no key) — which
+// can neither open a commitment (no preimage) nor brute-force it (no key) - which
 // is exactly why bare SHA-256 is unsafe here: prompts and tool args are often
 // low-entropy, so an unkeyed hash would be a confirmation oracle. Keyed removes
 // that oracle.
@@ -33,7 +33,7 @@ const MIN_KEY_BYTES = 32;
 /**
  * Parse a commitment key from its string form (env AER_COMMITMENT_KEY). Accepts
  * 64-hex or base64/base64url; requires >= 32 decoded bytes. Returns null on
- * anything shorter or unparseable — the caller treats null as "feature off" and
+ * anything shorter or unparseable - the caller treats null as "feature off" and
  * emits NO commitments. There is deliberately no bare-SHA-256 fallback: without a
  * customer key the tags would be a brute-force oracle, so we emit nothing.
  */
@@ -56,7 +56,7 @@ export function commitmentKeyFromString(s: string | undefined | null): Buffer | 
 }
 
 /**
- * kid — a non-secret identifier of which commitment key produced a tag, so a
+ * kid - a non-secret identifier of which commitment key produced a tag, so a
  * verifier knows which key to use and rotation is possible. Domain-separated
  * ("aer-kid.v1") so kid can never collude with any other place the key might be
  * hashed. 16 hex chars (64 bits) is ample for identification and reveals nothing
@@ -68,7 +68,7 @@ export function deriveKid(key: Buffer): string {
 
 /** A message reduced to what enters the hash domain: role + ordered text parts.
  * Provider ids, tool_call_ids and other threading metadata are deliberately
- * excluded. Parts stay an ARRAY so block boundaries are preserved — ["a","b"]
+ * excluded. Parts stay an ARRAY so block boundaries are preserved - ["a","b"]
  * must not collapse to "ab". */
 interface CanonMessage {
   role: string;
@@ -152,7 +152,7 @@ function hmacHex(key: Buffer, preimage: string): string {
 }
 
 /**
- * prompt_canon_tag — a per-message HMAC fold, so multi-turn cost is O(n) (each
+ * prompt_canon_tag - a per-message HMAC fold, so multi-turn cost is O(n) (each
  * new message hashed once) and each message stays independently provable. The
  * fold is HMAC over the JCS of a STRUCTURED object (never string concatenation,
  * which would invite boundary collisions).
@@ -168,7 +168,7 @@ export function promptCanonTag(key: Buffer, canon: CanonRequest): string {
     tools: canon.tools.map((tl) => ({ name: tl.name, schema: tl.schema })),
     params: canon.params,
     // Bound so the signed message_count / prompt_bytes cannot disagree with the
-    // committed content — a verifier recomputing the tag must supply matching values.
+    // committed content - a verifier recomputing the tag must supply matching values.
     message_count: canon.message_count,
     text_bytes: canon.text_bytes,
   });
@@ -200,7 +200,7 @@ const MAX_JSONISH_BYTES = 256 * 1024;
 
 function parseJsonish(v: unknown): unknown {
   if (typeof v !== 'string') return v;
-  // Oversized strings are committed as-is rather than parsed — the tag stays
+  // Oversized strings are committed as-is rather than parsed - the tag stays
   // deterministic (a verifier hashing the same string matches), and a huge/deep
   // JSON string can't force an expensive parse.
   if (Buffer.byteLength(v, 'utf8') > MAX_JSONISH_BYTES) return v;
@@ -212,7 +212,7 @@ function parseJsonish(v: unknown): unknown {
 }
 
 /**
- * wire_canon_tag (capture_point: wire) — HMAC over the FULL request body the SDK
+ * wire_canon_tag (capture_point: wire) - HMAC over the FULL request body the SDK
  * is about to serialize, not the semantic subset. Where prompt_canon_tag
  * deliberately strips sampling params, provider tool_call_ids and normalizes
  * shapes, the wire tag keeps every field (temperature, top_p, seed, all of it),
@@ -255,7 +255,7 @@ export function tagsEqual(a: string, b: string): boolean {
 
 // Extract the ORDERED text parts of a message/system content. Returns null only
 // when the content is not a string or array (unusable). A string is one part; a
-// multipart array yields one part per text block (slice-1 is TEXT-ONLY — non-text
+// multipart array yields one part per text block (slice-1 is TEXT-ONLY - non-text
 // parts like images are not captured and contribute nothing). Boundaries are
 // preserved: ["a","b"] never collapses to "ab".
 function partsOfContent(content: unknown): string[] | null {
@@ -328,7 +328,7 @@ function pickParams(req: Record<string, unknown>): Record<string, unknown> {
 
 /**
  * Normalize a provider create() call's args into the aer-canon.v1 request shape.
- * Reads message/system/tool BODIES — this runs only when a commitment key is
+ * Reads message/system/tool BODIES - this runs only when a commitment key is
  * configured, and only the resulting HMAC tag ever leaves the process. Returns
  * null for an unrecognized provider or a request with no usable messages.
  */
@@ -341,7 +341,7 @@ export function canonicalizeRequest(provider: string, args: unknown[]): CanonReq
   if (!norm) return null;
 
   // Anthropic carries system at the top level (string or blocks). Messages carry
-  // no system role there, so norm.system is empty — use the top-level blocks.
+  // no system role there, so norm.system is empty - use the top-level blocks.
   let system = norm.system;
   if (provider === 'anthropic' && 'system' in req) {
     const topParts = partsOfContent(req['system']);

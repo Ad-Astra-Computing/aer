@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// aer-hooks — the installer CLI.
+// aer-hooks - the installer CLI.
 //
 //   aer-hooks install claude-code|codex [--dir <path>]
 //   aer-hooks uninstall claude-code|codex [--dir <path>]

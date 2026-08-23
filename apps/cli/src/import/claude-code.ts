@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 // Zod, and keeping it out avoids a third-party license-notice obligation).
 const MAX_FIELD_LEN = 512;
 
-// H4 — Claude Code transcript import. Turn a Claude Code session JSONL transcript
+// H4 - Claude Code transcript import. Turn a Claude Code session JSONL transcript
 // into bodies-off AER events, ON THE CLIENT, so raw prompts / model output / tool
 // arguments / file contents never transit AER. This is the post-hoc counterpart
 // to the live collector: good for "prove what happened yesterday" backfill, and
@@ -42,7 +42,7 @@ export interface ImportedEvent {
 
 const DEFAULT_MAX_EVENTS = 100_000;
 
-// Deterministic, schema-valid (RFC 4122 v4-shaped) UUID from a seed — identical
+// Deterministic, schema-valid (RFC 4122 v4-shaped) UUID from a seed - identical
 // derivation to the OTLP ingest path so both ingestion surfaces behave the same.
 function uuidFromSeed(seed: string): string {
   const h = createHash('sha256').update(seed).digest('hex');
@@ -85,7 +85,7 @@ function tokenCount(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : undefined;
 }
 
-// Reduce a shell command to its executable name — NEVER argv. Skips leading
+// Reduce a shell command to its executable name - NEVER argv. Skips leading
 // VAR=val env assignments and shell operators, strips any directory, and returns
 // only the first safe identifier run. Anything unparseable yields '' (caller then
 // falls back to a generic tool event), so a command line never leaks.
@@ -189,7 +189,7 @@ export function claudeCodeTranscriptToEvents(
 
     if (type === 'user' && msg) {
       // tool_result blocks close a previously-opened tool call. We read only
-      // is_error (an outcome bit) — never the result content.
+      // is_error (an outcome bit) - never the result content.
       const content = Array.isArray(msg.content) ? msg.content : [];
       for (const block of content) {
         if (truncated) break;
@@ -208,7 +208,7 @@ export function claudeCodeTranscriptToEvents(
       continue;
     }
     // All other entry types (file-history-snapshot, system, attachment, …) carry
-    // no bodies-off activity we map today — skipped.
+    // no bodies-off activity we map today - skipped.
   }
 
   return { events, truncated };
@@ -234,7 +234,7 @@ function mapToolUse(
   }
   // File reads/writes → file.opened / file.written with the PATH (captured
   // metadata, same as the native collector), never the file content. No paired
-  // completion event — the touch is terminal.
+  // completion event - the touch is terminal.
   const path = field(input['file_path']) ?? field(input['notebook_path']);
   if (path && (name === 'Read' || name === 'NotebookRead')) {
     push(seed, ts, 'file.opened', { path, source: 'transcript' });

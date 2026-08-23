@@ -4,11 +4,11 @@ import { IsoTimestampMs } from './timestamp.js';
 import { SESSION_STATUSES } from './event.js';
 
 // Principal attribution (P1): the human, service or CI identity on whose behalf
-// a session ran. Optional and never required — `id` is opaque (docs steer
+// a session ran. Optional and never required - `id` is opaque (docs steer
 // tenants toward IdP subjects / employee ids, never emails; we don't validate
 // PII). `kind` is a closed enum, extensible later. `display` is a short label
 // for feeds only. Both `id` and `display` are untrusted, length-capped text
-// (React-escaped at every render site — no HTML sinks).
+// (React-escaped at every render site - no HTML sinks).
 export const Principal = z
   .object({
     id: z.string().min(1).max(128),
@@ -19,7 +19,7 @@ export const Principal = z
 export type Principal = z.infer<typeof Principal>;
 
 // Session tags (P5): customer-supplied grouping labels (deploy id, ticket id,
-// experiment). NOT signed into the AER bundle — they describe nothing the agent
+// experiment). NOT signed into the AER bundle - they describe nothing the agent
 // did and are self-asserted by the tenant, so folding them into signed evidence
 // would lend cryptographic authority to unauthenticated strings and mislead a
 // verifier. They live only as a queryable/display DB attribute.
@@ -32,8 +32,8 @@ export const SESSION_TAG_MAX_COUNT = 10;
 export const SESSION_TAG_REGEX = /^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/;
 
 // Normalize the request's tag list server-side. Trims each, drops empties
-// silently, dedupes exactly (case-sensitive — `env:Prod` and `env:prod` are
-// legitimately distinct), preserves first-seen order (no sort — order is only
+// silently, dedupes exactly (case-sensitive - `env:Prod` and `env:prod` are
+// legitimately distinct), preserves first-seen order (no sort - order is only
 // forced by determinism, which is only forced by signing, which we don't do),
 // and maps an empty result to null so the "no tags" path is single-valued for
 // storage, display, CSV and the json_each filter. Rejects (400) any non-empty
@@ -69,7 +69,7 @@ export const CreateSessionRequest = z
     metadata: z.record(z.string(), z.unknown()).optional(),
     principal: Principal.optional(),
     // Loose payload bound only (dupes may push raw length past the distinct cap);
-    // business rules — charset, length, distinct count, []→null — live in
+    // business rules - charset, length, distinct count, []→null - live in
     // normalizeSessionTags so the 400 reason is precise and shared with the filter.
     tags: z.array(z.string().max(200)).max(64).optional(),
   })
