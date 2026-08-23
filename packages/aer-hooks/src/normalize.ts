@@ -6,13 +6,13 @@
 // them to a common `HookEvent` and one binary can serve both.
 //
 // Payload fields mapped, from the harness docs (fetched 2026-07-13):
-//   Claude Code — https://code.claude.com/docs/en/hooks
+//   Claude Code - https://code.claude.com/docs/en/hooks
 //     PreToolUse:  { session_id, hook_event_name:'PreToolUse',  tool_name, tool_input, cwd, ... }
 //     PostToolUse: { session_id, hook_event_name:'PostToolUse', tool_name, tool_input, tool_response, ... }
 //     SessionStart:{ session_id, hook_event_name:'SessionStart', source, ... }
 //     Stop:        { session_id, hook_event_name:'Stop', last_assistant_message, ... }
 //     UserPromptSubmit: { session_id, hook_event_name:'UserPromptSubmit', prompt, ... }
-//   Codex CLI — https://learn.chatgpt.com/docs/hooks (redirect from developers.openai.com/codex/hooks)
+//   Codex CLI - https://learn.chatgpt.com/docs/hooks (redirect from developers.openai.com/codex/hooks)
 //     Same hook_event_name set plus SubagentStart/Stop, PreCompact/PostCompact,
 //     PermissionRequest. Distinguishing fields: turn_id (turn-scoped events),
 //     tool_use_id (tool events), and model is always present.

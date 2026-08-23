@@ -2,7 +2,7 @@
 //
 // These are public transparency-log infrastructure values, not customer data: the
 // production rekor.sigstore.dev v1 log public key and one of its signed checkpoints
-// (a signed tree head — shared global log state, fetchable by anyone). They lock the
+// (a signed tree head - shared global log state, fetchable by anyone). They lock the
 // checkpoint signed-note format and ECDSA-P256 verification against production wire
 // bytes so the verifier can never silently drift from what Rekor actually emits.
 

@@ -1,18 +1,18 @@
-// Egress enforcement policy (Phase 3 M2) — pure decision logic.
+// Egress enforcement policy (Phase 3 M2) - pure decision logic.
 //
 // Today the collector is purely additive: it attaches X-AER-Attestation when it
 // can mint, and otherwise does nothing. M2 lets an operator opt a protected
 // resource into DENYING outbound requests that have no valid attestation. This
 // changes runtime network behavior, so it is per-resource and staged:
-//   off    — today's behavior (attach when possible, never block). DEFAULT.
-//   report — never block, but emit a would_block event for what block WOULD deny.
-//   block  — deny the request (synthetic 403 / connection error at the patch).
+//   off    - today's behavior (attach when possible, never block). DEFAULT.
+//   report - never block, but emit a would_block event for what block WOULD deny.
+//   block  - deny the request (synthetic 403 / connection error at the patch).
 //
 // "No valid attestation" means either (a) we could not mint a token at all
 // (session/API unavailable) or (b) the token does not carry the scopes this
 // resource requires. (a) is an availability condition governed by onUnavailable;
 // (b) is a definitive policy answer (the operator has not granted the scope) and
-// always denies in block mode — we must not send the request body to a resource
+// always denies in block mode - we must not send the request body to a resource
 // the agent is not authorized for, just to let it 403.
 
 import type { ProtectedResource } from './config.js';
@@ -24,10 +24,10 @@ export interface EgressDecision {
   allow: boolean;
   /**
    * Which observability event (if any) this decision warrants:
-   *   none                 — nothing to report (allowed, fully valid, or off)
-   *   blocked              — request denied
-   *   would_block          — report mode: allowed, but block would have denied
-   *   unavailable_fail_open — block mode, mint unavailable, allowed by fail-open
+   *   none                 - nothing to report (allowed, fully valid, or off)
+   *   blocked              - request denied
+   *   would_block          - report mode: allowed, but block would have denied
+   *   unavailable_fail_open - block mode, mint unavailable, allowed by fail-open
    */
   event: 'none' | 'blocked' | 'would_block' | 'unavailable_fail_open';
   reason?: EgressReason;
@@ -44,7 +44,7 @@ export interface EgressTokenResult {
  * Decode the `scp` (scopes) claim from an attestation JWT without verifying its
  * signature. The collector minted this token from the trusted AER API moments
  * ago, so this is just reading back what we requested+were granted; the resource
- * still verifies the signature. Never throws — returns [] on any malformation.
+ * still verifies the signature. Never throws - returns [] on any malformation.
  */
 export function decodeTokenScopes(token: string | null | undefined): string[] {
   if (!token) return [];

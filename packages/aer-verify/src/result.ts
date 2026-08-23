@@ -34,16 +34,16 @@ export interface PinnedKey {
 }
 
 // Four-state anchor result:
-//   verified — the full offline A-D chain passed (cryptographically anchored).
-//   claimed  — the bundle claims anchoring but the evidence is legitimately
+//   verified - the full offline A-D chain passed (cryptographically anchored).
+//   claimed  - the bundle claims anchoring but the evidence is legitimately
 //              INCOMPLETE (absent, no stored body yet, or the signing key is not
 //              pinned so we cannot confirm). NOT a defect: a self-attested claim we
 //              could not independently verify. Does not downgrade the overall verdict
 //              unless the caller requires anchoring.
-//   invalid  — evidence is present but a cryptographic/structural check FAILS
+//   invalid  - evidence is present but a cryptographic/structural check FAILS
 //              (bad proof, malformed body, leaf/envelope/attestation mismatch, sig
-//              invalid). A genuine contradiction — downgrades the overall verdict.
-//   none     — no claim and no evidence.
+//              invalid). A genuine contradiction - downgrades the overall verdict.
+//   none     - no claim and no evidence.
 export type AnchorStatus = 'verified' | 'claimed' | 'invalid' | 'none';
 
 export interface AnchorCheck {

@@ -62,7 +62,7 @@ describe('wrapCreate', () => {
 
     const tools = events.filter((e) => e.event_type === 'tool.selected').map((e) => e.payload['tool']);
     expect(tools).toEqual(['get_weather', 'search']);
-    // never leak arguments — only the name + provider
+    // never leak arguments - only the name + provider
     const toolEv = events.find((e) => e.event_type === 'tool.selected');
     expect(Object.keys(toolEv!.payload).sort()).toEqual(['provider', 'tool']);
   });
@@ -116,7 +116,7 @@ const streamCfg: ProviderConfig = {
     const c = chunk as { out?: number; tool?: string; text?: string };
     if (typeof c.out === 'number') acc.output_tokens = c.out;
     if (typeof c.tool === 'string' && !acc.tool_names.includes(c.tool)) acc.tool_names.push(c.tool);
-    // c.text is content — intentionally never read.
+    // c.text is content - intentionally never read.
   },
 };
 
@@ -145,7 +145,7 @@ describe('wrapCreate streaming (v1.1)', () => {
     const returned = await wrapped({ model: 'm', stream: true });
     await Promise.resolve();
 
-    // At request time: only llm.requested — completion is NOT emitted yet.
+    // At request time: only llm.requested - completion is NOT emitted yet.
     expect(events.map((e) => e.event_type)).toEqual(['llm.requested']);
     expect(events[0]?.payload).toMatchObject({ streaming: true });
     expect((returned as { pulled: number }).pulled).toBe(0); // not consumed yet

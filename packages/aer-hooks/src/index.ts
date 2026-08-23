@@ -1,4 +1,4 @@
-// @adastracomputing/aer-hooks — fail-open, redaction-by-default hook adapters.
+// @adastracomputing/aer-hooks - fail-open, redaction-by-default hook adapters.
 //
 // Claude Code and OpenAI Codex CLI fire shell hooks that pass a JSON event on
 // stdin. This package normalizes both harnesses' payloads to one shape, emits the
@@ -6,7 +6,7 @@
 // installer that wires the hooks into each harness config.
 //
 // opencode is supported natively via its JS plugin API (see the opencode exports
-// below) — this catches bash/read/write/edit tools the MCP recorder never sees.
+// below) - this catches bash/read/write/edit tools the MCP recorder never sees.
 // Cline and other MCP-native harnesses are covered by @adastracomputing/aer-mcp-recorder.
 
 export {

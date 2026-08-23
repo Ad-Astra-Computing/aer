@@ -5,9 +5,9 @@
 // dependency-free enforcement core the collector runs against every LLM call:
 // model allow/deny lists, a per-session call budget and a per-session token
 // budget. Three modes mirror the protected-resource enforcement pattern:
-//   off    — no-op
-//   report — emit a policy.violation event, let the call proceed
-//   block  — throw AerPolicyError BEFORE the SDK call for the offending call
+//   off    - no-op
+//   report - emit a policy.violation event, let the call proceed
+//   block  - throw AerPolicyError BEFORE the SDK call for the offending call
 //
 // HONEST CAVEAT: this is best-effort and trivially bypassable by anyone who
 // removes the collector. It stops runaway and misconfigured agents, not a

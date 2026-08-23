@@ -1,6 +1,6 @@
 // Per-adapter live counters. Surfaced in the FINAL collector.report so operators
 // can see SDK-level activity (calls, completions, failures, tool selections) per
-// provider without parsing the raw event firehose. Metadata only — counts never
+// provider without parsing the raw event firehose. Metadata only - counts never
 // carry prompts, model text, or tool arguments (ADR-008: bodies-OFF is absolute).
 
 export interface AdapterCallCounts {

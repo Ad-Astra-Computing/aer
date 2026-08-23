@@ -1,5 +1,5 @@
 /**
- * H4 — end-to-end transcript import runner. Stubs fetch to assert the create →
+ * H4 - end-to-end transcript import runner. Stubs fetch to assert the create →
  * ingest → complete sequence, that only bodies-off events are POSTed, and that
  * the summary reflects the server's accepted/rejected + the generated aer_id.
  */

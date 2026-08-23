@@ -1,5 +1,5 @@
 /**
- * UUIDv7 — RFC 9562. 48-bit unix-ms timestamp, version nibble 7, variant bits 10,
+ * UUIDv7 - RFC 9562. 48-bit unix-ms timestamp, version nibble 7, variant bits 10,
  * monotonic within-ms counter in rand_a, 62 random bits in rand_b.
  *
  * Runtime-universal: only depends on globalThis.crypto.getRandomValues

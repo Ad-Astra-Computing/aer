@@ -35,7 +35,7 @@ export function expressMcpGuard(opts: GuardOptions, adapterOpts: ExpressGuardOpt
     // Absolute URL for DPoP htu (ignored unless opts.requireDpop). Query is
     // dropped during htu normalization, so the path is what matters. Prefer a
     // pinned trustedOrigin; otherwise fall back to the (client-influenced) Host
-    // header + req.protocol — safe only when htu binding isn't relied upon or a
+    // header + req.protocol - safe only when htu binding isn't relied upon or a
     // trusted proxy fixes the Host.
     const getHeader = (n: string): string | null => req.header(n) ?? null;
     const path = (req as { originalUrl?: string; url?: string }).originalUrl ?? (req as { url?: string }).url ?? '/';

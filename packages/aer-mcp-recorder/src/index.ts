@@ -1,4 +1,4 @@
-// @adastracomputing/aer-mcp-recorder — transparent MCP proxy that records the tool
+// @adastracomputing/aer-mcp-recorder - transparent MCP proxy that records the tool
 // activity a coding harness drives through MCP, with no harness integration.
 //
 // Two non-negotiable properties: fail-open byte transparency (the proxy forwards

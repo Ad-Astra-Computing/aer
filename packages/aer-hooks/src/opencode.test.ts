@@ -1,5 +1,5 @@
 /**
- * opencode plugin harness — normalize opencode's in-process plugin hooks into the
+ * opencode plugin harness - normalize opencode's in-process plugin hooks into the
  * shared HookEvent shape, so opencode reuses the same bodies-off emit pipeline
  * (emitHookEvent) as the Claude Code / Codex shell hooks. Locks the redaction
  * contract: tool NAMES + argument KEY names only (never values), unless the

@@ -268,7 +268,7 @@ describe('wireBodyTag (capture_point: wire, slice 2)', () => {
   it('depth-ceiling sentinel does NOT collide with the literal string form', () => {
     // A value nested past the depth ceiling is committed as the bare token
     // __aer_max_depth__; the literal string "__aer_max_depth__" is committed
-    // quoted. At the same field these must produce different tags — a quoted
+    // quoted. At the same field these must produce different tags - a quoted
     // sentinel would have let the two share a tag (the pre-publish canon fix).
     let deep: unknown = 1;
     for (let i = 0; i < 70; i++) deep = { a: deep };

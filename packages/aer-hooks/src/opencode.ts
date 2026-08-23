@@ -16,7 +16,7 @@
 //     session.idle    { properties:{ sessionID } }   ← a turn boundary, not an end
 //     message.updated { properties:{ info: Message } } ← assistant Message carries
 //       modelID / providerID / tokens{input,output,...} / time.completed / error;
-//       this is where opencode surfaces LLM model + token usage (bodies-off — the
+//       this is where opencode surfaces LLM model + token usage (bodies-off - the
 //       message CONTENT lives in separate message.part.updated events we never read).
 //
 // Native plugin capture beats MCP-only for opencode: it also catches non-MCP
@@ -119,7 +119,7 @@ export function normalizeOpencodeToolBefore(
 /**
  * `tool.execute.after` → tool_end. The after hook fires only on completion, so we
  * default to success; an error is inferred defensively from the freeform tool
- * metadata (opencode surfaces failures either by throwing — no after hook — or in
+ * metadata (opencode surfaces failures either by throwing - no after hook - or in
  * metadata). Result content is never read.
  */
 export function normalizeOpencodeToolAfter(
@@ -142,7 +142,7 @@ export function normalizeOpencodeToolAfter(
 /**
  * An opencode `event({event})` → HookEvent. Only session lifecycle maps: created →
  * session_start, deleted → session_end. session.idle is a per-turn boundary (fires
- * repeatedly) so it is NOT an end — dropped as `other`. Everything else is `other`.
+ * repeatedly) so it is NOT an end - dropped as `other`. Everything else is `other`.
  */
 export function normalizeOpencodeEvent(event: unknown): HookEvent {
   const e = asRecord(event);

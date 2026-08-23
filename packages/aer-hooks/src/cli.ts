@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// aer-hook — the per-event hook binary.
+// aer-hook - the per-event hook binary.
 //
 // A harness runs this with the hook event JSON on stdin. We read all of stdin,
 // parse it tolerantly, normalize it (harness from --harness or auto-detected),

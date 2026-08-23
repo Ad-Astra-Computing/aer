@@ -54,7 +54,7 @@ describe('vercel streaming result observation (v1.1)', () => {
     const { capture, events } = capt();
     const mod = {
       streamText: (_p: unknown) => ({
-        // content streams the host would consume — MUST NOT be read by us
+        // content streams the host would consume - MUST NOT be read by us
         get textStream() { throw new Error('textStream must not be read'); },
         get fullStream() { throw new Error('fullStream must not be read'); },
         usage: Promise.resolve({ inputTokens: 50, outputTokens: 12 }),

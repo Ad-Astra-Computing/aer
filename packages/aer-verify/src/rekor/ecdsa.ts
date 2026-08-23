@@ -49,7 +49,7 @@ export function derToP1363(der: Uint8Array, coordBytes = P256_COORD_BYTES): Uint
 /**
  * Verify an ECDSA P-256 / SHA-256 signature over `message` with an SPKI public key.
  * `signature` may be DER (Rekor wire form) or already P1363 (64 bytes). Returns a
- * boolean; never throws — a malformed key or signature is a failed verification.
+ * boolean; never throws - a malformed key or signature is a failed verification.
  */
 export async function subtleP256Verify(
   spkiPublicKey: Uint8Array,

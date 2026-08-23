@@ -72,11 +72,11 @@ function legacyReason(res: VerifiedAer): string | undefined {
 
 // Verify a bundle OBJECT (already in hand): recompute the canonical hash and check
 // the Ed25519 signature against the public signing key (fetched from the public
-// /v1/keys endpoint — public, not a secret). Used by both `aer verify` (which
+// /v1/keys endpoint - public, not a secret). Used by both `aer verify` (which
 // fetches the bundle first) and `aer commitments verify` (which must confirm the
 // bundle is genuine signed evidence before it trusts any commitment tag).
 //
-// The cryptography now lives in @adastracomputing/aer-verify — the same audited,
+// The cryptography now lives in @adastracomputing/aer-verify - the same audited,
 // dependency-free core the browser console and third parties use, so the CLI can
 // no longer drift from the reference implementation. This function keeps the
 // network concerns (fetching the key, 404 handling) the core deliberately omits.

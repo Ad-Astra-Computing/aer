@@ -209,7 +209,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   // Cache key binds the token to audience, the exact scopes requested (so a cached
   // low-scope token never satisfies a higher-scope request), AND
-  // whether it is DPoP-bound (a cnf token differs from a bearer one — M3).
+  // whether it is DPoP-bound (a cnf token differs from a bearer one - M3).
   function tokenKey(audience: string, scopes: string[], dpop: boolean): string {
     const base = scopes.length > 0 ? `${audience} ${[...scopes].sort().join(' ')}` : audience;
     return dpop ? `${base} #dpop` : base;

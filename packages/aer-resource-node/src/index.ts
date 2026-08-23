@@ -1,4 +1,4 @@
-// @adastracomputing/aer-resource-node — verify AER Attestation tokens at a protected
+// @adastracomputing/aer-resource-node - verify AER Attestation tokens at a protected
 // resource. Offline against cached JWKS, fail-closed. Zero runtime deps; vendors
 // EdDSA verify + base64url (no JOSE). Hono/Express middleware are optional
 // subpath exports (./hono, ./express).
@@ -23,7 +23,7 @@ export interface AttestationClaims {
 /**
  * Replay protection for DPoP proofs (Phase 3 M3). `checkAndRecord` returns true
  * if `jti` was ALREADY recorded (a replay), false if fresh (and records it).
- * `expiresAtMs` bounds retention — a store may drop an entry after that time.
+ * `expiresAtMs` bounds retention - a store may drop an entry after that time.
  * The default in-memory store is process-local; multi-instance deployments must
  * supply a SHARED store (e.g. Redis) or replay is only blocked per instance.
  */
@@ -67,13 +67,13 @@ export interface VerifyOptions {
   /**
    * Capabilities this resource demands (Phase 3). Every entry must appear in the
    * token's `scp`, else AttestationError('insufficient_scope'). Enforced OFFLINE
-   * (no introspection needed) — scopes are signed into the token.
+   * (no introspection needed) - scopes are signed into the token.
    */
   requiredScopes?: string[];
   /**
    * Require a valid DPoP proof bound to the token (Phase 3 M3). When true, the
    * token MUST carry `cnf.jkt` AND the request MUST present a matching DPoP proof
-   * (via `dpopProof` + `method` + `url`), else AttestationError. Default off —
+   * (via `dpopProof` + `method` + `url`), else AttestationError. Default off -
    * a bearer token is accepted as before. Opt-in, staged like egress enforcement.
    */
   requireDpop?: boolean;
@@ -96,11 +96,11 @@ export interface VerifyOptions {
    * Require the token to be mTLS-bound (RFC 8705). When true the token MUST carry
    * `cnf["x5t#S256"]` AND the request MUST present a client certificate whose
    * thumbprint (supplied via `mtlsThumbprint`) matches, else AttestationError.
-   * Default off — bearer/DPoP behavior is unchanged. Opt-in, like DPoP.
+   * Default off - bearer/DPoP behavior is unchanged. Opt-in, like DPoP.
    */
   requireMtls?: boolean;
   /**
-   * The presented client certificate's thumbprint — base64url(sha256(cert DER)).
+   * The presented client certificate's thumbprint - base64url(sha256(cert DER)).
    * Resolve it from the TLS socket (`thumbprintFromPeerCert`) or, behind a TRUSTED
    * terminating proxy, a forwarded header (`thumbprintFromForwardedClientCert`).
    * Null/absent when no client cert was presented.
@@ -424,7 +424,7 @@ export interface PeerCertSocket {
 
 /**
  * Compute `x5t#S256` (base64url(sha256(cert DER))) from a TLS socket's peer
- * certificate — for a resource doing DIRECT mTLS (Node `requestCert: true`).
+ * certificate - for a resource doing DIRECT mTLS (Node `requestCert: true`).
  * Returns null if no client certificate was presented.
  */
 export async function thumbprintFromPeerCert(socket: PeerCertSocket | null | undefined): Promise<string | null> {
@@ -437,7 +437,7 @@ export interface ForwardedCertOpts {
   /**
    * `pem` (default): the header value is a (possibly URL-encoded) PEM certificate,
    * e.g. nginx `$ssl_client_escaped_cert`. `xfcc`: an Envoy `X-Forwarded-Client-Cert`
-   * value — its `Hash=` (hex sha256) is used directly, else its `Cert="…"` PEM.
+   * value - its `Hash=` (hex sha256) is used directly, else its `Cert="…"` PEM.
    *
    * Security: the header these options parse is only trustworthy when a
    * trusted mTLS-terminating proxy sets it and strips any client-supplied copy.
@@ -461,14 +461,14 @@ export async function thumbprintFromForwardedClientCert(
 ): Promise<string | null> {
   if (!value) return null;
   if ((opts.format ?? 'pem') === 'xfcc') {
-    // Hash is a SHA-256 of the leaf cert DER — exactly 64 hex chars. Anything else
+    // Hash is a SHA-256 of the leaf cert DER - exactly 64 hex chars. Anything else
     // is malformed; fall through rather than trust a partial value.
     const hash = /(?:^|;|,)\s*Hash=([0-9a-fA-F]{64})(?![0-9a-fA-F])/.exec(value)?.[1];
     if (hash) return hexToB64url(hash);
     const cert = /(?:^|;|,)\s*Cert="([^"]*)"/.exec(value)?.[1];
     return cert ? pemThumbprint(safeDecodeUri(cert)) : null;
   }
-  // A PEM chain is NOT parsed as a chain — the leaf (first/whole value) is hashed.
+  // A PEM chain is NOT parsed as a chain - the leaf (first/whole value) is hashed.
   return pemThumbprint(value.includes('%') ? safeDecodeUri(value) : value);
 }
 

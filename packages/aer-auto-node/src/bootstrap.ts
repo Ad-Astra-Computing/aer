@@ -25,7 +25,7 @@ export function bootstrap(deps: BootstrapDeps = {}): Collector | null {
 
   const config = resolveConfig({ env, configFile: loadConfigFile(cwd) });
 
-  // Kill switch: do nothing — no patches, no session, no further config reads.
+  // Kill switch: do nothing - no patches, no session, no further config reads.
   if (config.disabled) return null;
 
   if (!isConfigured(config)) {

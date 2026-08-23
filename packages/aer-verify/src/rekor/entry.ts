@@ -2,7 +2,7 @@
 //
 // A Rekor v1 entry UUID is the hex of the Merkle leaf hash, optionally prefixed by
 // a 16-hex (8-byte) tree-shard id: so 64 hex (unsharded) or 80 hex (sharded). The
-// leaf hash is always the trailing 32 bytes — it is what an inclusion proof hashes
+// leaf hash is always the trailing 32 bytes - it is what an inclusion proof hashes
 // up to the root, so it can be recovered without re-canonicalizing the entry body.
 
 import { hexToBytes } from '../bytes.js';

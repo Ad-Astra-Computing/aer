@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 
 /**
- * json-c14n-v1 — deterministic JSON canonicalization for AER signing.
+ * json-c14n-v1 - deterministic JSON canonicalization for AER signing.
  *
  * Rules:
  *   - UTF-8 output
- *   - object keys sorted by UTF-16 code unit at every depth — JS default String
+ *   - object keys sorted by UTF-16 code unit at every depth - JS default String
  *     comparison (`Array.prototype.sort` with no comparator), which is also what
  *     RFC 8785 (JCS) specifies. This equals Unicode code-point order for the BMP;
  *     it only diverges for astral-plane keys, which AER schemas never emit.

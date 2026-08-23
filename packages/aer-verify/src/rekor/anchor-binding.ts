@@ -2,7 +2,7 @@
 //
 // verifyRekorEvidence (phase 2) proves one thing: a leaf hash is committed to by a
 // Rekor-signed tree head. That is necessary but NOT sufficient to claim "THIS AER is
-// anchored" — the leaf is an opaque 32 bytes until we bind it, offline, all the way
+// anchored" - the leaf is an opaque 32 bytes until we bind it, offline, all the way
 // back to the bundle. This module closes that chain:
 //
 //   A. inclusion + checkpoint            leaf ∈ signed tree head   (verifyRekorEvidence)
@@ -110,7 +110,7 @@ function sha256HashValue(v: unknown): string | null {
 
 /**
  * Parse the fields of a Rekor dsse:0.0.1 body we bind against. Returns null unless the
- * body is EXACTLY the expected entry kind/version with sha256 hashes — a differently
+ * body is EXACTLY the expected entry kind/version with sha256 hashes - a differently
  * typed Rekor leaf with a conveniently-shaped spec must not be read as AER evidence.
  */
 function parseRekorBodySpec(bodyBytes: Uint8Array): RekorBodySpec | null {

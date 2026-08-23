@@ -53,7 +53,7 @@ let currentBundle = buildBundle();
 
 // A trust root that PINS the test key, so the happy path (a validly-signed bundle whose
 // key is trusted) reaches verified:true. Without a trust root override the CLI uses the
-// builtin root, which does NOT pin this test key — so an otherwise-valid bundle verifies
+// builtin root, which does NOT pin this test key - so an otherwise-valid bundle verifies
 // FALSE (key untrusted). That is the whole point of blocker 2: a signature that only
 // checks out against a server-served key is not trusted provenance.
 const TRUST = { aerSigningKeys: [{ signing_key_id: KEY_ID, public_key_hex: pubKeyHex }], rekorLogs: [] };
