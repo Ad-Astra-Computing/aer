@@ -11,6 +11,7 @@ import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { CollectorEvent } from '../session.js';
 import type { Attestor } from '../attestor.js';
 import { redactUrlPath, redactPathString } from '../redaction.js';
+import { responseBytesField } from './response-size.js';
 
 type Capture = (event: CollectorEvent) => void;
 
@@ -51,7 +52,7 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor): () => v
       if (attestor && secure && meta.host !== 'unknown') {
         const resource = attestor.resourceFor(meta.host);
         if (resource) {
-          // Cached token only — the sync API cannot await a mint. A cold miss in
+          // Cached token only - the sync API cannot await a mint. A cold miss in
           // block mode therefore denies immediately (and warms for next time)
           // rather than opening the socket without a token.
           const token = attestor.peekToken(resource.audience, resource.scopes, resource.dpop);
@@ -86,7 +87,12 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor): () => v
         req.once('response', (res: IncomingMessage) => {
           safeCapture(capture, {
             event_type: 'http.completed',
-            payload: { host: meta.host, status: res.statusCode ?? 0, duration_ms: Date.now() - start },
+            payload: {
+              host: meta.host,
+              status: res.statusCode ?? 0,
+              duration_ms: Date.now() - start,
+              ...responseBytesField(res.headers['content-length']),
+            },
           });
         });
         req.once('error', () => {
