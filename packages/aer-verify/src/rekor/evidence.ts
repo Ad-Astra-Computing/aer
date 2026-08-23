@@ -1,4 +1,4 @@
-// Rekor evidence verifier — the offline trust anchor for an anchored AER.
+// Rekor evidence verifier - the offline trust anchor for an anchored AER.
 //
 // Given a stored transparency_anchor_ref, prove OFFLINE (no live Rekor read) that
 // the entry is committed to a signed tree head:
@@ -17,10 +17,10 @@
 //
 // What this DOES prove: the entry leaf is included in a Rekor-signed tree head, and
 // (for sharded UUIDs) that leaf belongs to the checkpoint's own tree. What it does
-// NOT prove: (a) global non-equivocation — a signed checkpoint attests one view of
+// NOT prove: (a) global non-equivocation - a signed checkpoint attests one view of
 // the log; ruling out a split view needs witness cosigning / gossip / a consistency
 // proof against a previously trusted checkpoint (future work); (b) the entry's
-// `integratedTime` — it is NOT covered by the inclusion proof, so callers must not
+// `integratedTime` - it is NOT covered by the inclusion proof, so callers must not
 // present it as a cryptographically verified timestamp (this result never surfaces
 // it). Binding the leaf to THIS AER's DSSE envelope needs the persisted Rekor body
 // (Phase 3); until then a caller must NOT treat a verified inclusion as "this AER

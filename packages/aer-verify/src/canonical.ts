@@ -1,4 +1,4 @@
-// json-c14n-v1 — deterministic JSON canonicalization for AER verification.
+// json-c14n-v1 - deterministic JSON canonicalization for AER verification.
 //
 // This is a byte-for-byte port of `@aer/schemas`'s canonicalize, with node:crypto
 // removed so it runs in any Web Crypto runtime. A cross-package golden test

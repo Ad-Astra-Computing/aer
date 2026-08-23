@@ -1,9 +1,9 @@
-// @adastracomputing/aer-mcp-guard — admission control for HTTP MCP servers (ADR-010 2d).
+// @adastracomputing/aer-mcp-guard - admission control for HTTP MCP servers (ADR-010 2d).
 //
 // Wraps an HTTP-based MCP endpoint (Streamable HTTP or SSE) so only AER-attested
 // agents reach it. A rogue agent presents no token and is denied with a JSON-RPC
 // 2.0 error. Built on @adastracomputing/aer-resource-node (offline verify + optional
-// introspection); NO dependency on @modelcontextprotocol/sdk — mount it in front
+// introspection); NO dependency on @modelcontextprotocol/sdk - mount it in front
 // of any MCP HTTP handler. `stdio` MCP is out of scope (no network admission
 // point); only HTTP transports are guarded.
 
@@ -38,7 +38,7 @@ export interface GuardOptions extends Omit<VerifyOptions, 'now'> {
   now?: () => number;
   /**
    * Resolve the presented client-cert thumbprint per request (when `requireMtls`).
-   * Receives the header getter — use it to read a forwarded client-cert header
+   * Receives the header getter - use it to read a forwarded client-cert header
    * (`thumbprintFromForwardedClientCert`) behind a TRUSTED proxy. For DIRECT mTLS,
    * resolve from the socket in your handler and pass `mtlsThumbprint` instead.
    * ⚠️ Only read a forwarded cert header behind a proxy you control.
@@ -56,11 +56,11 @@ type HeaderGetter = (name: string) => string | null | undefined;
  * HTTP status for a denial reason:
  *  - 403  token is authentic but lacks authority: revoked / introspection says
  *         inactive / insufficient_scope (RFC 6750 maps insufficient_scope → 403)
- *  - 503  introspection unreachable + fail-closed (liveness unknown — not the
+ *  - 503  introspection unreachable + fail-closed (liveness unknown - not the
  *         client's fault, and the token may well be valid)
  *  - 401  everything else: missing / malformed / bad signature / expired /
  *         wrong audience / wrong issuer / DPoP proof failures (RFC 9449 uses 401
- *         with a DPoP challenge — dpop_required / dpop_invalid / dpop_replay)
+ *         with a DPoP challenge - dpop_required / dpop_invalid / dpop_replay)
  */
 export function statusForReason(reason: string): number {
   if (reason === 'revoked' || reason === 'insufficient_scope') return 403;
@@ -83,7 +83,7 @@ function denial(status: number, reason: string, id: JsonRpcId): GuardResult {
 /**
  * Framework-neutral guard. Reads the attestation header, verifies it (offline +
  * optional introspection), and returns either the claims or a ready-to-send
- * JSON-RPC denial + HTTP status. Never reads the request body — pass `rpcId`
+ * JSON-RPC denial + HTTP status. Never reads the request body - pass `rpcId`
  * only if the body was already parsed by your framework (else leave it null so
  * streaming/SSE bodies are untouched).
  */

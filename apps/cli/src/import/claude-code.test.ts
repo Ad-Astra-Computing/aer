@@ -1,5 +1,5 @@
 /**
- * H4 — Claude Code transcript import (mapping module).
+ * H4 - Claude Code transcript import (mapping module).
  *
  * The mapper turns a Claude Code session JSONL transcript into bodies-off AER
  * events on the CLIENT, so raw prompts / model output / tool arguments never

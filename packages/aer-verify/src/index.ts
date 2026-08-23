@@ -1,4 +1,4 @@
-// @adastracomputing/aer-verify — independent, dependency-free AER bundle verifier.
+// @adastracomputing/aer-verify - independent, dependency-free AER bundle verifier.
 //
 // Recompute the canonical hash, verify the Ed25519 signature against a pinned key
 // set, and check the signing-key-id binding, in any Web Crypto runtime. The same

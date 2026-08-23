@@ -4,7 +4,7 @@ import { signingKeyIdFromPublicKeyHex } from '../keys.js';
 
 describe('pinned AER signing keys', () => {
   it('every pinned key is self-authenticating (id derives from the public key)', async () => {
-    // A swapped or corrupted key value would produce a different derived id — this
+    // A swapped or corrupted key value would produce a different derived id - this
     // is what makes shipping the raw constant safe: the pin cannot silently drift.
     const keys = aerSigningKeys();
     expect(keys.length).toBeGreaterThan(0);

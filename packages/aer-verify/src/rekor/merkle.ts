@@ -1,4 +1,4 @@
-// RFC 6962 Merkle tree primitives — the transparency-log inclusion-proof math.
+// RFC 6962 Merkle tree primitives - the transparency-log inclusion-proof math.
 // Pure and spec-locked (independent of Rekor's entry serialization), so it can be
 // fully tested against self-built trees. Used by the Rekor evidence verifier to
 // confirm an anchored entry is committed to by a checkpoint's root hash.

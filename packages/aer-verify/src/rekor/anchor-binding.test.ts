@@ -177,7 +177,7 @@ describe('verifyAnchoredEvidence', () => {
   it('rejects when the body does not bind the presented envelope', async () => {
     const s = await buildAnchor();
     // Swap the envelope payload for a different (validly-signed-looking) one: the body's
-    // payloadHash no longer matches. Re-sign is unnecessary — we test the C link.
+    // payloadHash no longer matches. Re-sign is unnecessary - we test the C link.
     const otherPayload = bytesToBase64(utf8('{"_type":"x"}'));
     s.anchor.envelope = { ...s.envelope, payload: otherPayload };
     const res = await verifyAnchoredEvidence(s.anchor, s.bundle, optsFor(s.rekorKey, s.aerKey));

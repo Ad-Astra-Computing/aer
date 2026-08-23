@@ -1,4 +1,4 @@
-// Hook config writer — the security-sensitive part of aer-hooks.
+// Hook config writer - the security-sensitive part of aer-hooks.
 //
 // `install` wires the AER hook into a harness config so PreToolUse / PostToolUse /
 // SessionStart / Stop run `aer-hook --harness <name>`. It is conservative by design:

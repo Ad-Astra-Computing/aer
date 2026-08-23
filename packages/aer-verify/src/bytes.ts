@@ -1,4 +1,4 @@
-// Byte and encoding helpers. No node:crypto, no Buffer — everything here runs
+// Byte and encoding helpers. No node:crypto, no Buffer - everything here runs
 // unchanged in Node, Cloudflare Workers and browsers so the verifier core has a
 // single audited implementation across all three.
 

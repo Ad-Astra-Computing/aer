@@ -2,7 +2,7 @@ import type { Readable } from 'node:stream';
 import { createInterface } from 'node:readline';
 import { claudeCodeTranscriptToEvents, type TranscriptCtx } from './claude-code.js';
 
-// H4 — end-to-end Claude Code transcript import. Reads a session JSONL transcript,
+// H4 - end-to-end Claude Code transcript import. Reads a session JSONL transcript,
 // creates an AER session, maps entries to bodies-off events on the CLIENT, POSTs
 // them through the normal ingest path, then completes the session (generating the
 // signed AER). The transcript never leaves the machine except as bodies-off events.
