@@ -110,7 +110,7 @@ export const LlmActivityProvider = z
     // false when no completion surfaced token usage (token sums are then 0 and
     // shown honestly as "not reported" rather than implying zero usage).
     tokens_observed: z.boolean(),
-    models: z.array(z.string()),
+    models: z.array(ObservationName).max(MAX_BUNDLE_LIST),
     tool_selections: z.number().int().nonnegative(),
   })
   .strict();
@@ -155,7 +155,7 @@ export type EstimatedCost = z.infer<typeof EstimatedCost>;
 
 export const LlmActivity = z
   .object({
-    providers: z.array(LlmActivityProvider),
+    providers: z.array(LlmActivityProvider).max(MAX_BUNDLE_LIST),
     totals: LlmActivityTotals,
     tools: z.array(
       z.object({ tool: z.string().min(1), count: z.number().int().positive() }).strict(),
@@ -173,7 +173,7 @@ export type LlmActivity = z.infer<typeof LlmActivity>;
 
 export const ImpactSummary = z
   .object({
-    classes: z.array(z.string()),
+    classes: z.array(ObservationName).max(MAX_BUNDLE_LIST),
     highest_severity: z.enum(SEVERITY_HINTS),
   })
   .strict();

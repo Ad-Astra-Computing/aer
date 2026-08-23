@@ -82,6 +82,46 @@ describe('AerBundle', () => {
     expect(AerBundle.safeParse(b).success).toBe(false);
   });
 
+  it('rejects an absurdly long impact_summary class (amplification defense)', () => {
+    const b = baseBundle();
+    b.impact_summary.classes = ['a'.repeat(65_537)];
+    expect(AerBundle.safeParse(b).success).toBe(false);
+  });
+
+  it('rejects an absurdly long llm_activity model name (amplification defense)', () => {
+    const b = {
+      ...baseBundle(),
+      llm_activity: {
+        providers: [
+          {
+            provider: 'openai',
+            calls: 1,
+            completed: 1,
+            errors: 0,
+            streaming: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            tokens_observed: false,
+            models: ['a'.repeat(65_537)],
+            tool_selections: 0,
+          },
+        ],
+        totals: {
+          calls: 1,
+          completed: 1,
+          errors: 0,
+          streaming: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          tokens_observed: false,
+          tool_selections: 0,
+        },
+        tools: [],
+      },
+    };
+    expect(AerBundle.safeParse(b).success).toBe(false);
+  });
+
   it('rejects wrong schema_version', () => {
     const b = { ...baseBundle(), schema_version: 'aer.v2' };
     expect(AerBundle.safeParse(b).success).toBe(false);
