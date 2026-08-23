@@ -2,7 +2,7 @@
 // AI SDK exposes free functions (generateText/streamText/generateObject/
 // streamObject) on the `ai` module, and the model is an object (`.modelId`).
 // We patch the module's function exports and read structured result metadata
-// only (usage, finishReason, tool-call NAMES) — never generated text or tool
+// only (usage, finishReason, tool-call NAMES) - never generated text or tool
 // arguments.
 //
 // Limitation (same as the other patches): a named import
@@ -27,7 +27,7 @@ function numOr(v: unknown): number | undefined {
 
 /**
  * Observe a Vercel AI SDK streaming result (StreamTextResult / StreamObjectResult)
- * by awaiting its usage / finishReason / toolCalls PROMISES — never its textStream
+ * by awaiting its usage / finishReason / toolCalls PROMISES - never its textStream
  * or fullStream (content). Returns the structured metadata once they settle, or
  * null if the value isn't a recognized streaming result (so the caller falls back
  * to a best-effort completion). Each promise is settled independently so one
@@ -87,7 +87,7 @@ export function vercelConfig(streaming: boolean): ProviderConfig {
     },
     // Streaming (v1.1): the AI SDK exposes usage/finishReason/toolCalls as RESULT
     // PROMISES (not in-band chunks), so we observe those promises rather than tap
-    // the textStream. Reads usage numbers, finish reason and tool NAMES only —
+    // the textStream. Reads usage numbers, finish reason and tool NAMES only -
     // never textStream/fullStream content, generated text or tool args.
     ...(streaming ? { extractStreamResult: vercelStreamResult } : {}),
     extractResponse(response) {

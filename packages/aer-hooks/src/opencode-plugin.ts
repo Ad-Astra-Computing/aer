@@ -1,4 +1,4 @@
-// opencode plugin factory — wires the opencode normalizers to the AER emit sink.
+// opencode plugin factory - wires the opencode normalizers to the AER emit sink.
 //
 // opencode loads this in-process and long-lived (one plugin instance for the whole
 // run), so unlike the shell-hook path (a fresh process per event) we keep ONE AER
@@ -144,13 +144,13 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
 /**
  * Ready-to-use opencode Plugin. Resolves AER sink options from the environment
  * (AER_BASE_URL + AER_API_KEY/AER_TENANT_API_KEY + AER_TENANT_ID/AER_AGENT_ID/
- * AER_ENV_ID). When emit is unconfigured it returns empty hooks — a total no-op,
+ * AER_ENV_ID). When emit is unconfigured it returns empty hooks - a total no-op,
  * so a misconfigured install never touches the network or affects opencode.
  *
  * Drop into `.opencode/plugins/aer.ts` (or a published package) as:
  *   import { aerOpencodePlugin } from '@adastracomputing/aer-hooks';
  *   export const AerPlugin = aerOpencodePlugin;
- * The opencode `PluginInput` is ignored — AER binds its session from env config,
+ * The opencode `PluginInput` is ignored - AER binds its session from env config,
  * not opencode's client.
  */
 export async function aerOpencodePlugin(

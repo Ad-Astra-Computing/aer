@@ -1,6 +1,6 @@
 // Generic LLM SDK adapter core. Wraps an SDK's `create` method to emit
 // llm.requested / llm.completed / tool.selected from STRUCTURED METADATA ONLY
-// (model, token usage, stop reason, tool NAMES) — never prompts, model text, or
+// (model, token usage, stop reason, tool NAMES) - never prompts, model text, or
 // tool arguments (ADR-008: bodies-OFF is absolute). The wrapper observes the
 // returned promise without altering its type or consuming streams.
 
@@ -27,14 +27,14 @@ type Capture = (event: CollectorEvent) => void;
 
 /** Byte cap on in-process streamed-response accumulation for the response_tag
  * (ADR-011 slice 2). Past this the collector stops accumulating and emits
- * response_captured:false rather than tagging partial text — bounds memory on a
+ * response_captured:false rather than tagging partial text - bounds memory on a
  * runaway/huge stream. 4 MiB is well above any real single completion. */
 const MAX_COMMIT_TEXT_BYTES = 4 * 1024 * 1024;
 
 /**
  * Usage-policy hook threaded into the wrapped `create` (P3 slice 2). `enforcer`
  * evaluates model + budget rules per call; `emit` records a policy event
- * (metadata only — model NAME + counts, never content). When absent, the
+ * (metadata only - model NAME + counts, never content). When absent, the
  * wrapper behaves exactly as before (no enforcement, no policy events).
  */
 export interface PolicyOption {
@@ -80,7 +80,7 @@ export interface ProviderConfig {
   extractResponse: (response: unknown) => LlmResponseMeta | null;
   /**
    * Optional (v1.1). Fold one STREAMING chunk's structured metadata (token
-   * usage, finish reason, tool NAMES) into the accumulator — never chunk text,
+   * usage, finish reason, tool NAMES) into the accumulator - never chunk text,
    * content deltas, or tool arguments. When present, a streaming request taps
    * the response stream and emits llm.completed on stream end instead of at
    * request time. Providers without it keep the v1 best-effort behavior.
@@ -91,7 +91,7 @@ export interface ProviderConfig {
    * metadata via RESULT PROMISES rather than in-band chunks (Vercel AI SDK).
    * Given the resolved result, attaches non-invasive observers and resolves to
    * the metadata once those promises settle (or null when the result isn't a
-   * recognized streaming shape). Reads only usage/finishReason/tool NAMES —
+   * recognized streaming shape). Reads only usage/finishReason/tool NAMES -
    * never text, deltas, generated output, or tool args. When present, a
    * streaming request defers llm.completed until it settles.
    */
@@ -206,14 +206,14 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
 
     // Content commitment (ADR-011): HMAC the request we are about to submit under
     // the customer key and emit ONLY the tag. Reads message/system/tool bodies,
-    // but nothing plaintext ever leaves — the tag is one-way. Wrapped so a bug
+    // but nothing plaintext ever leaves - the tag is one-way. Wrapped so a bug
     // here never breaks the host SDK call.
     if (commit && req) {
       try {
         const canon = canonicalizeRequest(cfg.provider, args);
         if (canon) {
           // wire_canon_tag (slice 2, capture_point: wire): commits the FULL request
-          // body as sent — sampling params and all — alongside the semantic tag.
+          // body as sent - sampling params and all - alongside the semantic tag.
           const wireTag = safe(() => wireBodyTag(commit.key, args[0]));
           // tool_result_tags (slice 2): commit each tool result fed back into this
           // request (prior tool execution output carried as tool/tool_result msgs).

@@ -40,7 +40,7 @@ export interface CommitmentCheckResult {
   // tag matched more than one commitment that wire tags could not disambiguate).
   request_ref: string | null;
   // Set when the prompt tag matched multiple commitments and no single one could
-  // be pinned by wire tag — the content was committed, but to which request is unclear.
+  // be pinned by wire tag - the content was committed, but to which request is unclear.
   ambiguous?: boolean;
   // Recomputed wire-body tag, and whether it matched the commitment's wire tag.
   // wire_matched is null when the bundle commitment carried no wire tag.
@@ -52,7 +52,7 @@ export interface CommitmentCheckResult {
 export interface VerifyCommitmentsResult {
   aer_id: string | null;
   // Whether the bundle's own hash + Ed25519 signature verified. When false, NO
-  // commitment is reported as matched — a tag match against unsigned/tampered
+  // commitment is reported as matched - a tag match against unsigned/tampered
   // evidence proves nothing (fail closed).
   bundle_verified: boolean;
   // SHA-256-derived key id of the SUPPLIED key. If this does not equal the
@@ -86,7 +86,7 @@ const isHex = (x: unknown): x is string => typeof x === 'string' && HEX64.test(x
 
 /**
  * Pure verifier: recompute each input's tags under `key` and diff against the
- * bundle's content_commitments. No I/O, no logging — safe to unit test and safe
+ * bundle's content_commitments. No I/O, no logging - safe to unit test and safe
  * for the no-plaintext guarantee (the caller owns all output).
  */
 export function verifyCommitments(
@@ -262,7 +262,7 @@ export async function runCommitmentsVerify(
   }
 
   // MUST verify the bundle's own hash + Ed25519 signature before trusting any
-  // commitment. A tag match against unsigned/tampered JSON proves nothing — only
+  // commitment. A tag match against unsigned/tampered JSON proves nothing - only
   // that the plaintext matches a tag someone wrote. The public signing key is
   // fetched from the public /v1/keys endpoint (not a secret). Fail closed.
   const sig = await verifyBundleSignature(bundle as Record<string, unknown>, opts.baseUrl, fetchImpl);

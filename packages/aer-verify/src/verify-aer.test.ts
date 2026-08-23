@@ -11,7 +11,7 @@ import type { AnchorEvidence } from './rekor/anchor-binding.js';
 
 // Build a minimally-shaped but genuinely signed bundle exactly the way the server
 // does (generate.ts): hash the integrity-stripped object, sign the RAW hash bytes,
-// derive the key-id from the public key. No DB needed — the verifier only cares
+// derive the key-id from the public key. No DB needed - the verifier only cares
 // about the canonical bytes + the signature.
 async function signBundle(
   signer: Signer,
@@ -261,7 +261,7 @@ describe('verifyAerBundle — offline anchor (phase 3)', () => {
     const bundle = await signBundle(signer, BODY, { anchored: true });
     const hash = (bundle['integrity'] as Record<string, unknown>)['hash'] as string;
     const { anchor, rekorKey } = await buildAnchorFor(signer, BODY.aer_id, hash);
-    // The bundle's key is NOT in the pinned set, so the anchor cannot be confirmed —
+    // The bundle's key is NOT in the pinned set, so the anchor cannot be confirmed -
     // but the signature still verifies via the supplied fallback key.
     const res = await verifyAerBundle(bundle, {
       publicKeyHex: bytesToHex(signer.publicKey()),
@@ -281,7 +281,7 @@ describe('verifyAerBundle — offline anchor (phase 3)', () => {
       { signing_key_id: signingKeyIdFromPublicKey(signer.publicKey()), public_key_hex: bytesToHex(signer.publicKey()) },
     ];
     // Corrupt stored evidence: the projector reported malformed, so no clean
-    // AnchorEvidence is passed — only the flag. It must drive `invalid`, never
+    // AnchorEvidence is passed - only the flag. It must drive `invalid`, never
     // soften to `claimed`, and it downgrades the overall verdict.
     const res = await verifyAerBundle(bundle, { pinnedKeys: pinned, anchorEvidenceMalformed: true });
     expect(res.checks.anchor.status).toBe('invalid');
@@ -291,7 +291,7 @@ describe('verifyAerBundle — offline anchor (phase 3)', () => {
 
   it('marks an unverifiable anchor on a bundle that does NOT claim anchoring as invalid', async () => {
     const signer = createInMemorySigner();
-    // anchored:false — the bundle makes no anchoring claim, yet evidence is present.
+    // anchored:false - the bundle makes no anchoring claim, yet evidence is present.
     const bundle = await signBundle(signer, BODY, { anchored: false });
     const hash = (bundle['integrity'] as Record<string, unknown>)['hash'] as string;
     const { anchor, rekorKey } = await buildAnchorFor(signer, BODY.aer_id, hash);

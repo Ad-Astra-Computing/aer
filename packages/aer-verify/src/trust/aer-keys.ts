@@ -5,9 +5,9 @@
 // reach `anchored:true` OFFLINE: the anchor's DSSE signature must chain to one of
 // THESE keys, never a key fetched from aer.run at verification time (which an
 // attacker who controls the origin could swap for one that signed a self-anchored
-// forgery in the real public log). Each key is self-authenticating — its
+// forgery in the real public log). Each key is self-authenticating - its
 // signing_key_id is the first 16 hex of SHA-256 over the raw 32 key bytes (see
-// keys.ts:signingKeyIdFromPublicKey) — so a build-time test asserts the binding and
+// keys.ts:signingKeyIdFromPublicKey) - so a build-time test asserts the binding and
 // a swapped key would fail it immediately.
 //
 // Key rotation: ADD the new key here (keep retired keys so historical AERs still

@@ -1,4 +1,4 @@
-// UUIDv7 — RFC 9562. Runtime-universal (only globalThis.crypto.getRandomValues).
+// UUIDv7 - RFC 9562. Runtime-universal (only globalThis.crypto.getRandomValues).
 // Vendored to keep this package dependency-free.
 
 let lastMs = 0;

@@ -73,7 +73,7 @@ export type Correlation = z.infer<typeof Correlation>;
 // ever rejected (the generator caps observations at 1000 values / 512 chars, and
 // old bundles are smaller still), but finite so a pathological array can't force
 // unbounded memory when a stored bundle is parsed. Defense-in-depth on a signed
-// artifact — the primary control is the event-ingest size cap.
+// artifact - the primary control is the event-ingest size cap.
 const MAX_BUNDLE_LIST = 100_000;
 // Per-commitment cap on tool-result tags (slice 2). Bounds a single
 // attacker-controlled llm.prompt_committed event; excess sets tool_results_truncated.
@@ -96,7 +96,7 @@ export type Observations = z.infer<typeof Observations>;
 
 // Semantic LLM/tool activity summary, aggregated from llm.*/tool.selected events
 // at generation time. METADATA ONLY (providers, models, counts, token totals
-// where the SDK surfaced usage, tool names + tallies) — never prompts, model
+// where the SDK surfaced usage, tool names + tallies) - never prompts, model
 // text, or tool arguments. Optional so pre-v1.1 bundles remain valid.
 export const LlmActivityProvider = z
   .object({
@@ -217,7 +217,7 @@ export type Exports = z.infer<typeof Exports>;
 // customer-held key. AER holds neither the key nor the plaintext, so it can
 // neither open nor brute-force a tag; these fields are signed so the commitments
 // inherit the bundle's tamper-evidence. `declared` carries client self-reports
-// (unverified) — kept OUT of any verified claim. `retained` records preimage
+// (unverified) - kept OUT of any verified claim. `retained` records preimage
 // custody so a `none` bundle is never silently un-openable.
 export const ContentCommitment = z
   .object({

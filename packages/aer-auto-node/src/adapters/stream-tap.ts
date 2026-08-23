@@ -2,8 +2,8 @@
 // without consuming it or changing backpressure. We shadow the resolved object's
 // own [Symbol.asyncIterator] with a wrapper that delegates to the real iterator
 // and folds STRUCTURED CHUNK METADATA (token usage, finish reason, tool NAMES)
-// into an accumulator. We NEVER pull from the iterator ourselves — the wrapper
-// only advances when the host calls next() — and we NEVER read chunk text,
+// into an accumulator. We NEVER pull from the iterator ourselves - the wrapper
+// only advances when the host calls next() - and we NEVER read chunk text,
 // content deltas, prompts, or tool arguments (ADR-008: bodies-OFF is absolute).
 
 export interface StreamAccumulator {

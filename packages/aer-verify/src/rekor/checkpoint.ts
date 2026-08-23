@@ -1,7 +1,7 @@
 // Rekor checkpoint (signed tree head) parse + verify.
 //
 // A checkpoint is a Sigstore/Go-sumdb "signed note": text lines, a blank line, then
-// one or more signature lines `— <name> <base64(keyHint4 || signature)>`. The signed
+// one or more signature lines `- <name> <base64(keyHint4 || signature)>`. The signed
 // bytes are the text portion up to and including the blank-line separator's first
 // newline. For a Rekor log the text is:
 //   line 0: origin, e.g. "rekor.sigstore.dev - <treeId>"
@@ -88,7 +88,7 @@ export interface CheckpointVerifyResult {
  * Verify a checkpoint note against a set of pinned keys. Returns valid=true iff at
  * least one signature line is produced by a pinned key over the note body. The
  * key-hint must match (first 4 bytes of SHA-256 over the SPKI) before the (more
- * expensive) cryptographic check runs. Never throws on a bad signature — a parse
+ * expensive) cryptographic check runs. Never throws on a bad signature - a parse
  * failure returns valid=false with the note left unparsed.
  *
  * `ed25519Verify` is injected so a runtime without native Ed25519 subtle support

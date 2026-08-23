@@ -132,7 +132,7 @@ describe('expressMcpGuard', () => {
       return { token, jwk, proof };
     }
 
-    // Express req with a SPOOFED Host header — simulating an attacker who sets
+    // Express req with a SPOOFED Host header - simulating an attacker who sets
     // Host to the real origin's authority while hitting a different deployment.
     function req(token: string, proof: string, spoofedHost: string) {
       return {

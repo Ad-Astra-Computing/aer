@@ -9,7 +9,7 @@ export const EVENT_TYPES = [
   'llm.completed',
   // Content commitment at the customer trust boundary (slice 1). The collector
   // HMACs the request it is about to submit under a CUSTOMER-held key and emits
-  // only the tag — never prompt text (bodies-OFF still holds). See ADR-011.
+  // only the tag - never prompt text (bodies-OFF still holds). See ADR-011.
   'llm.prompt_committed',
   'tool.selected',
   'tool.started',
@@ -33,7 +33,7 @@ export const EVENT_TYPES = [
   'policy.violation',
   'impact.mapped',
   // Collector evidence/coverage events (auto-instrumentation). NOT agent
-  // behavior — excluded from baseline training/detection. See ADR-008.
+  // behavior - excluded from baseline training/detection. See ADR-008.
   'dependency.snapshot',
   'collector.report',
 ] as const;
@@ -41,7 +41,7 @@ export const EVENT_TYPES = [
 export type EventType = (typeof EVENT_TYPES)[number];
 
 // 'import' = reconstructed post-hoc from a harness session file (H4 transcript
-// import), a materially weaker trust signal than live capture — kept distinct so
+// import), a materially weaker trust signal than live capture - kept distinct so
 // a verifier can tell observed-live events from imported ones.
 export const SOURCE_TYPES = ['sdk', 'wrapper', 'ebpf', 'gateway', 'user', 'import'] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
@@ -64,8 +64,8 @@ const emptyPayload = z.object({}).passthrough();
 
 // Bounds on the known captured string fields that flow into the signed bundle
 // (observations.domains_contacted / tools_used / files_touched /
-// processes_spawned). Event payloads are attacker-controlled — anyone holding a
-// session ingest token can POST arbitrary events — so the fields the generator
+// processes_spawned). Event payloads are attacker-controlled - anyone holding a
+// session ingest token can POST arbitrary events - so the fields the generator
 // reads must be length-bounded at the schema boundary. passthrough() still
 // admits unknown keys for forward-compat, but the KNOWN fields are capped.
 // A larger cap for commands (real argv can be long) than for hosts/tools/paths.
@@ -81,7 +81,7 @@ const variants = {
   'llm.requested': z.object({ model: Field }).passthrough(),
   'llm.completed': z.object({ model: Field, ok: z.boolean().optional() }).passthrough(),
   // Only the tag + metadata are validated here; the tag is an opaque HMAC hex
-  // string (bounded by Field) — never prompt content.
+  // string (bounded by Field) - never prompt content.
   'llm.prompt_committed': z.object({ provider: Field, model: Field, kid: Field, prompt_canon_tag: Field }).passthrough(),
   'tool.selected': z.object({ tool: Field }).passthrough(),
   'tool.started': z.object({ tool: Field }).passthrough(),

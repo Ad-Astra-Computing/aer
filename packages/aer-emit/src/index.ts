@@ -1,4 +1,4 @@
-// @adastracomputing/aer-emit — the shared best-effort AER emit core.
+// @adastracomputing/aer-emit - the shared best-effort AER emit core.
 //
 // One place for the AER session/emit client so producers (aer-mcp-recorder,
 // aer-hooks) never drift. Every network operation is best-effort and never throws;
