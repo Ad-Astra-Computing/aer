@@ -46,8 +46,8 @@ node --import @adastracomputing/aer-auto-node/register your-agent.js
 
 ## Development
 
-With [Nix](https://nixos.org), `nix develop` gives a shell with Node and pnpm.
-Otherwise install Node 20+ and pnpm 10 yourself.
+With [Nix](https://nixos.org), `nix develop` gives a shell with Node, pnpm and
+Python (for the SDK below). Otherwise install Node 20+ and pnpm 10 yourself.
 
 ```sh
 pnpm install
@@ -58,6 +58,27 @@ pnpm -r test
 Releases are managed with [changesets](https://github.com/changesets/changesets):
 a change that should ship includes a changeset file, CI opens a version pull
 request that bumps versions and changelogs, and merging it publishes to npm.
+
+## Nix
+
+The repo root `flake.nix` offers three kinds of output:
+
+- `devShells.default`: a shell with `nodejs_24`, `pnpm` and Python 3
+  (`nix develop`).
+- `packages.<name>`: one output per publishable npm package (`aer-auto-node`,
+  `aer-emit`, `aer-hooks`, `aer-mcp-guard`, `aer-mcp-recorder`,
+  `aer-resource-node`, `aer-verify`, `aer-sdk-ts`), each building the exact
+  tarball `npm publish` would produce (`nix build .#aer-verify`). Workspace
+  dependencies are vendored once from `pnpm-lock.yaml` via `fetchPnpmDeps`, so
+  every build is fully offline and reproducible after the initial fetch.
+- `checks.default`: runs `pnpm -r build`, `pnpm -r typecheck` and
+  `pnpm -r test` for the whole workspace inside the Nix sandbox, with no
+  network access. `nix flake check` runs this.
+
+`@aer/schemas` and the internal test-utils package are intentionally not
+published or exposed as flake `packages` outputs: they are private,
+workspace-only dependencies used at dev/build time, never a runtime dependency
+of anything that ships.
 
 ## License
 
