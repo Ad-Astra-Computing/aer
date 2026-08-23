@@ -8,6 +8,7 @@
 import type { CollectorEvent } from '../session.js';
 import type { Attestor } from '../attestor.js';
 import { redactUrlPath } from '../redaction.js';
+import { responseBytesField } from './response-size.js';
 
 type Capture = (event: CollectorEvent) => void;
 
@@ -44,7 +45,7 @@ export function installFetchPatch(capture: Capture, attestor?: Attestor): () => 
     });
     // Attestation injection: HTTPS + configured protected hosts only. Build a
     // sender that attaches X-AER-Attestation; the default is the untouched call
-    // so non-protected traffic sees ZERO behavior change. Best-effort — any
+    // so non-protected traffic sees ZERO behavior change. Best-effort - any
     // failure falls through to the un-injected original.
     let send: () => Promise<Response> = () => original(input, init);
     if (attestor && meta.secure && meta.host !== 'unknown') {
@@ -84,7 +85,12 @@ export function installFetchPatch(capture: Capture, attestor?: Attestor): () => 
       const res = await send();
       safeCapture(capture, {
         event_type: 'http.completed',
-        payload: { host: meta.host, status: res.status, duration_ms: Date.now() - start },
+        payload: {
+          host: meta.host,
+          status: res.status,
+          duration_ms: Date.now() - start,
+          ...responseBytesField(res.headers.get('content-length')),
+        },
       });
       return res;
     } catch (err) {
@@ -188,7 +194,7 @@ function buildInjectedSender(
 
   const callerRedirect = init?.redirect ?? (isRequest ? (input as Request).redirect : undefined) ?? 'follow';
 
-  // Not following ('manual'/'error'): one injected request is safe — with no
+  // Not following ('manual'/'error'): one injected request is safe - with no
   // follow the token can't reach another origin. Respect the caller's mode.
   if (callerRedirect !== 'follow') {
     return () => original(input, { ...(init ?? {}), headers, redirect: callerRedirect });

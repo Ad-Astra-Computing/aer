@@ -12,7 +12,17 @@ let server: http.Server;
 let port: number;
 
 beforeAll(async () => {
-  server = http.createServer((_req, res) => { res.statusCode = 200; res.end('ok'); });
+  server = http.createServer((req, res) => {
+    if (req.url === '/chunked') {
+      // No Content-Length: multiple writes force Transfer-Encoding: chunked.
+      res.statusCode = 200;
+      res.write('a');
+      res.end('b');
+      return;
+    }
+    res.statusCode = 200;
+    res.end('ok'); // node sets Content-Length: 2 automatically for a single end()
+  });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   port = (server.address() as AddressInfo).port;
 });
@@ -53,11 +63,31 @@ describe('installHttpPatch', () => {
     uninstall();
   });
 
+  it('captures response_bytes from a Content-Length header', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installHttpPatch(capture);
+    const status = await get('/hello');
+    expect(status).toBe(200);
+    const done = events.find((e) => e.event_type === 'http.completed');
+    expect(done?.payload['response_bytes']).toBe(2);
+    uninstall();
+  });
+
+  it('omits response_bytes for a chunked response with no Content-Length', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installHttpPatch(capture);
+    const status = await get('/chunked');
+    expect(status).toBe(200);
+    const done = events.find((e) => e.event_type === 'http.completed');
+    expect('response_bytes' in (done?.payload ?? {})).toBe(false);
+    uninstall();
+  });
+
   it('emits an error completion when the connection fails', async () => {
     const { capture, events } = withCapture();
     const uninstall = installHttpPatch(capture);
     await new Promise<void>((resolve) => {
-      // port 1 is privileged/closed — connection refused
+      // port 1 is privileged/closed - connection refused
       const req = http.get({ host: '127.0.0.1', port: 1, path: '/' }, (res) => { res.resume(); resolve(); });
       req.on('error', () => resolve());
     });
@@ -217,7 +247,7 @@ describe('installHttpPatch attestation injection', () => {
   });
 
   it('follows options.hostname (not the URL) when both are present', () => {
-    // Node merges (url, options) with options winning — the socket connects to
+    // Node merges (url, options) with options winning - the socket connects to
     // options.hostname, so the token gate must too.
     const stub = stubModule(https);
     const att = fakeAttestor({ host: 'mcp.internal', token: 'jwt-1' });

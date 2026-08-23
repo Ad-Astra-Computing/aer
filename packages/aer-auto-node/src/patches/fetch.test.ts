@@ -5,7 +5,7 @@ import { createAttestor, type Attestor } from '../attestor.js';
 import type { EgressEnforcement, EgressOnUnavailable } from '../config.js';
 
 /**
- * Attestor for the patch tests — the REAL createAttestor wired to a fixed token,
+ * Attestor for the patch tests - the REAL createAttestor wired to a fixed token,
  * so resourceFor / evaluateEgress / counters are exercised end to end. Defaults
  * to enforcement 'off' (today's additive behavior).
  */
@@ -70,6 +70,30 @@ describe('installFetchPatch', () => {
     expect(types).toEqual(['http.requested', 'http.completed']);
     expect(events[0]?.payload).toMatchObject({ host: 'api.openai.com', method: 'POST' });
     expect(events[1]?.payload).toMatchObject({ host: 'api.openai.com', status: 200 });
+    uninstall();
+  });
+
+  it('captures response_bytes from a Content-Length header', async () => {
+    globalThis.fetch = (async () =>
+      new Response('ok', { status: 200, headers: { 'content-length': '2' } })) as unknown as typeof fetch;
+    const { capture, events } = withCapture();
+    const uninstall = installFetchPatch(capture);
+    await globalThis.fetch('https://x.test/');
+    const completed = events.find((e) => e.event_type === 'http.completed');
+    expect(completed?.payload['response_bytes']).toBe(2);
+    uninstall();
+  });
+
+  it('omits response_bytes when there is no Content-Length header (no body read)', async () => {
+    const orig = vi.fn(async () => new Response('ok', { status: 200 }));
+    globalThis.fetch = orig as unknown as typeof fetch;
+    const { capture, events } = withCapture();
+    const uninstall = installFetchPatch(capture);
+    const res = await globalThis.fetch('https://x.test/');
+    const completed = events.find((e) => e.event_type === 'http.completed');
+    expect('response_bytes' in (completed?.payload ?? {})).toBe(false);
+    // the response body must still be intact/unread by the patch
+    expect(await res.text()).toBe('ok');
     uninstall();
   });
 

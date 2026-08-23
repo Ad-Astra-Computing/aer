@@ -6,6 +6,13 @@ import type { CollectorEvent, SessionTransport } from './session.js';
 import type { Principal } from './config.js';
 import { newUuidV7 } from './uuid.js';
 
+/** Collector self-declaration for capability negotiation (all fields optional). */
+export interface CollectorInfo {
+  name?: string;
+  version?: string;
+  schema_capability?: string;
+}
+
 export interface HttpTransportOptions {
   baseUrl: string;
   apiKey?: string;
@@ -14,6 +21,8 @@ export interface HttpTransportOptions {
   envId?: string;
   agentVersion: string;
   principal?: Principal;
+  /** Collector identity + event-schema capability, sent at session create. */
+  collector?: CollectorInfo;
   fetchImpl?: typeof fetch;
   clock?: () => Date;
   newId?: () => string;
@@ -40,6 +49,9 @@ export function createHttpTransport(opts: HttpTransportOptions): SessionTranspor
         // Only include principal when configured, so a run without one sends the
         // exact same body as before (the API field is optional and .strict()).
         ...(opts.principal ? { principal: opts.principal } : {}),
+        // Likewise for the collector self-declaration (capability negotiation):
+        // omitted entirely when unset so the body stays byte-identical.
+        ...(opts.collector ? { collector: opts.collector } : {}),
       }),
     });
     if (!res.ok) {

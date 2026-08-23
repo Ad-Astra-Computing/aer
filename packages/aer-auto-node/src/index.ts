@@ -1,6 +1,6 @@
 // Programmatic API for the AER auto-instrumentation collector.
 //
-// Most users never import this — they load `@adastracomputing/aer-auto-node/register`
+// Most users never import this - they load `@adastracomputing/aer-auto-node/register`
 // and the collector wires itself in. This surface is for advanced control and
 // the manual escape hatch.
 
@@ -28,9 +28,9 @@ export type {
 } from './session.js';
 
 export { createHttpTransport } from './transport.js';
-export type { HttpTransportOptions } from './transport.js';
+export type { HttpTransportOptions, CollectorInfo } from './transport.js';
 
-export { createCollector, COLLECTOR_NAME, COLLECTOR_VERSION } from './collector.js';
+export { createCollector, COLLECTOR_NAME, COLLECTOR_VERSION, SCHEMA_CAPABILITY } from './collector.js';
 export type { Collector, WithSessionOpts } from './collector.js';
 
 // Usage-policy enforcement (P3 slice 2). AerPolicyError is thrown by the wrapped
