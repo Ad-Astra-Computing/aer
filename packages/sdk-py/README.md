@@ -8,8 +8,17 @@ Stdlib only, no dependencies. Python 3.10 or newer.
 
 ## Install
 
+From the repository:
+
 ```
-pip install aer-sdk
+pip install "git+https://github.com/Ad-Astra-Computing/aer.git#subdirectory=packages/sdk-py"
+```
+
+Or with Nix, use the repo flake's dev shell, which carries Python and the
+package's test tooling:
+
+```
+nix develop github:Ad-Astra-Computing/aer
 ```
 
 ## Use

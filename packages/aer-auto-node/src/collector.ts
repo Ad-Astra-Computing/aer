@@ -24,6 +24,9 @@ import { fetchUsagePolicy } from './policy-fetch.js';
 
 export const COLLECTOR_NAME = '@adastracomputing/aer-auto-node';
 export const COLLECTOR_VERSION = '0.2.0'; // keep in sync with package.json
+// Event-schema contract this collector build speaks. Declared at session create
+// so collector/API version skew is explicit rather than inferred at ingest.
+export const SCHEMA_CAPABILITY = 'aer-events.v1';
 
 /** Per-task identity overrides for withSession (server/task strategies). */
 export interface WithSessionOpts {
@@ -95,7 +98,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   // Snapshot the pristine global fetch BEFORE the transport patches install
   // (below). The collector's OWN wire traffic must never be re-instrumented: the
   // default process transport is built pre-patch, but withSession transports are
-  // built lazily AFTER patching and would otherwise capture the patched fetch —
+  // built lazily AFTER patching and would otherwise capture the patched fetch -
   // a self-instrumentation feedback loop (emit -> http.requested -> emit -> …).
   // Prefer the fetch patch's stashed original in case a prior collector patched.
   const stashedOriginalFetch = (globalThis as Record<symbol, unknown>)[Symbol.for('adastra.aer.original.fetch')];
@@ -177,6 +180,9 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       ...(envId !== undefined ? { envId } : {}),
       ...(principal !== undefined ? { principal } : {}),
       agentVersion: config.agentVersion,
+      // Declare this collector's identity + event-schema capability so the API
+      // records version skew explicitly (capability negotiation).
+      collector: { name: COLLECTOR_NAME, version: COLLECTOR_VERSION, schema_capability: SCHEMA_CAPABILITY },
       // Always send over the pristine fetch so the collector never instruments
       // its own traffic (matters for withSession transports built post-patch).
       ...(pristineFetch ? { fetchImpl: pristineFetch } : {}),
@@ -255,7 +261,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   }
   // Content-commitment option (ADR-011): parse the customer key once. When it is
   // absent or too short, `commit` stays undefined and NO commitments are emitted
-  // (no bare-hash fallback — an unkeyed tag would be a brute-force oracle).
+  // (no bare-hash fallback - an unkeyed tag would be a brute-force oracle).
   let commit: CommitOption | undefined;
   const commitKey = commitmentKeyFromString(config.commitmentKey);
   if (commitKey) commit = { key: commitKey, kid: deriveKid(commitKey) };
@@ -298,7 +304,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     getAttestationFor,
     peekAttestationFor,
     withSession,
-    // Lifecycle hooks call these on process exit — only the default session
+    // Lifecycle hooks call these on process exit - only the default session
     // needs closing (per-task sessions complete/abort inside withSession).
     complete: () => defaultSession ? defaultSession.complete() : Promise.resolve(),
     abort: () => defaultSession ? defaultSession.abort() : Promise.resolve(),

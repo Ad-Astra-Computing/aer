@@ -72,6 +72,26 @@ describe('createHttpTransport', () => {
     expect(calls[0]?.body).not.toHaveProperty('principal');
   });
 
+  it('open() includes the collector declaration in the body only when configured', async () => {
+    const { fetchImpl, calls } = fakeFetch([opened]);
+    const t = createHttpTransport({
+      baseUrl: 'https://aer-api.test/', apiKey: 'k', tenantId: 't-1', agentId: 'a-1',
+      envId: 'e-1', agentVersion: '9.9.9', fetchImpl,
+      collector: { name: '@adastracomputing/aer-auto-node', version: '0.2.0', schema_capability: 'aer-events.v1' },
+    });
+    await t.open();
+    expect(calls[0]?.body).toEqual({
+      tenant_id: 't-1', agent_id: 'a-1', agent_version: '9.9.9', environment_id: 'e-1',
+      collector: { name: '@adastracomputing/aer-auto-node', version: '0.2.0', schema_capability: 'aer-events.v1' },
+    });
+  });
+
+  it('open() omits the collector key entirely when unset (byte-identical body)', async () => {
+    const { fetchImpl, calls } = fakeFetch([opened]);
+    await makeTransport(fetchImpl).open();
+    expect(calls[0]?.body).not.toHaveProperty('collector');
+  });
+
   it('emit() stamps source_type=wrapper, ids, and timestamps, using the ingest token', async () => {
     const { fetchImpl, calls } = fakeFetch([opened, ok202]);
     const t = makeTransport(fetchImpl);
