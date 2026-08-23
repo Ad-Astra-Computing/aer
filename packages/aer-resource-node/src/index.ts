@@ -137,7 +137,19 @@ export async function verifyAttestation(token: string, opts: VerifyOptions): Pro
   // mistyped key entry can never be coerced into a different algorithm.
   if (jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519') throw new AttestationError('bad_key', 'unexpected_kty');
 
-  const ok = await verifyEd25519(b64urlToBytes(jwk.x), new TextEncoder().encode(`${h}.${p}`), b64urlToBytes(s));
+  // b64urlToBytes throws on non-base64url input; the signature segment is
+  // attacker-controlled. Map a decode failure to the typed malformed error so
+  // library consumers calling verify directly get AttestationError, never a
+  // raw decode throw.
+  let pubBytes: Uint8Array;
+  let sigBytes: Uint8Array;
+  try {
+    pubBytes = b64urlToBytes(jwk.x);
+    sigBytes = b64urlToBytes(s);
+  } catch {
+    throw new AttestationError('malformed');
+  }
+  const ok = await verifyEd25519(pubBytes, new TextEncoder().encode(`${h}.${p}`), sigBytes);
   if (!ok) throw new AttestationError('bad_signature');
 
   const claims = parseJson<AttestationClaims>(p);
