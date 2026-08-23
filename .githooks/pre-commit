@@ -1,0 +1,7 @@
+#!/bin/sh
+# Staged-file gate: house style, hygiene and secret shapes. Managed hook;
+# enable once with `git config core.hooksPath .githooks` (the repo's prepare
+# script does this on install).
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+node scripts/check-house-style.mjs $staged
