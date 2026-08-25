@@ -27,8 +27,12 @@ Using these packages requires an AER account. Request access at
 | `@adastracomputing/aer-emit` | Shared best-effort emit core used by the recorder and hooks. | [npm](https://www.npmjs.com/package/@adastracomputing/aer-emit) |
 | `@adastracomputing/aer-sdk-ts` | TypeScript SDK for emitting agent execution events directly. | [npm](https://www.npmjs.com/package/@adastracomputing/aer-sdk-ts) |
 
-The Python SDK ships from this repository too: `aer-sdk` on PyPI (import
-`aer_sdk`), published by CI when an `aer-sdk-v*` tag is pushed.
+The Python SDK lives in [`packages/sdk-py`](./packages/sdk-py) (import
+`aer_sdk`). Install it straight from the repository:
+
+```sh
+pip install "git+https://github.com/Ad-Astra-Computing/aer.git#subdirectory=packages/sdk-py"
+```
 
 ## Quickstart
 
@@ -47,7 +51,7 @@ node --import @adastracomputing/aer-auto-node/register your-agent.js
 ## Development
 
 With [Nix](https://nixos.org), `nix develop` gives a shell with Node, pnpm and
-Python (for the SDK below). Otherwise install Node 20+ and pnpm 10 yourself.
+Python (for the Python SDK). Otherwise install Node 20+ and pnpm 10 yourself.
 
 ```sh
 pnpm install
