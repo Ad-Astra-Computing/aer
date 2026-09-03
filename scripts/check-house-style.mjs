@@ -65,7 +65,14 @@ for (const file of files) {
     }
     INVISIBLE.lastIndex = 0;
 
-    if (EM_DASH.test(ln)) {
+    // An em dash standing entirely on its own is a GLYPH, not prose: it is the
+    // typographic placeholder for an empty table cell or an absent value.
+    // Strip the glyph forms first, then judge whatever em dash is left.
+    const withoutGlyphs = ln
+      .replace(/(['"])—(?:\s[A-Za-z]{1,8})?\1/g, '$1$1')
+      .replace(/>\s*—\s*</g, '><');
+
+    if (EM_DASH.test(withoutGlyphs)) {
       EM_DASH.lastIndex = 0;
       const isProse = PROSE_EXT.test(file);
       const isComment = /^\s*(?:\/\/|\*|#)/.test(ln);
