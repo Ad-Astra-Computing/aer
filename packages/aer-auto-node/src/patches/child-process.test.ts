@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import cp from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { installChildProcessPatch } from './child-process.js';
 import type { CollectorEvent } from '../session.js';
 
@@ -84,6 +85,88 @@ describe('installChildProcessPatch', () => {
       child.on('error', reject);
     });
     expect(code).toBe(0);
+    uninstall();
+  });
+
+  // Node's own `exec()` internally calls `module.exports.execFile` - which, once
+  // patched, IS the wrapped execFile. Without a reentrancy guard that produces a
+  // SECOND process.exec event for the same call, and that second event takes the
+  // non-shell code path: `basename(fullString)` on the whole exec command string
+  // (keeping every flag/secret after the last path separator) with args[1] being
+  // an options object (so redactArgs sees []). This is a real secret leak.
+  it('captures exactly ONE process.exec event for exec() and never leaks the raw command/flags', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+
+    await new Promise<void>((resolve) => {
+      cp.exec('deploy.sh --token=sk-live-12345 target', () => resolve());
+    });
+
+    const execEvents = events.filter((e) => e.event_type === 'process.exec');
+    expect(execEvents).toHaveLength(1);
+    expect(execEvents[0]?.payload['command']).toBe('deploy.sh');
+    const dump = JSON.stringify(events);
+    expect(dump).not.toContain('sk-live-12345');
+    expect(dump).not.toContain('--token');
+    uninstall();
+  });
+
+  it('captures exactly ONE process.exec event for exec() with a path command and never leaks flags', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+
+    await new Promise<void>((resolve) => {
+      cp.exec('/usr/local/bin/run.sh --pw=hunter2', () => resolve());
+    });
+
+    const execEvents = events.filter((e) => e.event_type === 'process.exec');
+    expect(execEvents).toHaveLength(1);
+    expect(execEvents[0]?.payload['command']).toBe('run.sh');
+    const dump = JSON.stringify(events);
+    expect(dump).not.toContain('hunter2');
+    expect(dump).not.toContain('--pw');
+    uninstall();
+  });
+
+  it('still captures exactly one event each for spawn/execFile/fork with array args', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+
+    await new Promise<void>((resolve, reject) => {
+      const child = cp.spawn(process.execPath, ['-e', 'process.exit(0)']);
+      child.on('exit', () => resolve());
+      child.on('error', reject);
+    });
+    await new Promise<void>((resolve, reject) => {
+      cp.execFile(process.execPath, ['-e', 'process.exit(0)'], () => resolve());
+    });
+
+    const execEvents = events.filter((e) => e.event_type === 'process.exec');
+    expect(execEvents).toHaveLength(2);
+    for (const e of execEvents) {
+      expect(e.payload['command']).toBe('node');
+      expect(String(e.payload['args_redacted'])).toContain('redacted');
+    }
+    uninstall();
+  });
+
+  it('exec() callback semantics still work and exit is captured exactly once', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+
+    const child = await new Promise<ChildProcess>((resolve) => {
+      const c = cp.exec(`${process.execPath} -e "process.exit(0)"`, () => {
+        resolve(c);
+      });
+    });
+    expect(child).toBeDefined();
+
+    // Give any (incorrect) duplicate exit listeners a chance to fire.
+    await new Promise((r) => setTimeout(r, 20));
+
+    const exitEvents = events.filter((e) => e.event_type === 'process.exit');
+    expect(exitEvents).toHaveLength(1);
+    expect(exitEvents[0]?.payload['exit_code']).toBe(0);
     uninstall();
   });
 });

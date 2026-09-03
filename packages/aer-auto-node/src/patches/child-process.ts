@@ -23,6 +23,19 @@ type CmdKind = 'spawn' | 'exec' | 'execFile' | 'fork';
 // captured as the command.
 const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+// Reentrancy guard: Node's own `exec()` internally invokes
+// `module.exports.execFile` under the hood. Once execFile is patched, that
+// internal call goes through OUR wrapper too, producing a second
+// process.exec capture for the same logical call - and that second capture
+// takes the non-exec (array-args) code path, where `basename()` is applied
+// to the WHOLE exec command string (so trailing flags/secrets survive) and
+// `args[1]` is an options object, not an argv array (so redaction sees
+// nothing to redact). A single module-level flag is sufficient because the
+// nested execFile call happens SYNCHRONOUSLY inside `original.apply` below
+// (Node builds the child_process object before returning), so there is no
+// window for a concurrent, unrelated call to slip in between set and clear.
+let inWrappedCall = false;
+
 export function installChildProcessPatch(capture: Capture): () => void {
   const slot = globalThis as unknown as PatchSlot;
   if (slot[PATCHED]) return noop;
@@ -33,14 +46,26 @@ export function installChildProcessPatch(capture: Capture): () => void {
 
   const wrap = (original: (...a: never[]) => unknown, kind: CmdKind) =>
     function wrapped(this: unknown, ...args: unknown[]): unknown {
+      if (inWrappedCall) {
+        // Nested call from inside another wrapped call (e.g. exec -> execFile
+        // internally) - already captured at the outer level. Just pass through.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (original as any).apply(this, args);
+      }
       const meta = safeExtract(kind, args);
       const start = Date.now();
       safeCapture(capture, {
         event_type: 'process.exec',
         payload: { command: meta.command, args_redacted: meta.argsRedacted },
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const child = (original as any).apply(this, args) as ChildProcess;
+      let child: ChildProcess;
+      inWrappedCall = true;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        child = (original as any).apply(this, args) as ChildProcess;
+      } finally {
+        inWrappedCall = false;
+      }
       try {
         child.once?.('exit', (code: number | null) => {
           safeCapture(capture, {
