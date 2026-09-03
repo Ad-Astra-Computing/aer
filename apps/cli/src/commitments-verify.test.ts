@@ -134,9 +134,13 @@ describe('runCommitmentsVerify (runner)', () => {
       expect(String(url)).toContain(`/v1/keys/${kid}`);
       return new Response(JSON.stringify({ signing_key_id: kid, sig_alg: 'Ed25519', public_key_hex: publicKeyHex }), { status: 200 });
     }) as unknown as typeof fetch;
+    // Same as `aer verify`: the signing key must be PINNED for verified:true.
+    // Without a trust root override the builtin root doesn't know this
+    // test-generated key, so the CLI's default fail-closed behavior applies.
+    const trustRoot = { aerSigningKeys: [{ signing_key_id: kid, public_key_hex: publicKeyHex }], rekorLogs: [] };
     const { result, exitCode } = await runCommitmentsVerify(
       ['--requests', 'reqs.json', '--bundle', 'bundle.json'],
-      { baseUrl: 'https://api.test', commitmentKey: KEY_HEX, readFile: async (p) => files[p]!, fetchImpl },
+      { baseUrl: 'https://api.test', commitmentKey: KEY_HEX, readFile: async (p) => files[p]!, fetchImpl, trustRoot },
     );
     expect(result.bundle_verified).toBe(true);
     expect(result.bundle_signature?.signature_valid).toBe(true);
@@ -164,11 +168,31 @@ describe('runCommitmentsVerify (runner)', () => {
       if (u.includes('/v1/aers/aer-9/bundle')) return new Response(JSON.stringify(signed), { status: 200 });
       return new Response(JSON.stringify({ signing_key_id: kid, sig_alg: 'Ed25519', public_key_hex: publicKeyHex }), { status: 200 });
     }) as unknown as typeof fetch;
+    const trustRoot = { aerSigningKeys: [{ signing_key_id: kid, public_key_hex: publicKeyHex }], rekorLogs: [] };
     const { result } = await runCommitmentsVerify(
       ['--requests', 'reqs.json', '--aer', 'aer-9'],
-      { baseUrl: 'https://api.test', commitmentKey: KEY_HEX, readFile: async () => REQS, fetchImpl },
+      { baseUrl: 'https://api.test', commitmentKey: KEY_HEX, readFile: async () => REQS, fetchImpl, trustRoot },
     );
     expect(result.all_matched).toBe(true);
+  });
+
+  it('fails with the SAME key_not_pinned reason as `aer verify` for a mathematically-valid signature under an unpinned key (blocker parity)', async () => {
+    const { signed, publicKeyHex, kid } = await signBundle(unsignedBundle([commitmentFor(KEY, REQUEST)]));
+    const files: Record<string, string> = { 'reqs.json': REQS, 'bundle.json': JSON.stringify(signed) };
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ signing_key_id: kid, sig_alg: 'Ed25519', public_key_hex: publicKeyHex }), { status: 200 })
+    ) as unknown as typeof fetch;
+    // No trustRoot override → falls back to the builtin root, which does not pin
+    // this freshly-generated test key. Mirrors verify.test.ts's blocker-2 case.
+    const { result, exitCode } = await runCommitmentsVerify(
+      ['--requests', 'reqs.json', '--bundle', 'bundle.json'],
+      { baseUrl: 'https://api.test', commitmentKey: KEY_HEX, readFile: async (p) => files[p]!, fetchImpl },
+    );
+    expect(result.bundle_signature?.signature_valid).toBe(true); // mathematically valid…
+    expect(result.bundle_signature?.reason).toBe('key_not_pinned'); // …but untrusted, same as `aer verify`
+    expect(result.bundle_verified).toBe(false);
+    expect(result.all_matched).toBe(false);
+    expect(exitCode).toBe(1);
   });
 
   it('throws (no partial output) when the key is missing', async () => {
