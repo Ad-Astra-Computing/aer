@@ -188,8 +188,9 @@ describe('runCommitmentsVerify (runner)', () => {
       ['--requests', 'reqs.json', '--bundle', 'bundle.json'],
       { baseUrl: 'https://api.test', commitmentKey: KEY_HEX, readFile: async (p) => files[p]!, fetchImpl },
     );
-    expect(result.bundle_signature?.signature_valid).toBe(true); // mathematically valid…
-    expect(result.bundle_signature?.reason).toBe('key_not_pinned'); // …but untrusted, same as `aer verify`
+    // Signature is mathematically valid but the key is not pinned, same as `aer verify`.
+    expect(result.bundle_signature?.signature_valid).toBe(true);
+    expect(result.bundle_signature?.reason).toBe('key_not_pinned');
     expect(result.bundle_verified).toBe(false);
     expect(result.all_matched).toBe(false);
     expect(exitCode).toBe(1);
