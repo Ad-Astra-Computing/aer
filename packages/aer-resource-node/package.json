@@ -73,7 +73,7 @@
     "@aer-oss/attestation-test-utils": "workspace:*",
     "@types/express": "^5.0.0",
     "@types/node": "^26.1.2",
-    "hono": "^4.12.25",
+    "hono": "^4.13.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
