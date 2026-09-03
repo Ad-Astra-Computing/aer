@@ -36,9 +36,9 @@ jobs:
       - name: Version or publish
         uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
-          version: pnpm run version-packages
-          publish: pnpm release
-          commit: "release: version packages"
-          title: "release: version packages"
+          version-script: pnpm run version-packages
+          publish-script: pnpm release
+          commit-message: "release: version packages"
+          pr-title: "release: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
