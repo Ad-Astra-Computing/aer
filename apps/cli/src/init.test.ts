@@ -91,6 +91,29 @@ describe('planInit — files + wiring', () => {
     const cfg = plan.files.find((f) => f.path.endsWith('aer.config.json'));
     expect(cfg?.action).toBe('skip');
   });
+
+  it('--entry wires the named script even if it is not auto-detected as runnable', () => {
+    const fs = memFs({ '/proj/package.json': pkg({ scripts: { start: 'node dist/main.js', worker: 'node dist/worker.js' } }) });
+    const plan = planInit(fs, { cwd: CWD, entry: 'worker' });
+    const change = plan.scriptChanges.find((s) => s.script === 'worker');
+    expect(change?.after).toContain('--import @adastracomputing/aer-auto-node/register');
+    expect(change?.after).toContain('node dist/worker.js');
+    expect(plan.manifest.entrypoints).toEqual(['worker']);
+    expect(plan.manifest.files_changed).toContain('package.json');
+  });
+
+  it('--entry with an unknown script throws a clear error instead of silently succeeding', () => {
+    const fs = memFs({ '/proj/package.json': pkg({ scripts: { start: 'node dist/main.js' } }) });
+    expect(() => planInit(fs, { cwd: CWD, entry: 'does-not-exist' })).toThrow(/does-not-exist/);
+  });
+
+  it('does not claim package.json changed when there is nothing to wire', () => {
+    // No runnable entrypoints detected and no --entry given.
+    const fs = memFs({ '/proj/package.json': pkg({ scripts: { test: 'vitest' } }) });
+    const plan = planInit(fs, { cwd: CWD });
+    expect(plan.scriptChanges).toHaveLength(0);
+    expect(plan.manifest.files_changed).not.toContain('package.json');
+  });
 });
 
 describe('applyInit', () => {
@@ -133,5 +156,19 @@ describe('runDoctor', () => {
     expect(failed).toContain('register_wired');
     expect(failed).toContain('config_present');
     expect(failed).toContain('api_key_present');
+  });
+
+  it('accepts AER_TENANT_API_KEY as a fallback for api_key_present (matches the live tenant-auth check + help text)', () => {
+    const fs = memFs({
+      '/proj/package.json': JSON.stringify({
+        scripts: { start: 'NODE_OPTIONS="--import @adastracomputing/aer-auto-node/register" node dist/main.js' },
+        devDependencies: { '@adastracomputing/aer-auto-node': 'workspace:*' },
+      }),
+      '/proj/aer.config.json': JSON.stringify({ schema: 'aer.config.v1', tenant_id: 't', agent_id: 'a', env_id: 'e' }),
+    });
+    const report = runDoctor(fs, { cwd: CWD, env: { AER_TENANT_API_KEY: 'k' } });
+    const apiKeyCheck = report.checks.find((c) => c.name === 'api_key_present');
+    expect(apiKeyCheck?.ok).toBe(true);
+    expect(report.ok).toBe(true);
   });
 });

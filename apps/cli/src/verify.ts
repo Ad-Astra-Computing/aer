@@ -84,6 +84,12 @@ export async function verifyBundleSignature(
   bundle: Record<string, unknown>,
   baseUrl: string,
   fetchImpl: typeof fetch,
+  // Same fail-closed trust root `aer verify` enforces (defaults to the
+  // builtin pinned root). Without this, a signature that only checks out
+  // against a key served by the very host under scrutiny proves
+  // self-consistency, not trusted provenance - `commitments verify` must not
+  // silently accept weaker key trust than `verify` does.
+  trustRoot: ReturnType<typeof builtinTrustRoot> = builtinTrustRoot(),
 ): Promise<BundleSignatureResult> {
   const base = baseUrl.replace(/\/$/, '');
   const integrity = bundle['integrity'] as AerBundle['integrity'] | undefined;
@@ -97,7 +103,7 @@ export async function verifyBundleSignature(
   }
   const keyData = (await keyRes.json()) as KeyResponse;
 
-  const res = await verifyAerBundle(bundle, { publicKeyHex: keyData.public_key_hex });
+  const res = await verifyAerBundle(bundle, { publicKeyHex: keyData.public_key_hex, pinnedKeys: trustRoot.aerSigningKeys });
 
   const out: BundleSignatureResult = {
     hash_match: res.checks.hash_match,

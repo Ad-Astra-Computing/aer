@@ -139,7 +139,7 @@ export function planInit(fs: FsLike, opts: InitOptions): InitPlan {
 
   const envPath = join(cwd, '.env.example');
   const envContent = [
-    '# AER — the ONLY secret. Everything else lives in aer.config.json.',
+    '# AER - the ONLY secret. Everything else lives in aer.config.json.',
     'AER_API_KEY=',
     '',
     '# Optional CI overrides for the non-secret identity in aer.config.json:',
@@ -161,6 +161,15 @@ export function planInit(fs: FsLike, opts: InitOptions): InitPlan {
   // ── script wiring ──────────────────────────────────────────────────────────
   const pkg = readJson(fs, join(cwd, 'package.json')) ?? {};
   const scripts = (pkg['scripts'] as Record<string, string> | undefined) ?? {};
+  // --entry names a SPECIFIC script; unlike the auto-detected entrypoints
+  // (which are just a best-effort guess, silently skipped if absent), a
+  // user-supplied --entry that does not exist is almost certainly a typo and
+  // must fail loudly rather than silently produce a no-op "success".
+  if (opts.entry !== undefined && !(opts.entry in scripts)) {
+    throw new Error(
+      `--entry "${opts.entry}" not found in package.json scripts (available: ${Object.keys(scripts).join(', ') || 'none'})`,
+    );
+  }
   const targets = opts.entry ? [opts.entry] : det.entrypoints;
   const scriptChanges: ScriptChange[] = [];
   for (const name of targets) {
@@ -185,7 +194,13 @@ export function planInit(fs: FsLike, opts: InitOptions): InitPlan {
   }
 
   // ── manifest ─────────────────────────────────────────────────────────────
-  const filesChanged = ['package.json', ...files.filter((f) => f.action !== 'skip').map((f) => f.path.slice(cwd.length + 1))];
+  // package.json is only actually written when there is at least one script
+  // to wire - listing it unconditionally previously claimed a change that
+  // never happened (e.g. an unmatched --entry with no other pending edits).
+  const filesChanged = [
+    ...(scriptChanges.length > 0 ? ['package.json'] : []),
+    ...files.filter((f) => f.action !== 'skip').map((f) => f.path.slice(cwd.length + 1)),
+  ];
   const manifest: IntegrationManifest = {
     schema: 'aer.integration.v1',
     runtime: 'node',
@@ -258,11 +273,15 @@ export function runDoctor(fs: FsLike, opts: DoctorOptions): DoctorReport {
     detail: cfgOk ? 'aer.config.json has tenant/agent/env identity' : 'aer.config.json missing or has placeholder identity',
   });
 
-  const keyOk = !!opts.env['AER_API_KEY'];
+  // Accept AER_TENANT_API_KEY as a fallback: the live tenant-auth check
+  // (runLiveChecks in doctor-live.ts) and the CLI help text both already
+  // treat the two as interchangeable - this config-only check must agree,
+  // or `aer doctor` can report a false failure while auth itself succeeds.
+  const keyOk = !!(opts.env['AER_API_KEY'] ?? opts.env['AER_TENANT_API_KEY']);
   checks.push({
     name: 'api_key_present',
     ok: keyOk,
-    detail: keyOk ? 'AER_API_KEY is set' : 'export AER_API_KEY=<key> (the only secret)',
+    detail: keyOk ? 'API key is set' : 'export AER_API_KEY=<key> (or AER_TENANT_API_KEY)',
   });
 
   return { ok: checks.every((c) => c.ok), checks };
@@ -311,7 +330,7 @@ function buildAgentsSection(): string {
     'This project uses `@adastracomputing/aer-auto-node`. The collector loads via',
     '`--import @adastracomputing/aer-auto-node/register` (wired into the run scripts).',
     'Set `AER_API_KEY` (the only secret); identity is in `aer.config.json`.',
-    'Verify with `npx @adastracomputing/aer doctor`. Do not add manual `emit()` calls —',
+    'Verify with `npx @adastracomputing/aer doctor`. Do not add manual `emit()` calls -',
     'capture is automatic.',
     '',
   ].join('\n');

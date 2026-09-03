@@ -18,6 +18,7 @@ import {
   tagsEqual,
   type CanonRequest,
 } from '@adastracomputing/aer-auto-node/commitment';
+import { builtinTrustRoot } from '@adastracomputing/aer-verify';
 import { verifyBundleSignature, type BundleSignatureResult } from './verify.js';
 
 // One request the customer wants to prove was recorded. `request` is the request
@@ -185,6 +186,8 @@ export interface RunCommitmentsVerifyOptions {
   commitmentKey?: string | undefined; // AER_COMMITMENT_KEY (never logged)
   fetchImpl?: typeof fetch;
   readFile?: (p: string) => Promise<string>;
+  /** Same pinned-key trust root `aer verify` enforces; defaults to the builtin root. */
+  trustRoot?: ReturnType<typeof builtinTrustRoot>;
 }
 
 export interface ParsedArgs {
@@ -265,7 +268,7 @@ export async function runCommitmentsVerify(
   // commitment. A tag match against unsigned/tampered JSON proves nothing - only
   // that the plaintext matches a tag someone wrote. The public signing key is
   // fetched from the public /v1/keys endpoint (not a secret). Fail closed.
-  const sig = await verifyBundleSignature(bundle as Record<string, unknown>, opts.baseUrl, fetchImpl);
+  const sig = await verifyBundleSignature(bundle as Record<string, unknown>, opts.baseUrl, fetchImpl, opts.trustRoot ?? builtinTrustRoot());
 
   const result = verifyCommitments(bundle, key, inputs, sig.verified);
   result.bundle_signature = sig;
