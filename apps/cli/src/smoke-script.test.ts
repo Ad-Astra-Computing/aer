@@ -8,7 +8,7 @@ describe('buildSmokeScript', () => {
     expect(script).toContain('https://api.aer.run/healthz');
   });
 
-  it('does not mix top-level await with require — the exact cause of ERR_AMBIGUOUS_MODULE_SYNTAX', () => {
+  it('does not mix top-level await with require, the exact cause of ERR_AMBIGUOUS_MODULE_SYNTAX', () => {
     const script = buildSmokeScript('https://api.aer.run');
     // The await must be inside a function (IIFE), not top-level.
     expect(script.trim().startsWith('(async () => {') || script.trim().startsWith('(async()=>{')).toBe(true);
