@@ -7,6 +7,8 @@ import { ingestJsonlStream } from './ingest.js';
 import { runClaudeCodeImport } from './import/run.js';
 import { verifyAer } from './verify.js';
 import { runCommitmentsVerify } from './commitments-verify.js';
+import { buildSmokeScript } from './smoke-script.js';
+import { formatCliError } from './cli-error.js';
 import {
   listWebhooks,
   createWebhook,
@@ -198,8 +200,7 @@ async function cmdSmoke(): Promise<void> {
   }
   const cfg = JSON.parse(realFs.readFile(`${process.cwd()}/aer.config.json`) ?? '{}') as { base_url?: string };
   const target = process.env['AER_BASE_URL'] ?? cfg.base_url ?? 'https://api.aer.run';
-  const script = `await fetch(${JSON.stringify(target + '/healthz')}).catch(()=>{});` +
-    `require('node:child_process').spawnSync(process.execPath,['-e','0']);`;
+  const script = buildSmokeScript(target);
   const code: number = await new Promise((resolve) => {
     const child = spawn(process.execPath, ['--import', REGISTER, '-e', script], { stdio: 'inherit' });
     child.on('exit', (c) => resolve(c ?? -1));
@@ -238,14 +239,19 @@ async function main(): Promise<void> {
 
     // '-' means read from stdin; otherwise treat as a file path
     const stream = file === '-' ? process.stdin : createReadStream(file);
-    const summary = await ingestJsonlStream({
-      stream,
-      baseUrl,
-      sessionId,
-      token,
-      ...(batchSize !== undefined ? { batchSize } : {}),
-    });
-    console.log(JSON.stringify(summary, null, 2));
+    try {
+      const summary = await ingestJsonlStream({
+        stream,
+        baseUrl,
+        sessionId,
+        token,
+        ...(batchSize !== undefined ? { batchSize } : {}),
+      });
+      console.log(JSON.stringify(summary, null, 2));
+    } catch (err) {
+      console.error(formatCliError(err));
+      process.exit(1);
+    }
     return;
   }
 
@@ -325,9 +331,14 @@ async function main(): Promise<void> {
     const aerId = sub;
     if (!aerId || !baseUrl) usage();
 
-    const result = await verifyAer({ baseUrl, aerId });
-    console.log(JSON.stringify(result, null, 2));
-    if (!result.verified) process.exit(1);
+    try {
+      const result = await verifyAer({ baseUrl, aerId });
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.verified) process.exit(1);
+    } catch (err) {
+      console.error(formatCliError(err));
+      process.exit(1);
+    }
     return;
   }
 
@@ -529,6 +540,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(formatCliError(err));
   process.exit(1);
 });
