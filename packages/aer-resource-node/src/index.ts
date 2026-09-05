@@ -3,8 +3,11 @@
 // EdDSA verify + base64url (no JOSE). Hono/Express middleware are optional
 // subpath exports (./hono, ./express).
 
+// DEFAULT_ISSUER is a stable identifier that matches the `iss` claim AER
+// mints into every attestation token. It is not a URL to fetch: keep it as
+// written even after the control-plane host below changes.
 export const DEFAULT_ISSUER = 'https://aer-api.adastra.computer';
-export const DEFAULT_JWKS_URL = 'https://aer-api.adastra.computer/.well-known/aer-attestation-jwks.json';
+export const DEFAULT_JWKS_URL = 'https://api.aer.run/.well-known/aer-attestation-jwks.json';
 export const ATTESTATION_TYP = 'aer-attestation+jwt';
 
 export interface AttestationClaims {

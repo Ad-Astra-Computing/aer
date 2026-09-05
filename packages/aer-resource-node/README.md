@@ -8,13 +8,13 @@ requests without a valid token are denied.
 Zero runtime dependencies. The Hono/Express middleware are optional subpath
 exports.
 
+ESM only: use `import`, not `require`. Requires Node 20 or newer.
+
 ## Install
 
 ```
 npm install @adastracomputing/aer-resource-node
 ```
-
-Requires Node 20 or newer.
 
 ## Verify a token
 
@@ -29,11 +29,13 @@ try {
 }
 ```
 
-Defaults: `issuer` and `jwksUrl` point at `aer-api.adastra.computer`, the
-attestation token issuer. This is a stable cryptographic identifier and is
-intentionally distinct from the `api.aer.run` control-plane host; leave the
-defaults alone unless AER announces an issuer change. 30s clock tolerance.
-JWKS is cached (honoring `max-age`) and refetched on an unknown `kid`.
+Defaults: `issuer` defaults to `https://aer-api.adastra.computer`. This is an
+identifier, not a URL: it is the exact `iss` string AER mints into every
+attestation token, and it stays fixed even though it does not match the
+control-plane host. Leave it alone unless AER announces an issuer change.
+`jwksUrl` defaults to `https://api.aer.run/.well-known/aer-attestation-jwks.json`,
+the canonical AER API host. 30s clock tolerance. JWKS is cached (honoring
+`max-age`) and refetched on an unknown `kid`.
 
 ## Revocation check (optional introspection)
 
