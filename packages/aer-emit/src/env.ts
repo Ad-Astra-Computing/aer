@@ -16,8 +16,9 @@ export interface SinkEnvOverrides {
 
 /**
  * Build an EventSink from AER_* env vars, or NullSink when unconfigured. Reads
- * AER_API_KEY / AER_TENANT_ID / AER_AGENT_ID / AER_ENV_ID / AER_BASE_URL /
- * AER_AGENT_VERSION and AER_PRINCIPAL_ID / _KIND / _DISPLAY.
+ * AER_API_KEY (or AER_TENANT_API_KEY as a fallback) / AER_TENANT_ID /
+ * AER_AGENT_ID / AER_ENV_ID / AER_BASE_URL / AER_AGENT_VERSION and
+ * AER_PRINCIPAL_ID / _KIND / _DISPLAY.
  */
 /**
  * Resolve HttpSinkOptions from AER_* env vars, or null when unconfigured. Lets a
@@ -29,7 +30,9 @@ export function resolveSinkOptionsFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   overrides: SinkEnvOverrides = {},
 ): HttpSinkOptions | null {
-  const apiKey = env['AER_API_KEY'];
+  // AER_TENANT_API_KEY is accepted as a fallback name for the same secret;
+  // the CLI and this ecosystem's docs use both names interchangeably.
+  const apiKey = env['AER_API_KEY'] ?? env['AER_TENANT_API_KEY'];
   const tenantId = env['AER_TENANT_ID'];
   const agentId = env['AER_AGENT_ID'];
   if (!apiKey || !tenantId || !agentId) return null;

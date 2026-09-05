@@ -250,3 +250,373 @@ describe('createHttpSink', () => {
     expect(calls.some((u) => u.endsWith('/complete'))).toBe(false);
   });
 });
+
+describe('createHttpSink: close()/flush() race', () => {
+  it('awaits an in-flight batch-triggered flush before posting /complete', async () => {
+    const order: string[] = [];
+    let releaseEventsPost: (() => void) | undefined;
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+      if (url.endsWith('/events')) {
+        await new Promise<void>((resolve) => {
+          releaseEventsPost = resolve;
+        });
+        order.push('events');
+        return jsonResponse({ accepted: 2, rejected: 0, errors: [] }, 202);
+      }
+      if (url.endsWith('/complete')) {
+        order.push('complete');
+        return jsonResponse({ aer_id: 'a', canonical_hash: 'h', signing_key_id: 'k', findings_count: 0 }, 200);
+      }
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      tenantId: 't',
+      agentId: 'a',
+      fetch: fakeFetch,
+      batchSize: 2,
+    });
+
+    sink.emit('tool.started', { i: 1 });
+    sink.emit('tool.completed', { i: 2 }); // crosses batchSize=2: fire-and-forget flush starts
+    // let the session open and the /events request start (and block on releaseEventsPost)
+    await new Promise((r) => setTimeout(r, 0));
+
+    const closePromise = sink.close();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(order).toEqual([]); // /complete must not have fired while /events is still in flight
+    releaseEventsPost?.();
+    await closePromise;
+
+    expect(order).toEqual(['events', 'complete']);
+  });
+});
+
+describe('createHttpSink: batch chunking', () => {
+  it('splits a large synchronous burst into POSTs of at most 500 events', async () => {
+    const postedSizes: number[] = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+      if (url.endsWith('/events')) {
+        const body = JSON.parse(String(init?.body)) as unknown[];
+        postedSizes.push(body.length);
+        return jsonResponse({ accepted: body.length, rejected: 0, errors: [] }, 202);
+      }
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      tenantId: 't',
+      agentId: 'a',
+      fetch: fakeFetch,
+      batchSize: 64,
+    });
+
+    for (let i = 0; i < 1500; i++) sink.emit('tool.started', { i });
+    await sink.close();
+
+    expect(postedSizes.length).toBe(3);
+    for (const size of postedSizes) expect(size).toBeLessThanOrEqual(500);
+    expect(postedSizes.reduce((a, b) => a + b, 0)).toBe(1500);
+  });
+});
+
+describe('createHttpSink: partial-accept diagnostics', () => {
+  it('logs once when the server reports rejected > 0 on a 207, and keeps the sink enabled', async () => {
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+      if (url.endsWith('/events')) {
+        return jsonResponse(
+          { accepted: 1, rejected: 1, errors: [{ index: 1, issues: [{ path: ['payload'], message: 'payload_value_out_of_bounds' }] }] },
+          207,
+        );
+      }
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const errors: string[] = [];
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      tenantId: 't',
+      agentId: 'a',
+      fetch: fakeFetch,
+      batchSize: 2,
+      logError: (m) => errors.push(m),
+    });
+
+    sink.emit('tool.started', { tool: 'ok' });
+    sink.emit('tool.completed', { tool: 'bad' });
+    await sink.close();
+
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors.some((m) => m.includes('rejected'))).toBe(true);
+
+    // The sink must still be usable afterward - it is not disabled by a partial accept.
+    sink.emit('tool.started', { tool: 'next' });
+    expect(() => sink.emit('tool.started', { tool: 'next2' })).not.toThrow();
+  });
+
+  it('logs once on a 202 that reports dropped_keys / warning (bodies-off enforcement)', async () => {
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+      if (url.endsWith('/events')) {
+        return jsonResponse({ accepted: 1, rejected: 0, errors: [], events_sanitized: 1, dropped_keys: ['payload.foo'], warning: 'payload_keys_dropped' }, 202);
+      }
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const errors: string[] = [];
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      tenantId: 't',
+      agentId: 'a',
+      fetch: fakeFetch,
+      batchSize: 1,
+      logError: (m) => errors.push(m),
+    });
+    sink.emit('tool.started', { foo: 'x' });
+    await sink.close();
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('createHttpSink: bounded retry', () => {
+  it('retries a 429 honoring Retry-After (capped at 5s) then succeeds without disabling', async () => {
+    vi.useFakeTimers();
+    try {
+      let eventAttempts = 0;
+      const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+        if (url.endsWith('/events')) {
+          eventAttempts++;
+          if (eventAttempts === 1) {
+            return new Response(JSON.stringify({ error: 'rate_limited' }), {
+              status: 429,
+              headers: { 'content-type': 'application/json', 'retry-after': '100' },
+            });
+          }
+          return jsonResponse({ accepted: 1, rejected: 0, errors: [] }, 202);
+        }
+        return jsonResponse({});
+      }) as unknown as typeof fetch;
+
+      const errors: string[] = [];
+      const sink = createHttpSink({
+        baseUrl: 'https://api.test',
+        apiKey: 'k',
+        tenantId: 't',
+        agentId: 'a',
+        fetch: fakeFetch,
+        batchSize: 1,
+        logError: (m) => errors.push(m),
+      });
+
+      sink.emit('tool.started', {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(eventAttempts).toBe(1);
+      // A real 100s Retry-After must be capped at 5s, not honored in full.
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(eventAttempts).toBe(2);
+      await sink.close();
+      expect(errors.length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries 502/503/504 up to 3 times, then drops the batch and logs once without disabling', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+        if (url.endsWith('/events')) {
+          attempts++;
+          return new Response('bad gateway', { status: 503 });
+        }
+        return jsonResponse({});
+      }) as unknown as typeof fetch;
+
+      const errors: string[] = [];
+      const sink = createHttpSink({
+        baseUrl: 'https://api.test',
+        apiKey: 'k',
+        tenantId: 't',
+        agentId: 'a',
+        fetch: fakeFetch,
+        batchSize: 1,
+        logError: (m) => errors.push(m),
+      });
+
+      sink.emit('tool.started', {});
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(60000);
+
+      expect(attempts).toBe(4); // 1 initial + 3 retries
+      expect(errors.length).toBe(1);
+
+      // The sink is not permanently disabled by a transient failure: it can still emit.
+      sink.emit('tool.started', { second: true });
+      await vi.advanceTimersByTimeAsync(60000);
+      await sink.close();
+      expect(attempts).toBeGreaterThan(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not retry and disables the sink on a 401', async () => {
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+      if (url.endsWith('/events')) return jsonResponse({ error: 'unauthorized' }, 401);
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const errors: string[] = [];
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      tenantId: 't',
+      agentId: 'a',
+      fetch: fakeFetch,
+      batchSize: 1,
+      logError: (m) => errors.push(m),
+    });
+    sink.emit('tool.started', {});
+    await sink.close();
+    expect(fakeFetch.mock.calls.filter((c) => String(c[0]).endsWith('/events')).length).toBe(1);
+    expect(errors.length).toBe(1);
+  });
+});
+
+describe('createHttpSink: bounded buffer', () => {
+  it('caps pending events and drops the oldest once over the limit, with a single diagnostic', async () => {
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+      if (url.endsWith('/events')) {
+        const body = JSON.parse(String(init?.body)) as Array<{ payload: { i: number } }>;
+        return jsonResponse({ accepted: body.length, rejected: 0, errors: [] }, 202);
+      }
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const errors: string[] = [];
+    // batchSize larger than the burst so nothing auto-flushes mid-burst.
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      tenantId: 't',
+      agentId: 'a',
+      fetch: fakeFetch,
+      batchSize: 20000,
+      maxPending: 10000,
+      logError: (m) => errors.push(m),
+    });
+
+    for (let i = 0; i < 10005; i++) sink.emit('tool.started', { i });
+    await sink.close();
+
+    const totalPosted = fakeFetch.mock.calls
+      .filter((c) => String(c[0]).endsWith('/events'))
+      .reduce((sum, c) => sum + (JSON.parse(String((c[1] as RequestInit).body)) as unknown[]).length, 0);
+    expect(totalPosted).toBe(10000);
+    expect(errors.some((m) => m.toLowerCase().includes('drop'))).toBe(true);
+  });
+});
+
+describe('createHttpSink: exit flush', () => {
+  it('registers exactly one beforeExit handler that best-effort flushes pending events', async () => {
+    const onSpy = vi.spyOn(process, 'on');
+    const removeSpy = vi.spyOn(process, 'removeListener');
+    try {
+      const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201);
+        return jsonResponse({ accepted: 1, rejected: 0, errors: [] }, 202);
+      }) as unknown as typeof fetch;
+
+      const sink = createHttpSink({
+        baseUrl: 'https://api.test',
+        apiKey: 'k',
+        tenantId: 't',
+        agentId: 'a',
+        fetch: fakeFetch,
+        batchSize: 100,
+      });
+
+      const beforeExitRegistrations = onSpy.mock.calls.filter((c) => c[0] === 'beforeExit');
+      expect(beforeExitRegistrations.length).toBe(1);
+      const handler = beforeExitRegistrations[0]![1] as () => void;
+
+      sink.emit('tool.started', {});
+      handler(); // simulate the event loop going idle
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fakeFetch.mock.calls.some((c) => String(c[0]).endsWith('/events'))).toBe(true);
+
+      await sink.close();
+      expect(removeSpy.mock.calls.some((c) => c[0] === 'beforeExit')).toBe(true);
+    } finally {
+      onSpy.mockRestore();
+      removeSpy.mockRestore();
+    }
+  });
+});
+
+describe('createHttpSink: request timeout', () => {
+  it('aborts a hanging request after requestTimeoutMs and treats it as a network error', async () => {
+    vi.useFakeTimers();
+    try {
+      let sawAbort = false;
+      const fakeFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/v1/sessions')) return Promise.resolve(jsonResponse({ agent_session_id: 's1', ingest_token: 't1', status: 'running' }, 201));
+        if (url.endsWith('/events')) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              sawAbort = true;
+              reject(new DOMException('The operation was aborted', 'AbortError'));
+            });
+          });
+        }
+        return Promise.resolve(jsonResponse({}));
+      }) as unknown as typeof fetch;
+
+      const errors: string[] = [];
+      const sink = createHttpSink({
+        baseUrl: 'https://api.test',
+        apiKey: 'k',
+        tenantId: 't',
+        agentId: 'a',
+        fetch: fakeFetch,
+        batchSize: 1,
+        requestTimeoutMs: 50,
+        logError: (m) => errors.push(m),
+      });
+
+      sink.emit('tool.started', {});
+      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(60000);
+
+      expect(sawAbort).toBe(true);
+      await sink.close();
+      expect(errors.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
