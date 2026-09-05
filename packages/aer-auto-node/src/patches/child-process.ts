@@ -115,21 +115,32 @@ export function installChildProcessPatch(capture: Capture): () => void {
 
 interface ExecMeta { command: string; argsRedacted: string }
 
+// Extract from a shell command string: the leading token is the command,
+// everything after it is redacted. Skips a leading `VAR=value` env
+// assignment first so its (possibly secret) value never lands in `command`.
+function extractShellString(first: string): ExecMeta {
+  const tokens = first.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && ENV_ASSIGN_RE.test(tokens[i]!)) i += 1;
+  const leading = tokens[i];
+  const rest = tokens.slice(i + 1);
+  return { command: leading ? basename(leading) : 'env', argsRedacted: redactArgs(rest) };
+}
+
 function safeExtract(kind: CmdKind, args: unknown[]): ExecMeta {
   try {
     const first = typeof args[0] === 'string' ? (args[0] as string) : String(args[0]);
-    if (kind === 'exec') {
-      // Shell string: the binary is the leading token; everything else is redacted.
-      // Skip any leading `VAR=value` env assignments first so their (possibly
-      // secret) values never land in `command`.
-      const tokens = first.trim().split(/\s+/).filter(Boolean);
-      let i = 0;
-      while (i < tokens.length && ENV_ASSIGN_RE.test(tokens[i]!)) i += 1;
-      const leading = tokens[i];
-      const rest = tokens.slice(i + 1);
-      return { command: leading ? basename(leading) : 'env', argsRedacted: redactArgs(rest) };
-    }
-    // spawn / execFile / fork: args[1] is the arg array when present.
+    if (kind === 'exec') return extractShellString(first);
+    // spawn / execFile / fork normally pass an argv array in args[1]. A named
+    // import of `exec` (`import { exec } from 'node:child_process'`) binds
+    // directly to the pre-patch function, so it never goes through our own
+    // exec wrapper - but Node's exec() still calls the shared, patched
+    // execFile property internally, landing here with the WHOLE shell
+    // command string as `first` and a plain options object (not an argv
+    // array) as args[1]. Treat that shape the same way `exec` is treated,
+    // otherwise the raw command - flags, secrets and all - ends up in
+    // `command` unredacted.
+    if (!Array.isArray(args[1]) && /\s/.test(first)) return extractShellString(first);
     const list = Array.isArray(args[1]) ? (args[1] as string[]) : [];
     return { command: basename(first), argsRedacted: redactArgs(list) };
   } catch {
