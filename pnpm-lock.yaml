@@ -97,7 +97,7 @@ importers:
         specifier: workspace:*
         version: link:../aer-resource-node
       express:
-        specifier: '*'
+        specifier: ^5
         version: 5.2.1
     devDependencies:
       '@aer-oss/attestation-test-utils':
@@ -138,7 +138,7 @@ importers:
   packages/aer-resource-node:
     dependencies:
       express:
-        specifier: '*'
+        specifier: ^5
         version: 5.2.1
     devDependencies:
       '@aer-oss/attestation-test-utils':

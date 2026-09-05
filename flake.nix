@@ -7,7 +7,14 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+    # Explicit system list rather than eachDefaultSystem: that helper still
+    # includes x86_64-darwin, which nixpkgs dropped in 26.11, so evaluating it
+    # aborts and takes `nix flake show` and `nix flake check` down with it.
+    flake-utils.lib.eachSystem [
+      "x86_64-linux"
+      "aarch64-linux"
+      "aarch64-darwin"
+    ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
@@ -26,8 +33,7 @@
           "@aer-oss/attestation-test-utils"
           "@aer/schemas"
           "@adastracomputing/aer-sdk-ts"
-          "aer-cli"
-          "aer"
+          "@adastracomputing/aer"
         ];
 
         # Vendors the exact pnpm-lock.yaml graph as a fixed-output derivation
@@ -42,7 +48,7 @@
           inherit pnpmWorkspaces;
           pnpm = pkgs.pnpm;
           fetcherVersion = 4;
-          hash = "sha256-Adclgjokqj8HGjVlBizWAM/F2lbzuPCuoTjTw0oPwEM=";
+          hash = "sha256-es13RtZkFPKu0RyOd8VLYLzeXrySU9mt5tcuXNIt37g=";
         };
 
         # Common offline build environment shared by every package/check
