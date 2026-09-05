@@ -18,10 +18,29 @@ import {
 } from '@adastracomputing/aer-emit';
 import { normalize, type Harness, type HookEvent } from './normalize.js';
 import { emitHookEvent } from './core.js';
-import { loadSession, saveSession, deleteSession } from './session-store.js';
+import { loadSession, saveSession, deleteSession, acquireSessionLock } from './session-store.js';
 import { isInvokedDirectly } from './invoked-directly.js';
 
-const HARD_TIMEOUT_MS = 2500;
+// Production POST /v1/sessions has been measured at 3-4s (see aer-hooks README
+// and the tenant-key Argon2id verification cost noted in the project docs), so
+// the default budget needs headroom over that, not just over a fast local call.
+const DEFAULT_HARD_TIMEOUT_MS = 10000;
+
+/**
+ * Parse AER_HOOK_TIMEOUT_MS: a positive integer, in ms, or unset. An unset or
+ * invalid value falls back to DEFAULT_HARD_TIMEOUT_MS; an invalid one is
+ * reported once so a typo does not silently pick the default.
+ */
+export function parseHardTimeoutMs(env: NodeJS.ProcessEnv, warn: (message: string) => void): number | undefined {
+  const raw = env['AER_HOOK_TIMEOUT_MS'];
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    warn(`aer-hook: ignoring invalid AER_HOOK_TIMEOUT_MS=${JSON.stringify(raw)}; using the default`);
+    return undefined;
+  }
+  return n;
+}
 
 function parseHarnessFlag(argv: string[]): Harness | undefined {
   for (let i = 0; i < argv.length; i++) {
@@ -65,6 +84,12 @@ export interface RunHookDeps {
   now?: () => number;
 }
 
+/** Build the sink for one already-decided branch, emit the event, and close it. */
+async function emitThrough(event: HookEvent, sink: EventSink, raw: unknown, env: NodeJS.ProcessEnv): Promise<void> {
+  emitHookEvent(event, sink, { raw, env });
+  await sink.close();
+}
+
 /**
  * Emit one hook event, correlating all invocations within a harness session into
  * ONE AER session via the cross-process session store. A harness runs this once
@@ -73,44 +98,66 @@ export interface RunHookDeps {
  *  - tool/prompt events attach to the stored session (open+persist if none yet);
  *  - session_end attaches, completes the AER session, and clears the store.
  * A missing sessionRef falls back to a single-shot open-emit-complete.
+ *
+ * The read (loadSession) - decide - write (saveSession) sequence for "is there
+ * already a session for this harness session id" is guarded by a per-id lock
+ * (acquireSessionLock), held across the open + persist so a concurrent hook for
+ * the SAME harness session id waits and then attaches instead of also opening a
+ * new upstream session. Lock contention (or an unwritable store) degrades to a
+ * single-shot session for this event, never to a thrown error.
  */
-function orchestrate(
+async function orchestrateAndEmit(
   event: HookEvent,
   base: HttpSinkOptions,
   raw: unknown,
   env: NodeJS.ProcessEnv,
   now: number,
-): EventSink | null {
+): Promise<void> {
   const ref = event.sessionRef;
-  const persist = (info: { id: string; ingestToken: string }): void => {
-    if (ref) {
-      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now }, env);
-    }
-  };
-
   if (!ref) {
     // No correlation id: single-shot session (open + emit + complete on close).
-    return createHttpSink(base);
+    return emitThrough(event, createHttpSink(base), raw, env);
   }
 
-  const stored = loadSession(ref, env, now);
+  const lock = await acquireSessionLock(ref, env);
+  if (!lock) {
+    // Could not converge with a concurrent hook for this harness session in
+    // time (or the store is unwritable): degrade to single-shot rather than
+    // risk reading a half-written entry or waiting indefinitely.
+    return emitThrough(event, createHttpSink(base), raw, env);
+  }
 
-  if (event.kind === 'session_end') {
-    if (stored) {
-      deleteSession(ref, env);
-      return createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: true });
+  try {
+    const stored = loadSession(ref, env, now);
+
+    if (event.kind === 'session_end') {
+      const sink = stored
+        ? createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: true })
+        : createHttpSink(base); // never saw a start; single-shot
+      if (stored) deleteSession(ref, env);
+      await emitThrough(event, sink, raw, env);
+      return;
     }
-    return createHttpSink(base); // never saw a start; single-shot
-  }
 
-  if (stored) {
-    // Attach to the running AER session; do not complete it here.
-    return createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
-  }
+    if (stored) {
+      // Attach to the running AER session; do not complete it here.
+      const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
+      await emitThrough(event, sink, raw, env);
+      return;
+    }
 
-  // First event for this harness session (session_start, or a tool event that
-  // arrived before any start): open one, persist it, keep it running.
-  return createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
+    // First event for this harness session (session_start, or a tool event
+    // that arrived before any start): open one, persist it as soon as it is
+    // known, then emit, all while still holding the lock so a concurrent
+    // caller waiting on it sees the saved session once we release.
+    const persist = (info: { id: string; ingestToken: string }): void => {
+      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now }, env);
+    };
+    const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
+    await emitThrough(event, sink, raw, env);
+  } finally {
+    lock.release();
+  }
 }
 
 /**
@@ -140,23 +187,37 @@ export async function runHook(
     }
     const now = (deps.now ?? Date.now)();
     const event = normalize(payload, harness, env);
-    const sink = orchestrate(event, base, payload, env, now);
-    if (!sink) return;
-    emitHookEvent(event, sink, { raw: payload, env });
-    await sink.close();
+    await orchestrateAndEmit(event, base, payload, env, now);
   } catch {
     /* fail open: never surface an error to the harness */
   }
 }
 
-/** Entry point: run the hook but never exceed the hard timeout, then exit 0. */
+/**
+ * Entry point: run the hook but never exceed the hard timeout, then return so the
+ * caller can exit 0 regardless. If the budget is exceeded, writes one stderr line
+ * (never a token) so a slow/hanging AER endpoint is visible without ever blocking
+ * or failing the harness's tool.
+ */
 export async function main(
   argv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
   deps: RunHookDeps = {},
 ): Promise<void> {
+  const hardTimeoutMs = parseHardTimeoutMs(env, (message) => {
+    try {
+      process.stderr.write(message + '\n');
+    } catch {
+      /* stderr may already be gone; never throw from a diagnostic */
+    }
+  }) ?? DEFAULT_HARD_TIMEOUT_MS;
+
+  let timedOut = false;
   const timeout = new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, HARD_TIMEOUT_MS);
+    const t = setTimeout(() => {
+      timedOut = true;
+      resolve();
+    }, hardTimeoutMs);
     // Do not keep the event loop alive solely for the timeout.
     if (typeof t.unref === 'function') t.unref();
   });
@@ -164,6 +225,13 @@ export async function main(
     await Promise.race([runHook(argv, env, deps), timeout]);
   } catch {
     /* fail open */
+  }
+  if (timedOut) {
+    try {
+      process.stderr.write(`aer-hook: timed out after ${hardTimeoutMs}ms; the AER record for this event may be incomplete\n`);
+    } catch {
+      /* stderr may already be gone; never throw from a diagnostic */
+    }
   }
 }
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { loadSession, saveSession, deleteSession, type StoredSession } from './session-store.js';
+import { loadSession, saveSession, deleteSession, acquireSessionLock, type StoredSession } from './session-store.js';
 
 describe('session-store', () => {
   let dir: string;
@@ -64,5 +64,77 @@ describe('session-store', () => {
     expect(() => saveSession('hs', entry, env2)).not.toThrow();
     // Nothing was written through the symlink.
     expect(fs.readdirSync(real)).toHaveLength(0);
+  });
+
+  // The TOCTOU race this guards against: two concurrent hook processes both call
+  // loadSession(), both see null, and both open a new AER session for the same
+  // harness session id. The lock forces one to wait for the other and re-check.
+  describe('acquireSessionLock', () => {
+    it('acquires immediately when uncontended, and release lets a later caller acquire', async () => {
+      const lock1 = await acquireSessionLock('hs-lock-1', env);
+      expect(lock1).not.toBeNull();
+      lock1!.release();
+
+      const lock2 = await acquireSessionLock('hs-lock-1', env);
+      expect(lock2).not.toBeNull();
+      lock2!.release();
+    });
+
+    it('a concurrent caller waits for the holder to release, then acquires', async () => {
+      const lock1 = await acquireSessionLock('hs-lock-2', env);
+      expect(lock1).not.toBeNull();
+
+      const waiter = acquireSessionLock('hs-lock-2', env, { maxWaitMs: 2000, pollMs: 10 });
+      await new Promise((r) => setTimeout(r, 50));
+      lock1!.release();
+
+      const lock2 = await waiter;
+      expect(lock2).not.toBeNull();
+      lock2!.release();
+    });
+
+    it('gives up and returns null after maxWaitMs when the lock is never released', async () => {
+      const lock1 = await acquireSessionLock('hs-lock-3', env);
+      expect(lock1).not.toBeNull();
+
+      const lock2 = await acquireSessionLock('hs-lock-3', env, { maxWaitMs: 60, pollMs: 10 });
+      expect(lock2).toBeNull();
+
+      lock1!.release();
+    });
+
+    it('steals a lock left by a crashed holder once it is older than staleMs', async () => {
+      const lock1 = await acquireSessionLock('hs-lock-4', env);
+      expect(lock1).not.toBeNull();
+
+      // Simulate a crashed holder: back-date the lock file well past staleMs
+      // instead of releasing it.
+      const lockFileName = fs.readdirSync(path.join(dir, 'aer-hooks')).find((f) => f.endsWith('.lock'));
+      expect(lockFileName).toBeDefined();
+      const lockPath = path.join(dir, 'aer-hooks', lockFileName!);
+      const old = new Date(Date.now() - 10_000);
+      fs.utimesSync(lockPath, old, old);
+
+      const lock2 = await acquireSessionLock('hs-lock-4', env, { staleMs: 1000, maxWaitMs: 2000, pollMs: 10 });
+      expect(lock2).not.toBeNull();
+      lock2!.release();
+    });
+
+    it('degrades to null (never throws) on an unwritable cache dir', async () => {
+      const blocker = path.join(dir, 'blocker-file');
+      fs.writeFileSync(blocker, 'x');
+      const badEnv = { XDG_CACHE_HOME: path.join(blocker, 'nope') } as NodeJS.ProcessEnv;
+      await expect(acquireSessionLock('hs-lock-5', badEnv)).resolves.toBeNull();
+    });
+
+    it('two truly concurrent acquisitions for the same id never both succeed', async () => {
+      const results = await Promise.all([
+        acquireSessionLock('hs-lock-6', env, { maxWaitMs: 100, pollMs: 5 }),
+        acquireSessionLock('hs-lock-6', env, { maxWaitMs: 100, pollMs: 5 }),
+      ]);
+      const acquired = results.filter((r) => r !== null);
+      expect(acquired).toHaveLength(1);
+      acquired[0]!.release();
+    });
   });
 });

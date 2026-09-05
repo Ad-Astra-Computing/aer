@@ -39,7 +39,7 @@ function parseArgs(argv: string[]): Parsed {
   return { cmd, harness, dir };
 }
 
-const USAGE = `aer-hooks — wire AER recording into a coding harness
+const USAGE = `aer-hooks: wire AER recording into a coding harness
 
 Usage:
   aer-hooks install <claude-code|codex> [--dir <path>]

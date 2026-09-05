@@ -129,7 +129,7 @@ describe('normalizeOpencodeMessage', () => {
     expect(llm!.ok).toBe(false);
   });
 
-  it('never reads message content — only structured metadata', () => {
+  it('never reads message content: only structured metadata', () => {
     // Even if a caller passed a content-bearing shape, the normalizer ignores it.
     const llm = normalizeOpencodeMessage(assistantMessage({ content: 'my SECRET reasoning' }));
     expect(JSON.stringify(llm)).not.toContain('SECRET');
