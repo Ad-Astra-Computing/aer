@@ -26,9 +26,19 @@ const SECRET_PATTERNS = [
 
 const TEXT_EXT = /\.(?:ts|tsx|js|mjs|cjs|json|md|txt|yml|yaml|toml|css|html|svg|py|nix|sh)$/;
 const PROSE_EXT = /\.(?:md|txt)$/;
+const CODE_EXT = /\.(?:ts|tsx|js|mjs|cjs)$/;
 // Files allowed to mention em dashes or token shapes because they define the
 // checks themselves or test against adversarial inputs.
 const EXEMPT = new Set(['scripts/check-house-style.mjs']);
+// The Sigstore Rekor checkpoint wire format uses a literal em dash
+// ("— <name> <sig>") as part of the signed note line. That character is
+// data, not prose, so these files are exempt from the em-dash check.
+const REKOR_EXEMPT = new Set([
+  'packages/aer-verify/src/rekor/checkpoint.ts',
+  'packages/aer-verify/src/rekor/anchor-binding.ts',
+  'packages/aer-verify/src/rekor/evidence.ts',
+  'packages/aer-verify/src/rekor/fixtures.ts',
+]);
 
 const args = process.argv.slice(2);
 const fix = args.includes('--fix');
@@ -68,16 +78,24 @@ for (const file of files) {
     // An em dash standing entirely on its own is a GLYPH, not prose: it is the
     // typographic placeholder for an empty table cell or an absent value.
     // Strip the glyph forms first, then judge whatever em dash is left.
+    // A Rekor checkpoint's signature line literally begins "\n<em dash> name sig".
+    // That em dash is wire format the verifier must reproduce byte for byte, so
+    // strip that exact shape before judging the rest of the line as prose.
     const withoutGlyphs = ln
       .replace(/(['"])—(?:\s[A-Za-z]{1,8})?\1/g, '$1$1')
-      .replace(/>\s*—\s*</g, '><');
+      .replace(/>\s*—\s*</g, '><')
+      .replace(/\\n—\s/g, '');
 
-    if (EM_DASH.test(withoutGlyphs)) {
+    if (EM_DASH.test(withoutGlyphs) && !REKOR_EXEMPT.has(file)) {
       EM_DASH.lastIndex = 0;
       const isProse = PROSE_EXT.test(file);
       const isComment = /^\s*(?:\/\/|\*|#)/.test(ln);
       const isDescription = file.endsWith('package.json') && /"description"/.test(ln);
-      if (isProse || isComment || isDescription) {
+      // In code files an em dash anywhere on the line is flagged, not just at
+      // a comment's start: a trailing same-line comment, a string literal or
+      // a test-name string is still prose and still house-style-checked.
+      const isCode = CODE_EXT.test(file);
+      if (isProse || isComment || isDescription || isCode) {
         report(file, i + 1, 'em dash in prose (house style: plain sentences, hyphens)');
       }
     }

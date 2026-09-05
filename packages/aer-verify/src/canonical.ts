@@ -29,7 +29,20 @@ export async function canonicalHash(value: unknown): Promise<string> {
   return bytesToHex(new Uint8Array(digest));
 }
 
+// Bundles are attacker-controlled input to this function (that is the whole point
+// of an independent verifier). An unbounded-depth document must fail predictably,
+// not overflow the call stack with a RangeError whose message varies by engine and
+// build. Real AER bundles are a handful of levels deep; 256 is generous headroom.
+const MAX_CANONICALIZE_DEPTH = 256;
+
 function stringify(value: unknown): string {
+  return stringifyAt(value, 0);
+}
+
+function stringifyAt(value: unknown, depth: number): string {
+  if (depth > MAX_CANONICALIZE_DEPTH) {
+    throw new TypeError(`canonicalize: exceeded max depth (${MAX_CANONICALIZE_DEPTH})`);
+  }
   if (value === null) return 'null';
 
   const t = typeof value;
@@ -58,7 +71,7 @@ function stringify(value: unknown): string {
   }
 
   if (Array.isArray(value)) {
-    return '[' + value.map(stringify).join(',') + ']';
+    return '[' + value.map((v) => stringifyAt(v, depth + 1)).join(',') + ']';
   }
 
   if (t === 'object') {
@@ -69,7 +82,7 @@ function stringify(value: unknown): string {
     const keys = Object.keys(obj).sort();
     const parts: string[] = [];
     for (const k of keys) {
-      parts.push(JSON.stringify(k) + ':' + stringify(obj[k]));
+      parts.push(JSON.stringify(k) + ':' + stringifyAt(obj[k], depth + 1));
     }
     return '{' + parts.join(',') + '}';
   }

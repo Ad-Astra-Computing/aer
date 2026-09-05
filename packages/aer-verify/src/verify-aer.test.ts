@@ -38,7 +38,7 @@ const BODY = {
   impact_summary: { severity: 'none' },
 };
 
-describe('verifyAerBundle — signature path', () => {
+describe('verifyAerBundle: signature path', () => {
   it('verifies a genuine bundle with the supplied public key', async () => {
     const signer = createInMemorySigner();
     const bundle = await signBundle(signer, BODY);
@@ -141,6 +141,66 @@ describe('verifyAerBundle — signature path', () => {
   });
 });
 
+// verifyAerBundle's whole contract is that it resolves to a VerifiedAer, never
+// throws, over ATTACKER-CONTROLLED bundle shapes. Each case here would previously
+// have rejected with an uncaught error (a RangeError from stack overflow, or a
+// TypeError from canonicalize's own NaN/bigint/Date guards) instead of resolving.
+describe('verifyAerBundle never throws on a pathological bundle', () => {
+  const validIntegrity = {
+    hash: 'a'.repeat(64),
+    signature: bytesToBase64(new Uint8Array(64)),
+    signing_key_id: 'a721bb9bd8f31c8e',
+  };
+
+  it('resolves ok:false with canonicalize_error on a deeply-nested bundle instead of throwing', async () => {
+    let node: Record<string, unknown> = {};
+    const root = node;
+    for (let i = 0; i < 20000; i++) {
+      const next: Record<string, unknown> = {};
+      node.next = next;
+      node = next;
+    }
+    const bundle = { aer_id: 'x', integrity: validIntegrity, deep: root };
+
+    const res = await verifyAerBundle(bundle, {
+      publicKeyHex: '39ab92b60e2bdc22a4a30f80f960fa862653247fa501f1e88d181f373d053870',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.reasons).toContain(REASONS.CANONICALIZE_ERROR);
+    expect(res.canonical_hash).toBe('');
+  });
+
+  it('resolves ok:false with canonicalize_error on a non-finite number field', async () => {
+    const bundle = { aer_id: 'x', integrity: validIntegrity, score: Infinity };
+    const res = await verifyAerBundle(bundle, { publicKeyHex: 'aa' });
+    expect(res.ok).toBe(false);
+    expect(res.reasons).toContain(REASONS.CANONICALIZE_ERROR);
+  });
+
+  it('resolves ok:false with canonicalize_error on a bigint field', async () => {
+    const bundle = { aer_id: 'x', integrity: validIntegrity, count: 10n };
+    const res = await verifyAerBundle(bundle, { publicKeyHex: 'aa' });
+    expect(res.ok).toBe(false);
+    expect(res.reasons).toContain(REASONS.CANONICALIZE_ERROR);
+  });
+
+  it('resolves ok:false with canonicalize_error on a Date field', async () => {
+    const bundle = { aer_id: 'x', integrity: validIntegrity, created_at: new Date() };
+    const res = await verifyAerBundle(bundle, { publicKeyHex: 'aa' });
+    expect(res.ok).toBe(false);
+    expect(res.reasons).toContain(REASONS.CANONICALIZE_ERROR);
+  });
+
+  it('does not also report hash_mismatch when canonicalization itself failed', async () => {
+    const bundle = { aer_id: 'x', integrity: validIntegrity, count: 10n };
+    const res = await verifyAerBundle(bundle, { publicKeyHex: 'aa' });
+    expect(res.reasons).toEqual(
+      expect.arrayContaining([REASONS.CANONICALIZE_ERROR]),
+    );
+    expect(res.reasons).not.toContain(REASONS.HASH_MISMATCH);
+  });
+});
+
 // Build a valid anchor whose DSSE attestation is signed by the bundle's OWN signer and
 // commits to `canonicalHash`, then witnessed by a synthetic (test) Rekor log.
 async function buildAnchorFor(signer: Signer, aerId: string, canonicalHash: string) {
@@ -191,7 +251,7 @@ async function buildAnchorFor(signer: Signer, aerId: string, canonicalHash: stri
   return { anchor, rekorKey };
 }
 
-describe('verifyAerBundle — offline anchor (phase 3)', () => {
+describe('verifyAerBundle: offline anchor (phase 3)', () => {
   it('reports anchored:true when the full offline chain verifies', async () => {
     const signer = createInMemorySigner();
     const bundle = await signBundle(signer, BODY, { anchored: true });
