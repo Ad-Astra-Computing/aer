@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { runHook } from './cli.js';
+import { runHook, main, parseHardTimeoutMs } from './cli.js';
 
 const CONFIGURED = {
   AER_API_KEY: 'k',
@@ -205,5 +205,111 @@ describe('aer-hook cross-invocation session correlation', () => {
     ).resolves.toBeUndefined();
     // Degrades to opening a session; the point is it did not throw.
     expect(opens).toBeGreaterThanOrEqual(1);
+  });
+
+  // The TOCTOU bug this guards against: two hook processes for the SAME harness
+  // session, launched together, both see no stored session and each open their
+  // own upstream AER session, orphaning one. A slow (delayed) fetch widens the
+  // race window the way a real network round trip does.
+  it('two concurrent hooks for the same harness session converge on one AER session', async () => {
+    const sid = 'harness-session-concurrent';
+    const slowFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) {
+        await new Promise((r) => setTimeout(r, 15));
+        opens += 1;
+        const id = `sess-${opens}`;
+        openIds.push(id);
+        return jsonResponse({ id, ingest_token: `tok-${opens}` });
+      }
+      if (url.endsWith('/complete')) {
+        completes += 1;
+        return jsonResponse({ ok: true });
+      }
+      const m = /\/v1\/sessions\/([^/]+)\/events$/.exec(url);
+      if (m) eventSessionIds.push(m[1]!);
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+
+    await Promise.all([
+      runHook(['--harness', 'claude-code'], envWith(), {
+        readInput: async () => cc({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'a' }, session_id: sid }),
+        fetch: slowFetch,
+      }),
+      runHook(['--harness', 'claude-code'], envWith(), {
+        readInput: async () =>
+          cc({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'b' }, session_id: sid }),
+        fetch: slowFetch,
+      }),
+    ]);
+
+    expect(opens).toBe(1);
+    expect(new Set(eventSessionIds)).toEqual(new Set(['sess-1']));
+  });
+});
+
+describe('parseHardTimeoutMs', () => {
+  it('returns undefined (use the default) when unset', () => {
+    const warn = vi.fn();
+    expect(parseHardTimeoutMs({}, warn)).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('accepts a positive integer string', () => {
+    const warn = vi.fn();
+    expect(parseHardTimeoutMs({ AER_HOOK_TIMEOUT_MS: '15000' }, warn)).toBe(15000);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(['0', '-1', '1.5', 'nope', ''])('falls back and warns once on an invalid value %p', (raw) => {
+    const warn = vi.fn();
+    expect(parseHardTimeoutMs({ AER_HOOK_TIMEOUT_MS: raw }, warn)).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Production session creation measures 3-4s; the hard timeout must give that
+// room while still guaranteeing the hook never blocks the harness's tool.
+describe('main() hard-timeout budget', () => {
+  it('never blocks: exits the race and writes one stderr diagnostic when runHook exceeds the budget', async () => {
+    const stderrWrites: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    });
+
+    const neverResolvingFetch = vi.fn(() => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
+    const started = Date.now();
+    await main(['--harness', 'claude-code'], { ...CONFIGURED, AER_HOOK_TIMEOUT_MS: '30' }, {
+      readInput: async () => JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} }),
+      fetch: neverResolvingFetch,
+    });
+    const elapsed = Date.now() - started;
+
+    spy.mockRestore();
+    expect(elapsed).toBeLessThan(1000); // bounded by the 30ms override, not left hanging
+    expect(stderrWrites.join('')).toMatch(/timed out|timeout/i);
+    expect(stderrWrites.join('')).not.toMatch(/bearer|ingest[-_]?token/i);
+  });
+
+  it('does not log a timeout diagnostic when runHook completes within the budget', async () => {
+    const stderrWrites: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    });
+    const fastFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ id: 's1', ingest_token: 'tok' });
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+
+    await main(['--harness', 'claude-code'], CONFIGURED, {
+      readInput: async () => JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} }),
+      fetch: fastFetch,
+    });
+
+    spy.mockRestore();
+    expect(stderrWrites.join('')).toBe('');
   });
 });
