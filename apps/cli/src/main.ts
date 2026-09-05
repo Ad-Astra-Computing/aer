@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createReadStream, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { planInit, applyInit, runDoctor, type FsLike, type InitOptions } from './init.js';
 import { runLiveChecks } from './doctor-live.js';
 import { ingestJsonlStream } from './ingest.js';
@@ -8,7 +9,7 @@ import { runClaudeCodeImport } from './import/run.js';
 import { verifyAer } from './verify.js';
 import { runCommitmentsVerify } from './commitments-verify.js';
 import { buildSmokeScript } from './smoke-script.js';
-import { formatCliError } from './cli-error.js';
+import { formatCliError, sanitizeForTerminal } from './cli-error.js';
 import {
   listWebhooks,
   createWebhook,
@@ -25,74 +26,89 @@ import {
   getBaseline, retrainBaseline,
 } from './tenant-ops.js';
 
+const USAGE_TEXT = [
+  'Usage:',
+  '  aer init [--yes] [--dry-run] [--json] [--session process|task|server]',
+  '           [--entry <script>] [--tenant <id>] [--agent <id>] [--env <id>] [--base-url <url>]',
+  '           (wires @adastracomputing/aer-auto-node into this project: auto-instrumentation)',
+  '  aer doctor [--json]                check config + live API reachability and tenant auth',
+  '  aer smoke                          run a tiny instrumented workload end to end',
+  '  aer ingest <file.jsonl | ->        (- = stdin)',
+  '  aer import claude-code <file.jsonl | ->   (post-hoc; bodies-off; source_type=import)',
+  '  aer verify <aer-id>',
+  '  aer commitments verify --requests <file.json> (--aer <aer-id> | --bundle <file.json>) [--key <public-key.json>]',
+  '           (offline: recompute content-commitment tags from YOUR key + plaintext and diff the bundle)',
+  '  aer badge <aer-id>                 (prints markdown for embedding the AER badge)',
+  '  aer agents list',
+  '  aer agents create <name> [--framework <type>]',
+  '  aer sessions list [--agent <id>] [--limit N]',
+  '  aer sessions get <session-id>',
+  '  aer findings recent [--limit N] [--severity critical|high|medium|low|info]',
+  '  aer findings rollup [--days N] [--agent <id>]',
+  '  aer aers list [--limit N] [--table]',
+  '  aer download <aer-id> [-o file.json | --out file.json | -o -]   (public; no key)',
+  '  aer aers get <aer-id>',
+  '  aer baseline show <agent-id>',
+  '  aer baseline retrain <agent-id> --last-n N | --sessions id1,id2,...',
+  '  aer audit [--limit N]',
+  '  aer webhooks list',
+  '  aer webhooks create <url> [description] [--events findings.created,session.completed]',
+  '  aer webhooks test <webhook-id>',
+  '  aer webhooks rotate <webhook-id>',
+  '  aer webhooks delete <webhook-id>',
+  '  aer webhooks deliveries <webhook-id> [--limit N]',
+  '',
+  '  Pass --help (or -h) after any command to print this text and exit, without',
+  '  writing anything or making a network call.',
+  '',
+  'aer ingest - required env:',
+  '  AER_BASE_URL          e.g. https://api.aer.run',
+  '  AER_SESSION_ID        uuid of the target session',
+  '  AER_INGEST_TOKEN      bearer token returned by POST /v1/sessions',
+  '',
+  'aer import claude-code - required env:',
+  '  AER_BASE_URL          e.g. https://api.aer.run',
+  '  AER_TENANT_API_KEY    tenant key (write role; creates the session)',
+  '  AER_TENANT_ID         tenant uuid',
+  '  AER_AGENT_ID          agent uuid the imported session belongs to',
+  '  AER_ENV_ID            environment uuid',
+  '  AER_AGENT_VERSION     optional; default "transcript-import"',
+  '',
+  'aer verify - required env:',
+  '  AER_BASE_URL          e.g. https://api.aer.run',
+  '',
+  'aer commitments verify - network:',
+  '  --bundle <file.json> is fully offline once the outer signature is checked.',
+  '  That check needs either --key <public-key.json> (the object GET /v1/keys/:key_id',
+  '  returns) or AER_BASE_URL to fetch the key; with neither, the command refuses to',
+  '  run rather than report an unverified match. --aer <aer-id> always needs',
+  '  AER_BASE_URL, since it has to fetch the bundle itself.',
+  '  AER_COMMITMENT_KEY    your 32-byte hex key; never transmitted or logged',
+  '',
+  'aer doctor - reads (all optional; checks degrade with remediation):',
+  '  AER_BASE_URL          API base; falls back to aer.config.json base_url',
+  '  AER_API_KEY           tenant key for the auth check (or AER_TENANT_API_KEY)',
+  '  AER_AGENT_ID          validate an agent id against the tenant (optional)',
+  '',
+  'aer webhooks - required env:',
+  '  AER_BASE_URL          e.g. https://api.aer.run',
+  '  AER_TENANT_API_KEY    tenant API key',
+  '',
+  'Optional:',
+  '  AER_BATCH_SIZE        (ingest) default 500',
+].join('\n');
+
 function usage(): never {
-  console.error(
-    [
-      'Usage:',
-      '  aer init [--yes] [--dry-run] [--json] [--session process|task|server]',
-      '           [--entry <script>] [--tenant <id>] [--agent <id>] [--env <id>] [--base-url <url>]',
-      '           — wire @adastracomputing/aer-auto-node into this project (auto-instrumentation)',
-      '  aer doctor [--json]                — check config + live API reachability and tenant auth',
-      '  aer smoke                          — run a tiny instrumented workload end to end',
-      '  aer ingest <file.jsonl | ->        (- = stdin)',
-      '  aer import claude-code <file.jsonl | ->   (post-hoc; bodies-off; source_type=import)',
-      '  aer verify <aer-id>',
-      '  aer commitments verify --requests <file.json> (--aer <aer-id> | --bundle <file.json>)',
-      '           — offline: recompute content-commitment tags from YOUR key + plaintext and diff the bundle',
-      '  aer badge <aer-id>                 (prints markdown for embedding the AER badge)',
-      '  aer agents list',
-      '  aer agents create <name> [--framework <type>]',
-      '  aer sessions list [--agent <id>] [--limit N]',
-      '  aer sessions get <session-id>',
-      '  aer findings recent [--limit N] [--severity critical|high|medium|low|info]',
-      '  aer findings rollup [--days N] [--agent <id>]',
-      '  aer aers list [--limit N] [--table]',
-      '  aer download <aer-id> [-o file.json | --out file.json | -o -]   (public; no key)',
-      '  aer aers get <aer-id>',
-      '  aer baseline show <agent-id>',
-      '  aer baseline retrain <agent-id> --last-n N | --sessions id1,id2,…',
-      '  aer audit [--limit N]',
-      '  aer webhooks list',
-      '  aer webhooks create <url> [description] [--events findings.created,session.completed]',
-      '  aer webhooks test <webhook-id>',
-      '  aer webhooks rotate <webhook-id>',
-      '  aer webhooks delete <webhook-id>',
-      '  aer webhooks deliveries <webhook-id> [--limit N]',
-      '',
-      'aer ingest — required env:',
-      '  AER_BASE_URL          e.g. https://api.aer.run',
-      '  AER_SESSION_ID        uuid of the target session',
-      '  AER_INGEST_TOKEN      bearer token returned by POST /v1/sessions',
-      '',
-      'aer import claude-code — required env:',
-      '  AER_BASE_URL          e.g. https://api.aer.run',
-      '  AER_TENANT_API_KEY    tenant key (write role; creates the session)',
-      '  AER_TENANT_ID         tenant uuid',
-      '  AER_AGENT_ID          agent uuid the imported session belongs to',
-      '  AER_ENV_ID            environment uuid',
-      '  AER_AGENT_VERSION     optional; default "transcript-import"',
-      '',
-      'aer verify — required env:',
-      '  AER_BASE_URL          e.g. https://api.aer.run',
-      '',
-      'aer commitments verify — required env:',
-      '  AER_BASE_URL          e.g. https://api.aer.run (only with --aer)',
-      '  AER_COMMITMENT_KEY    your 32-byte hex key; never transmitted or logged',
-      '',
-      'aer doctor — reads (all optional; checks degrade with remediation):',
-      '  AER_BASE_URL          API base; falls back to aer.config.json base_url',
-      '  AER_API_KEY           tenant key for the auth check (or AER_TENANT_API_KEY)',
-      '  AER_AGENT_ID          validate an agent id against the tenant (optional)',
-      '',
-      'aer webhooks — required env:',
-      '  AER_BASE_URL          e.g. https://api.aer.run',
-      '  AER_TENANT_API_KEY    tenant API key',
-      '',
-      'Optional:',
-      '  AER_BATCH_SIZE        (ingest) default 500',
-    ].join('\n'),
-  );
+  console.error(USAGE_TEXT);
   process.exit(64);
+}
+
+// Printed for --help/-h. Distinct from usage(): exits 0 (this was an explicit,
+// successful request for help, not a usage error) and writes to stdout, since
+// that is where a coding agent or script expects successful output to land.
+function printHelp(): never {
+  console.log(USAGE_TEXT);
+  process.exit(0);
 }
 
 function readFlag(args: string[], name: string): string | undefined {
@@ -108,12 +124,20 @@ const realFs: FsLike = {
 };
 
 const REGISTER = '@adastracomputing/aer-auto-node/register';
+const SESSION_STRATEGIES = ['process', 'task', 'server'] as const;
 
 function cmdInit(args: string[]): void {
   const has = (f: string): boolean => args.includes(f);
   const flag = (f: string): string | undefined => readFlag(args, f);
   const env = process.env;
   const session = flag('--session');
+  // A typo here (e.g. "tsak") must fail loudly, not silently fall back to the
+  // default strategy: a coding agent scripting `aer init` has no other way to
+  // notice the value was ignored.
+  if (session !== undefined && !(SESSION_STRATEGIES as readonly string[]).includes(session)) {
+    console.error(`invalid --session value "${session}" (expected one of: ${SESSION_STRATEGIES.join(', ')})\n`);
+    usage();
+  }
   const entry = flag('--entry');
   const tenantId = flag('--tenant') ?? env['AER_TENANT_ID'];
   const agentId = flag('--agent') ?? env['AER_AGENT_ID'];
@@ -125,7 +149,7 @@ function cmdInit(args: string[]): void {
     yes: has('--yes'),
     dryRun: has('--dry-run'),
     json: has('--json'),
-    ...(session === 'process' || session === 'task' || session === 'server' ? { session } : {}),
+    ...(session !== undefined ? { session: session as (typeof SESSION_STRATEGIES)[number] } : {}),
     ...(entry ? { entry } : {}),
     ...(tenantId ? { tenantId } : {}),
     ...(agentId ? { agentId } : {}),
@@ -143,7 +167,7 @@ function cmdInit(args: string[]): void {
         scriptChanges: plan.scriptChanges,
       }, null, 2));
     } else {
-      console.error('Plan (dry run — nothing written):');
+      console.error('Plan (dry run, nothing written):');
       for (const f of plan.files) console.error(`  ${f.action.padEnd(9)} ${f.path}`);
       for (const c of plan.scriptChanges) console.error(`  script    ${c.script}: ${c.after}`);
     }
@@ -195,7 +219,7 @@ async function cmdSmoke(): Promise<void> {
   // valid aer.config.json identity (run `aer doctor` first).
   const doctor = runDoctor(realFs, { cwd: process.cwd(), env: process.env });
   if (!doctor.ok) {
-    console.error('smoke: not configured — run `aer doctor` and fix the failing checks first.');
+    console.error('smoke: not configured, run `aer doctor` and fix the failing checks first.');
     process.exit(1);
   }
   const cfg = JSON.parse(realFs.readFile(`${process.cwd()}/aer.config.json`) ?? '{}') as { base_url?: string };
@@ -210,8 +234,17 @@ async function cmdSmoke(): Promise<void> {
   if (code !== 0) process.exit(1);
 }
 
-async function main(): Promise<void> {
-  const [, , command, sub, ...rest] = process.argv;
+// argv is the command's own arguments (no node/script path), so tests can
+// drive `main` directly without touching the real process.argv.
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  // --help/-h anywhere in the invocation must print usage and exit before any
+  // other command handling runs, so probing --help can never write a file or
+  // make a network call.
+  if (argv.includes('--help') || argv.includes('-h')) {
+    printHelp();
+  }
+
+  const [command, sub, ...rest] = argv;
   const baseUrl = process.env['AER_BASE_URL'];
 
   if (command === 'init') {
@@ -248,6 +281,10 @@ async function main(): Promise<void> {
         ...(batchSize !== undefined ? { batchSize } : {}),
       });
       console.log(JSON.stringify(summary, null, 2));
+      if (summary.rejected > 0 && summary.errors && summary.errors.length > 0) {
+        console.error(`rejected events, first ${summary.errors.length} of ${summary.rejected}:`);
+        for (const e of summary.errors) console.error(`  [${e.index}] ${sanitizeForTerminal(e.message)}`);
+      }
     } catch (err) {
       console.error(formatCliError(err));
       process.exit(1);
@@ -286,16 +323,17 @@ async function main(): Promise<void> {
   if (command === 'badge') {
     const aerId = sub;
     if (!aerId || !baseUrl) usage();
+    const encodedAerId = encodeURIComponent(aerId);
     // Validate the AER exists (probe metadata endpoint or canonical bundle).
     // canonical is public, so no auth needed.
-    const probe = await fetch(`${baseUrl}/v1/aers/${aerId}/canonical`, { method: 'HEAD' });
+    const probe = await fetch(`${baseUrl}/v1/aers/${encodedAerId}/canonical`, { method: 'HEAD' });
     if (probe.status === 404) {
       console.error(`AER not found: ${aerId}`);
       process.exit(2);
     }
-    const badgeUrl = `${baseUrl}/v1/aers/${aerId}/badge.svg`;
+    const badgeUrl = `${baseUrl}/v1/aers/${encodedAerId}/badge.svg`;
     const consoleHost = baseUrl.replace(/^https?:\/\/aer-api\./, 'https://aer.');
-    const verifyUrl = `${consoleHost}/verify?aer=${aerId}`;
+    const verifyUrl = `${consoleHost}/verify?aer=${encodedAerId}`;
     console.log(`Badge URL:`);
     console.log(`  ${badgeUrl}`);
     console.log();
@@ -311,9 +349,9 @@ async function main(): Promise<void> {
     const aerId = sub;
     if (!aerId || !baseUrl) usage();
     const outPath = readFlag(rest, '-o') ?? readFlag(rest, '--out') ?? `${aerId}.json`;
-    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/aers/${aerId}/bundle`);
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/aers/${encodeURIComponent(aerId)}/bundle`);
     if (!res.ok) {
-      console.error(`Failed: ${res.status} ${await res.text()}`);
+      console.error(`Failed: ${res.status} ${sanitizeForTerminal(await res.text())}`);
       process.exit(1);
     }
     const bytes = new Uint8Array(await res.arrayBuffer());
@@ -343,11 +381,13 @@ async function main(): Promise<void> {
   }
 
   if (command === 'commitments' && sub === 'verify') {
-    if (!baseUrl) usage();
+    // AER_BASE_URL is NOT required here: --bundle with --key is fully offline.
+    // runCommitmentsVerify itself enforces that a network source or a --key
+    // file is available before it will report anything as matched.
     // The key comes from the environment and is never passed on the command line,
     // transmitted or logged. Output is tags + booleans only, never the plaintext.
     const { result, exitCode } = await runCommitmentsVerify(rest, {
-      baseUrl,
+      ...(baseUrl ? { baseUrl } : {}),
       commitmentKey: process.env['AER_COMMITMENT_KEY'],
     });
     console.log(JSON.stringify(result, null, 2));
@@ -539,7 +579,12 @@ async function main(): Promise<void> {
   usage();
 }
 
-main().catch((err) => {
-  console.error(formatCliError(err));
-  process.exit(1);
-});
+// Only run when this file is the actual entry point, not when a test imports
+// it, so importing `main` never triggers a real run against process.argv.
+const isEntryPoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntryPoint) {
+  main().catch((err) => {
+    console.error(formatCliError(err));
+    process.exit(1);
+  });
+}

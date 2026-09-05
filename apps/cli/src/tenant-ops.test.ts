@@ -127,4 +127,30 @@ describe('CLI tenant-ops', () => {
     await expect(listAgents({ baseUrl: BASE, apiKey: 'wrong' })).rejects.toThrow(/401/);
     server.resetHandlers();
   });
+
+  it('encodes a path-traversal-shaped session id as one opaque URL segment', async () => {
+    let requestedPath = '';
+    server.use(
+      http.get(`${BASE}/*`, ({ request }) => {
+        requestedPath = new URL(request.url).pathname;
+        return HttpResponse.json({ agent_session_id: 'x' });
+      }),
+    );
+    await getSession({ baseUrl: BASE, apiKey: KEY, sessionId: '../../v1/admin/tenants' });
+    expect(requestedPath).toBe('/v1/sessions/..%2F..%2Fv1%2Fadmin%2Ftenants');
+    server.resetHandlers();
+  });
+
+  it('encodes a path-traversal-shaped aer id as one opaque URL segment', async () => {
+    let requestedPath = '';
+    server.use(
+      http.get(`${BASE}/*`, ({ request }) => {
+        requestedPath = new URL(request.url).pathname;
+        return HttpResponse.json({ aer_id: 'x' });
+      }),
+    );
+    await getAerMeta({ baseUrl: BASE, apiKey: KEY, aerId: '../../v1/admin/tenants' });
+    expect(requestedPath).toBe('/v1/aers/..%2F..%2Fv1%2Fadmin%2Ftenants');
+    server.resetHandlers();
+  });
 });

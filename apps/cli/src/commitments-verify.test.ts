@@ -110,7 +110,7 @@ describe('verifyCommitments (pure)', () => {
     expect(res.results[0]!.request_ref).toBeNull();
   });
 
-  it('never emits the plaintext — output is tags, booleans and the opaque ref only', () => {
+  it('never emits the plaintext: output is tags, booleans and the opaque ref only', () => {
     const res = verifyCommitments(unsignedBundle([commitmentFor(KEY, REQUEST)]), KEY, [{ provider: 'openai', request: REQUEST }], true);
     expect(JSON.stringify(res)).not.toContain('SECRETprompt');
   });
@@ -126,7 +126,7 @@ describe('parseCommitmentsVerifyArgs', () => {
 describe('runCommitmentsVerify (runner)', () => {
   const REQS = JSON.stringify([{ provider: 'openai', request: REQUEST }]);
 
-  it('verifies the signature, then opens the commitment — exit 0', async () => {
+  it('verifies the signature, then opens the commitment, exit 0', async () => {
     const { signed, publicKeyHex, kid } = await signBundle(unsignedBundle([commitmentFor(KEY, REQUEST)]));
     const files: Record<string, string> = { 'reqs.json': REQS, 'bundle.json': JSON.stringify(signed) };
     const fetchImpl = (async (url: string) => {
@@ -194,6 +194,45 @@ describe('runCommitmentsVerify (runner)', () => {
     expect(result.bundle_verified).toBe(false);
     expect(result.all_matched).toBe(false);
     expect(exitCode).toBe(1);
+  });
+
+  it('verifies a local bundle with --key and no AER_BASE_URL, making no network call', async () => {
+    const { signed, publicKeyHex, kid } = await signBundle(unsignedBundle([commitmentFor(KEY, REQUEST)]));
+    const files: Record<string, string> = {
+      'reqs.json': REQS,
+      'bundle.json': JSON.stringify(signed),
+      'key.json': JSON.stringify({ signing_key_id: kid, sig_alg: 'Ed25519', public_key_hex: publicKeyHex }),
+    };
+    const fetchImpl = (() => {
+      throw new Error('network should not be used in fully offline --bundle + --key mode');
+    }) as unknown as typeof fetch;
+    const trustRoot = { aerSigningKeys: [{ signing_key_id: kid, public_key_hex: publicKeyHex }], rekorLogs: [] };
+    const { result, exitCode } = await runCommitmentsVerify(
+      ['--requests', 'reqs.json', '--bundle', 'bundle.json', '--key', 'key.json'],
+      { commitmentKey: KEY_HEX, readFile: async (p) => files[p]!, fetchImpl, trustRoot },
+    );
+    expect(result.bundle_verified).toBe(true);
+    expect(result.all_matched).toBe(true);
+    expect(exitCode).toBe(0);
+  });
+
+  it('fails closed with a clear error when --bundle is given with neither --key nor AER_BASE_URL', async () => {
+    const files: Record<string, string> = { 'reqs.json': REQS, 'bundle.json': JSON.stringify(unsignedBundle([commitmentFor(KEY, REQUEST)])) };
+    await expect(
+      runCommitmentsVerify(
+        ['--requests', 'reqs.json', '--bundle', 'bundle.json'],
+        { commitmentKey: KEY_HEX, readFile: async (p) => files[p]! },
+      ),
+    ).rejects.toThrow(/--key|AER_BASE_URL/);
+  });
+
+  it('--aer without AER_BASE_URL fails closed with a clear error', async () => {
+    await expect(
+      runCommitmentsVerify(
+        ['--requests', 'reqs.json', '--aer', 'aer-9'],
+        { commitmentKey: KEY_HEX, readFile: async () => REQS },
+      ),
+    ).rejects.toThrow(/AER_BASE_URL/);
   });
 
   it('throws (no partial output) when the key is missing', async () => {
