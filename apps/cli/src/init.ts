@@ -179,8 +179,13 @@ export function planInit(fs: FsLike, opts: InitOptions): InitPlan {
   }
 
   // ── docs ───────────────────────────────────────────────────────────────────
+  // Always regenerated on a real run (so it reflects current detection state),
+  // but the planned label must still say "create" when the file is not yet on
+  // disk: a dry-run consumer decides from this label whether the run is safe,
+  // and "overwrite" implies content it does not have would be destroyed.
+  const integrationMdPath = join(cwd, 'AER_INTEGRATION.md');
   const integrationMd = buildIntegrationMd(det, sessionStrategy, baseUrl, scriptChanges);
-  files.push({ path: join(cwd, 'AER_INTEGRATION.md'), content: integrationMd, action: 'overwrite' });
+  files.push({ path: integrationMdPath, content: integrationMd, action: fs.exists(integrationMdPath) ? 'overwrite' : 'create' });
 
   const agentsPath = join(cwd, 'AGENTS.md');
   const existingAgents = fs.readFile(agentsPath);
@@ -211,7 +216,8 @@ export function planInit(fs: FsLike, opts: InitOptions): InitPlan {
     files_changed: [...new Set(filesChanged)],
     verify_command: 'npx @adastracomputing/aer doctor',
   };
-  files.push({ path: join(cwd, 'aer.integration.json'), content: JSON.stringify(manifest, null, 2) + '\n', action: 'overwrite' });
+  const manifestPath = join(cwd, 'aer.integration.json');
+  files.push({ path: manifestPath, content: JSON.stringify(manifest, null, 2) + '\n', action: fs.exists(manifestPath) ? 'overwrite' : 'create' });
 
   return { cwd, detect: det, files, scriptChanges, manifest };
 }
