@@ -288,3 +288,182 @@ class TestCodexFindings:
         # localhost development exception
         make_client(FakeTransport([]), base_url="http://localhost:8787")
         make_client(FakeTransport([]), base_url="http://127.0.0.1:8787")
+
+
+class TestDefaultTransportUserAgent:
+    """Production's edge rejects the bare urllib default User-Agent with a
+    403. The default transport must always identify itself so the SDK works
+    out of the box against the real API."""
+
+    def test_default_transport_sets_user_agent_header(self, monkeypatch):
+        from aer_sdk import client as client_module
+        from aer_sdk._version import __version__
+
+        captured = {}
+
+        class FakeResponse:
+            status = 201
+
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            captured["headers"] = dict(req.header_items())
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        monkeypatch.setattr(client_module.urllib.request, "urlopen", fake_urlopen)
+
+        transport = client_module._make_default_transport(30.0)
+        transport("https://api.aer.run/v1/sessions", "POST", {"authorization": "Bearer x"}, b"{}")
+
+        assert captured["headers"].get("User-agent") == f"aer-sdk-py/{__version__}"
+
+    def test_default_transport_used_by_create_session_carries_the_ua(self, monkeypatch):
+        from aer_sdk import client as client_module
+
+        captured = {}
+
+        class FakeResponse:
+            status = 201
+
+            def read(self):
+                return b'{"agent_session_id": "s", "ingest_token": "t"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            captured["headers"] = dict(req.header_items())
+            return FakeResponse()
+
+        monkeypatch.setattr(client_module.urllib.request, "urlopen", fake_urlopen)
+
+        create_session(
+            base_url="https://api.aer.run", tenant_api_key="k",
+            tenant_id="t", agent_id="a", agent_version="1", environment_id="e",
+        )
+        assert "User-agent" in captured["headers"]
+
+
+class TestConfigurableTimeout:
+    def test_default_transport_honors_request_timeout_s(self, monkeypatch):
+        from aer_sdk import client as client_module
+
+        captured = {}
+
+        class FakeResponse:
+            status = 202
+
+            def read(self):
+                return b'{"accepted": 0, "rejected": 0, "errors": []}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        monkeypatch.setattr(client_module.urllib.request, "urlopen", fake_urlopen)
+
+        c = AerClient(
+            base_url="https://api.aer.run",
+            session_id="00000000-0000-7000-8000-000000000001",
+            ingest_token="tok-1",
+            batch_size=1,
+            flush_interval_ms=0,
+            request_timeout_s=5.0,
+        )
+        c.emit("tool.started", {"tool": "x"})
+        assert captured["timeout"] == 5.0
+
+    def test_create_session_honors_request_timeout_s(self, monkeypatch):
+        from aer_sdk import client as client_module
+
+        captured = {}
+
+        class FakeResponse:
+            status = 201
+
+            def read(self):
+                return b'{"agent_session_id": "s", "ingest_token": "t"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        monkeypatch.setattr(client_module.urllib.request, "urlopen", fake_urlopen)
+
+        create_session(
+            base_url="https://api.aer.run", tenant_api_key="k",
+            tenant_id="t", agent_id="a", agent_version="1", environment_id="e",
+            request_timeout_s=2.5,
+        )
+        assert captured["timeout"] == 2.5
+
+
+class TestIngestResultSurfacing:
+    """A 207 (or any rejected>0 / dropped_keys / warning) from a flush the
+    caller did not itself trigger - the interval timer, or a size-triggered
+    flush nested inside another emit() - must still be observable, mirroring
+    the TS SDK's onIngestResult."""
+
+    def test_on_ingest_result_called_for_size_triggered_flush(self):
+        t = FakeTransport([(207, {"accepted": 1, "rejected": 1, "errors": [{"index": 1}]})])
+        seen = []
+        c = make_client(t, batch_size=2, on_ingest_result=lambda r: seen.append(r))
+        c.emit("tool.started", {"tool": "ok"})
+        c.emit("tool.completed", {"tool": "bad"})  # crosses batch_size=2
+        assert seen == [{"accepted": 1, "rejected": 1, "errors": [{"index": 1}]}]
+
+    def test_on_ingest_result_called_for_background_flush(self):
+        t = FakeTransport([(207, {"accepted": 1, "rejected": 1, "errors": [{"index": 0}]})])
+        seen = []
+        c = make_client(t, flush_interval_ms=20, on_ingest_result=lambda r: seen.append(r))
+        c.emit("tool.started", {"tool": "x"})
+        deadline = time.time() + 2
+        while not seen and time.time() < deadline:
+            time.sleep(0.01)
+        c.close()
+        assert seen and seen[0]["rejected"] == 1
+
+    def test_stats_accumulate_accepted_and_rejected(self):
+        t = FakeTransport([
+            (207, {"accepted": 1, "rejected": 1, "errors": [{"index": 0}]}),
+            (202, {"accepted": 2, "rejected": 0, "errors": []}),
+        ])
+        c = make_client(t, batch_size=1)
+        c.emit("tool.started", {"tool": "a"})
+        c.flush()
+        c.emit("tool.started", {"tool": "b"})
+        c.flush()
+        stats = c.stats()
+        assert stats["accepted"] == 3
+        assert stats["rejected"] == 1
+
+    def test_a_broken_callback_never_breaks_the_flush(self):
+        t = FakeTransport([(202, {"accepted": 1, "rejected": 0, "errors": []})])
+        c = make_client(t, batch_size=1, on_ingest_result=lambda r: (_ for _ in ()).throw(RuntimeError("boom")))
+        c.emit("tool.started", {"tool": "x"})
+        results = c.flush()
+        assert results == []  # already flushed by size-trigger; nothing left to flush
+        assert len(t.requests) == 1
