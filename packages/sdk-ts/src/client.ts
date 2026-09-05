@@ -8,14 +8,28 @@ export interface AerClientOptions {
   flushIntervalMs?: number;
   maxRetries?: number;
   retryBaseMs?: number;
+  /** Per-request timeout, enforced via AbortController. Default 10000ms. */
+  requestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   clock?: () => Date;
+  /**
+   * Called with the ingest result of every /events POST, including ones
+   * triggered internally by crossing batchSize or by the periodic flush
+   * timer. An explicit flush() call already returns its own results; this is
+   * the only way to observe a 207 partial-accept (or dropped_keys/warning)
+   * from a flush the caller did not itself await.
+   */
+  onIngestResult?: (result: IngestResult) => void;
 }
 
 export interface IngestResult {
   accepted: number;
   rejected: number;
   errors: unknown[];
+  events_sanitized?: number;
+  dropped_keys?: string[];
+  warning?: string;
+  capability?: unknown;
 }
 
 export interface CompleteResult {
@@ -23,6 +37,8 @@ export interface CompleteResult {
   canonical_hash: string;
   signing_key_id: string;
   findings_count: number;
+  agent_session_id?: string;
+  status?: string;
 }
 
 export interface AerClient {
@@ -47,6 +63,13 @@ interface QueuedEvent {
   payload: Record<string, unknown>;
 }
 
+// The API's own per-request cap (MAX_EVENTS_PER_BATCH) is 1000. A configured
+// batchSize larger than this would otherwise still post one oversized
+// request per flush; cap every POST at half the server's limit regardless of
+// batchSize, which only governs how often a flush is triggered.
+const MAX_EVENTS_PER_POST = 500;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
 export function createAerClient(opts: AerClientOptions): AerClient {
   const baseUrl = opts.baseUrl.replace(/\/$/, '');
   const sessionId = opts.sessionId;
@@ -55,8 +78,10 @@ export function createAerClient(opts: AerClientOptions): AerClient {
   const flushIntervalMs = opts.flushIntervalMs ?? 500;
   const maxRetries = opts.maxRetries ?? 3;
   const retryBaseMs = opts.retryBaseMs ?? 100;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const clock = opts.clock ?? (() => new Date());
+  const onIngestResult = opts.onIngestResult;
 
   const buffer: QueuedEvent[] = [];
   let closed = false;
@@ -96,9 +121,17 @@ export function createAerClient(opts: AerClientOptions): AerClient {
 
     inflightFlush = (async () => {
       while (buffer.length > 0) {
-        const chunk = buffer.splice(0, batchSize);
+        const chunk = buffer.splice(0, Math.min(batchSize, MAX_EVENTS_PER_POST));
         try {
-          results.push(await postWithRetry(chunk));
+          const result = await postWithRetry(chunk);
+          results.push(result);
+          if (onIngestResult) {
+            try {
+              onIngestResult(result);
+            } catch {
+              /* the caller's callback must never break the flush */
+            }
+          }
         } catch (err) {
           buffer.unshift(...chunk);
           throw err;
@@ -114,10 +147,20 @@ export function createAerClient(opts: AerClientOptions): AerClient {
     }
   }
 
+  async function timedFetch(url: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutTimer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    try {
+      return await fetchImpl(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutTimer);
+    }
+  }
+
   async function postWithRetry(chunk: QueuedEvent[]): Promise<IngestResult> {
     let lastErr: unknown;
     for (let i = 0; i <= maxRetries; i++) {
-      const res = await fetchImpl(`${baseUrl}/v1/sessions/${sessionId}/events`, {
+      const res = await timedFetch(`${baseUrl}/v1/sessions/${sessionId}/events`, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${token}`,
@@ -139,7 +182,7 @@ export function createAerClient(opts: AerClientOptions): AerClient {
 
   async function complete(): Promise<CompleteResult> {
     await flush();
-    const res = await fetchImpl(`${baseUrl}/v1/sessions/${sessionId}/complete`, {
+    const res = await timedFetch(`${baseUrl}/v1/sessions/${sessionId}/complete`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}` },
     });
@@ -153,7 +196,7 @@ export function createAerClient(opts: AerClientOptions): AerClient {
   // Idempotent on already-terminated sessions (server returns 409 which we surface).
   async function abort(): Promise<void> {
     await flush();
-    const res = await fetchImpl(`${baseUrl}/v1/sessions/${sessionId}/abort`, {
+    const res = await timedFetch(`${baseUrl}/v1/sessions/${sessionId}/abort`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}` },
     });
@@ -165,9 +208,10 @@ export function createAerClient(opts: AerClientOptions): AerClient {
   async function close(): Promise<void> {
     closed = true;
     clearInterval(timer);
-    if (buffer.length > 0) {
-      await flush();
-    }
+    // Always flush, even when the buffer has already drained: a background
+    // or size-triggered flush may still be in flight (inflightFlush joins
+    // it), and skipping this call would let close() race ahead of it.
+    await flush();
   }
 
   return { emit, flush, complete, abort, close };
