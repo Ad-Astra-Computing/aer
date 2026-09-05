@@ -2,15 +2,16 @@
 
 Event-emission helper for apps and agents that want to send events to an AER gateway.
 
+ESM only: use `import`, not `require`. Requires Node 20 or newer.
+
 ## Install
 
 ```
 npm install @adastracomputing/aer-sdk-ts
 ```
 
-Requires Node 20 or newer. For zero-code capture, use
-`@adastracomputing/aer-auto-node` instead; this SDK is for explicit,
-app-controlled emission.
+For zero-code capture, use `@adastracomputing/aer-auto-node` instead; this SDK
+is for explicit, app-controlled emission.
 
 ## Usage
 
