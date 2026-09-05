@@ -22,6 +22,31 @@ describe('sinkFromEnv', () => {
     expect(typeof sink.emit).toBe('function');
   });
 
+  it('accepts AER_TENANT_API_KEY as a fallback for AER_API_KEY', () => {
+    const sink = sinkFromEnv({ AER_TENANT_API_KEY: 'k', AER_TENANT_ID: 't', AER_AGENT_ID: 'a' });
+    expect(sink).not.toBeInstanceOf(NullSink);
+  });
+
+  it('prefers AER_API_KEY over AER_TENANT_API_KEY when both are set', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.body && url.endsWith('/v1/sessions')) bodies.push(JSON.parse(String(init.body)));
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ id: 's', ingest_token: 'tok' });
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+
+    const sink = sinkFromEnv(
+      { AER_API_KEY: 'primary', AER_TENANT_API_KEY: 'fallback', AER_TENANT_ID: 't', AER_AGENT_ID: 'a' },
+      { fetch: fakeFetch, batchSize: 1 },
+    );
+    sink.emit('tool.started', {});
+    await sink.close();
+
+    const authHeader = fakeFetch.mock.calls[0]?.[1]?.headers as Record<string, string> | undefined;
+    expect(authHeader?.['Authorization'] ?? authHeader?.['authorization']).toContain('primary');
+  });
+
   it('forwards principal and identity from env on session open', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
