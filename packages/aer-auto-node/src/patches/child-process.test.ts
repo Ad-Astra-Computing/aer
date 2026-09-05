@@ -150,6 +150,50 @@ describe('installChildProcessPatch', () => {
     uninstall();
   });
 
+  // A named import (`import { exec } from 'node:child_process'`) binds
+  // directly to the pre-patch function, so `cp.exec` (the wrapper) is never
+  // invoked. Node's own exec() implementation still calls the shared,
+  // patched `execFile` property internally with the whole command string
+  // and a plain options object - simulated here by calling `cp.execFile`
+  // directly with that exact shape, bypassing the exec wrapper entirely.
+  it('never leaks the raw command when exec is reached only through the patched execFile property', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+
+    await new Promise<void>((resolve) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (cp.execFile as any)('deploy.sh --token=sk-live-98765 target', { shell: true }, () => resolve());
+    });
+
+    const execEvents = events.filter((e) => e.event_type === 'process.exec');
+    expect(execEvents).toHaveLength(1);
+    expect(execEvents[0]?.payload['command']).toBe('deploy.sh');
+    const dump = JSON.stringify(events);
+    expect(dump).not.toContain('sk-live-98765');
+    expect(dump).not.toContain('--token');
+    uninstall();
+  });
+
+  it('never leaks a secret when a real named-import exec runs under the patch', async () => {
+    // Bind the exec function BEFORE patching, exactly as `import { exec }` does,
+    // then call that binding after the patch is installed. The command must run
+    // and its secret must never reach a captured event.
+    const boundExec = cp.exec;
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+
+    await new Promise<void>((resolve) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (boundExec as any)('printf %s NAMED_IMPORT_SECRET_9', { env: process.env }, () => resolve());
+    });
+
+    const execEvents = events.filter((e) => e.event_type === 'process.exec');
+    expect(execEvents.length).toBeGreaterThanOrEqual(1);
+    for (const e of execEvents) expect(e.payload['command']).toBe('printf');
+    expect(JSON.stringify(events)).not.toContain('NAMED_IMPORT_SECRET_9');
+    uninstall();
+  });
+
   it('exec() callback semantics still work and exit is captured exactly once', async () => {
     const { capture, events } = withCapture();
     const uninstall = installChildProcessPatch(capture);
