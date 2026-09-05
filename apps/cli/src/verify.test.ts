@@ -80,6 +80,19 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterAll(() => server.close());
 
 describe('verifyAer', () => {
+  it('encodes a path-traversal-shaped aer id as one opaque URL segment', async () => {
+    const requestedPaths: string[] = [];
+    server.use(
+      http.get('http://test.local/*', ({ request }) => {
+        requestedPaths.push(new URL(request.url).pathname);
+        return HttpResponse.json({ error: 'not_found' }, { status: 404 });
+      }),
+    );
+    await expect(verifyAer({ baseUrl: 'http://test.local', aerId: '../../v1/admin/tenants' })).rejects.toThrow();
+    expect(requestedPaths[0]).toBe('/v1/aers/..%2F..%2Fv1%2Fadmin%2Ftenants/bundle');
+    server.resetHandlers();
+  });
+
   it('returns verified=true for a valid bundle signed by a PINNED key', async () => {
     currentBundle = buildBundle();
     const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });

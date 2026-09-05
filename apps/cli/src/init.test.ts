@@ -23,7 +23,7 @@ function pkg(extra: Record<string, unknown> = {}): string {
   });
 }
 
-describe('planInit — detection', () => {
+describe('planInit, detection', () => {
   it('detects the package manager from the lockfile', () => {
     const fs = memFs({ '/proj/package.json': pkg(), '/proj/pnpm-lock.yaml': '' });
     expect(planInit(fs, { cwd: CWD }).detect.packageManager).toBe('pnpm');
@@ -45,7 +45,7 @@ describe('planInit — detection', () => {
   });
 });
 
-describe('planInit — files + wiring', () => {
+describe('planInit, files and wiring', () => {
   it('plans aer.config.json with identity but never the API key', () => {
     const fs = memFs({ '/proj/package.json': pkg() });
     const plan = planInit(fs, { cwd: CWD, tenantId: 't-1', agentId: 'a-1', envId: 'e-1' });
@@ -90,6 +90,28 @@ describe('planInit — files + wiring', () => {
     const plan = planInit(fs, { cwd: CWD });
     const cfg = plan.files.find((f) => f.path.endsWith('aer.config.json'));
     expect(cfg?.action).toBe('skip');
+  });
+
+  it('labels AER_INTEGRATION.md and aer.integration.json "create" when they do not exist yet', () => {
+    const fs = memFs({ '/proj/package.json': pkg() });
+    const plan = planInit(fs, { cwd: CWD });
+    const md = plan.files.find((f) => f.path.endsWith('AER_INTEGRATION.md'));
+    const manifest = plan.files.find((f) => f.path.endsWith('aer.integration.json'));
+    expect(md?.action).toBe('create');
+    expect(manifest?.action).toBe('create');
+  });
+
+  it('labels AER_INTEGRATION.md and aer.integration.json "overwrite" when they already exist', () => {
+    const fs = memFs({
+      '/proj/package.json': pkg(),
+      '/proj/AER_INTEGRATION.md': '# old',
+      '/proj/aer.integration.json': '{"old":true}',
+    });
+    const plan = planInit(fs, { cwd: CWD });
+    const md = plan.files.find((f) => f.path.endsWith('AER_INTEGRATION.md'));
+    const manifest = plan.files.find((f) => f.path.endsWith('aer.integration.json'));
+    expect(md?.action).toBe('overwrite');
+    expect(manifest?.action).toBe('overwrite');
   });
 
   it('--entry wires the named script even if it is not auto-detected as runnable', () => {

@@ -56,7 +56,7 @@ export async function listSessions(opts: TenantOpts & { agentId?: string; limit?
 }
 
 export async function getSession(opts: TenantOpts & { sessionId: string }): Promise<unknown> {
-  return authedFetch(opts)(`/v1/sessions/${opts.sessionId}`);
+  return authedFetch(opts)(`/v1/sessions/${encodeURIComponent(opts.sessionId)}`);
 }
 
 export async function listFindings(opts: TenantOpts & { limit?: number; severity?: string }): Promise<unknown> {
@@ -89,11 +89,11 @@ export async function listAers(opts: TenantOpts & { limit?: number; cursor?: str
 }
 
 export async function getAerMeta(opts: TenantOpts & { aerId: string }): Promise<unknown> {
-  return authedFetch(opts)(`/v1/aers/${opts.aerId}`);
+  return authedFetch(opts)(`/v1/aers/${encodeURIComponent(opts.aerId)}`);
 }
 
 export async function getBaseline(opts: TenantOpts & { agentId: string }): Promise<unknown> {
-  return authedFetch(opts)(`/v1/agents/${opts.agentId}/baseline`);
+  return authedFetch(opts)(`/v1/agents/${encodeURIComponent(opts.agentId)}/baseline`);
 }
 
 export async function retrainBaseline(opts: TenantOpts & {
@@ -103,7 +103,7 @@ export async function retrainBaseline(opts: TenantOpts & {
   sessionIds?: string[];
 }): Promise<unknown> {
   const f = opts.fetchImpl ?? fetch;
-  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/agents/${opts.agentId}/baseline/retrain`, {
+  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/agents/${encodeURIComponent(opts.agentId)}/baseline/retrain`, {
     method: 'POST',
     headers: { ...authHeaders(opts.apiKey), 'content-type': 'application/json' },
     body: JSON.stringify({

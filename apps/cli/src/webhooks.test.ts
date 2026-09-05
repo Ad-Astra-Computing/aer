@@ -107,4 +107,17 @@ describe('CLI webhooks', () => {
     await expect(listWebhooks({ baseUrl: BASE, apiKey: 'wrong' })).rejects.toThrow(/401/);
     server.resetHandlers();
   });
+
+  it('encodes a path-traversal-shaped webhook id as one opaque URL segment', async () => {
+    let requestedPath = '';
+    server.use(
+      http.delete(`${BASE}/*`, ({ request }) => {
+        requestedPath = new URL(request.url).pathname;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await deleteWebhook({ baseUrl: BASE, apiKey: KEY, webhookId: '../../v1/admin/tenants' });
+    expect(requestedPath).toBe('/v1/webhooks/..%2F..%2Fv1%2Fadmin%2Ftenants');
+    server.resetHandlers();
+  });
 });

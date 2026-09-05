@@ -80,28 +80,49 @@ function legacyReason(res: VerifiedAer): string | undefined {
 // dependency-free core the browser console and third parties use, so the CLI can
 // no longer drift from the reference implementation. This function keeps the
 // network concerns (fetching the key, 404 handling) the core deliberately omits.
-export async function verifyBundleSignature(
-  bundle: Record<string, unknown>,
-  baseUrl: string,
-  fetchImpl: typeof fetch,
+export interface VerifyBundleSignatureOptions {
+  // Base URL to fetch the public signing key from, when `key` is not supplied
+  // directly. Optional so a caller that already has the key in hand (e.g. a
+  // locally pinned public-key.json) never needs network access.
+  baseUrl?: string;
+  fetchImpl: typeof fetch;
   // Same fail-closed trust root `aer verify` enforces (defaults to the
   // builtin pinned root). Without this, a signature that only checks out
   // against a key served by the very host under scrutiny proves
-  // self-consistency, not trusted provenance - `commitments verify` must not
+  // self-consistency, not trusted provenance: `commitments verify` must not
   // silently accept weaker key trust than `verify` does.
-  trustRoot: ReturnType<typeof builtinTrustRoot> = builtinTrustRoot(),
+  trustRoot?: ReturnType<typeof builtinTrustRoot>;
+  // A pre-fetched or locally pinned public key, in the same shape GET
+  // /v1/keys/:key_id returns. When supplied, no network call is made.
+  key?: KeyResponse;
+}
+
+export async function verifyBundleSignature(
+  bundle: Record<string, unknown>,
+  opts: VerifyBundleSignatureOptions,
 ): Promise<BundleSignatureResult> {
-  const base = baseUrl.replace(/\/$/, '');
+  const trustRoot = opts.trustRoot ?? builtinTrustRoot();
   const integrity = bundle['integrity'] as AerBundle['integrity'] | undefined;
   if (!integrity || typeof integrity.hash !== 'string' || typeof integrity.signature !== 'string' || typeof integrity.signing_key_id !== 'string') {
     return { hash_match: false, signature_valid: false, verified: false, anchored: false, canonical_hash: '', signing_key_id: '', reason: 'bundle_missing_integrity' };
   }
 
-  const keyRes = await fetchImpl(`${base}/v1/keys/${integrity.signing_key_id}`);
-  if (!keyRes.ok) {
-    return { hash_match: false, signature_valid: false, verified: false, anchored: !!integrity.anchored, canonical_hash: '', signing_key_id: integrity.signing_key_id, reason: `key_not_found: ${keyRes.status}` };
+  let keyData = opts.key;
+  if (!keyData) {
+    if (!opts.baseUrl) {
+      return {
+        hash_match: false, signature_valid: false, verified: false, anchored: !!integrity.anchored,
+        canonical_hash: '', signing_key_id: integrity.signing_key_id,
+        reason: 'signature_unverifiable_no_key_source',
+      };
+    }
+    const base = opts.baseUrl.replace(/\/$/, '');
+    const keyRes = await opts.fetchImpl(`${base}/v1/keys/${encodeURIComponent(integrity.signing_key_id)}`);
+    if (!keyRes.ok) {
+      return { hash_match: false, signature_valid: false, verified: false, anchored: !!integrity.anchored, canonical_hash: '', signing_key_id: integrity.signing_key_id, reason: `key_not_found: ${keyRes.status}` };
+    }
+    keyData = (await keyRes.json()) as KeyResponse;
   }
-  const keyData = (await keyRes.json()) as KeyResponse;
 
   const res = await verifyAerBundle(bundle, { publicKeyHex: keyData.public_key_hex, pinnedKeys: trustRoot.aerSigningKeys });
 
@@ -126,7 +147,7 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
 
   // 1. Download the canonical bundle.
-  const bundleRes = await fetchImpl(`${base}/v1/aers/${opts.aerId}/bundle`);
+  const bundleRes = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(opts.aerId)}/bundle`);
   if (!bundleRes.ok) {
     throw new Error(`failed to fetch bundle: ${bundleRes.status} ${await bundleRes.text()}`);
   }
@@ -143,7 +164,7 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
   // 2. Fetch the public signing key (fallback for the signature when the key is not
   //    pinned; the key is public, not a secret).
   let publicKeyHex: string | undefined;
-  const keyRes = await fetchImpl(`${base}/v1/keys/${integrity.signing_key_id}`);
+  const keyRes = await fetchImpl(`${base}/v1/keys/${encodeURIComponent(integrity.signing_key_id)}`);
   if (keyRes.ok) publicKeyHex = ((await keyRes.json()) as KeyResponse).public_key_hex;
 
   // 3. Fetch the anchor evidence. Three outcomes:
@@ -154,7 +175,7 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
   //      body + DSSE envelope) and reach a VERIFIED anchor without trusting the server.
   let anchorEvidence: AnchorEvidence | undefined;
   let anchorEvidenceMalformed = false;
-  const evRes = await fetchImpl(`${base}/v1/aers/${opts.aerId}/anchor-evidence`);
+  const evRes = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(opts.aerId)}/anchor-evidence`);
   if (evRes.ok) {
     const ev = (await evRes.json()) as AnchorEvidence & { projection_status?: string };
     if (ev && ev.projection_status === 'malformed') anchorEvidenceMalformed = true;

@@ -21,6 +21,15 @@ import {
 import { builtinTrustRoot } from '@adastracomputing/aer-verify';
 import { verifyBundleSignature, type BundleSignatureResult } from './verify.js';
 
+// The object GET /v1/keys/:key_id returns. A locally saved copy of that
+// response, passed via --key, lets --bundle mode check the outer signature
+// without any network access.
+interface PinnedKey {
+  signing_key_id: string;
+  sig_alg: string;
+  public_key_hex: string;
+}
+
 // One request the customer wants to prove was recorded. `request` is the request
 // body they sent to the model (the same object the collector saw: { model,
 // messages, system?, tools?, ... }); `provider` selects the canonicalization.
@@ -161,7 +170,7 @@ export function verifyCommitments(
       wire_matched: wireMatched,
     };
     if (ambiguous) res.ambiguous = true;
-    if (!bundleVerified) res.reason = 'bundle signature did not verify — commitment not trusted';
+    if (!bundleVerified) res.reason = 'bundle signature did not verify, commitment not trusted';
     return res;
   });
 
@@ -182,7 +191,10 @@ export function verifyCommitments(
 // ---- runner ------------------------------------------------------------------
 
 export interface RunCommitmentsVerifyOptions {
-  baseUrl: string;
+  // Only required when the bundle is fetched by --aer, or when --bundle is
+  // used without --key (the outer signature check then falls back to
+  // fetching the public key over the network).
+  baseUrl?: string;
   commitmentKey?: string | undefined; // AER_COMMITMENT_KEY (never logged)
   fetchImpl?: typeof fetch;
   readFile?: (p: string) => Promise<string>;
@@ -194,6 +206,7 @@ export interface ParsedArgs {
   aerId?: string;
   bundlePath?: string;
   requestsPath?: string;
+  keyPath?: string;
 }
 
 export function parseCommitmentsVerifyArgs(args: string[]): ParsedArgs {
@@ -204,6 +217,7 @@ export function parseCommitmentsVerifyArgs(args: string[]): ParsedArgs {
     if (a === '--aer' && v !== undefined) { out.aerId = v; i++; }
     else if (a === '--bundle' && v !== undefined) { out.bundlePath = v; i++; }
     else if (a === '--requests' && v !== undefined) { out.requestsPath = v; i++; }
+    else if (a === '--key' && v !== undefined) { out.keyPath = v; i++; }
   }
   return out;
 }
@@ -250,6 +264,15 @@ export async function runCommitmentsVerify(
   }
   const inputs = coerceInputs(requestsRaw);
 
+  let pinnedKey: PinnedKey | undefined;
+  if (parsed.keyPath) {
+    try {
+      pinnedKey = JSON.parse(await readFile(parsed.keyPath)) as PinnedKey;
+    } catch (err) {
+      throw new Error(`could not read/parse --key: ${(err as Error).message}`);
+    }
+  }
+
   let bundle: BundleLike;
   if (parsed.bundlePath) {
     try {
@@ -258,17 +281,30 @@ export async function runCommitmentsVerify(
       throw new Error(`could not read/parse --bundle: ${(err as Error).message}`);
     }
   } else {
+    if (!opts.baseUrl) {
+      throw new Error('--aer requires AER_BASE_URL to fetch the bundle; use --bundle <file.json> for a fully offline check.');
+    }
     const base = opts.baseUrl.replace(/\/$/, '');
-    const res = await fetchImpl(`${base}/v1/aers/${parsed.aerId}/bundle`);
+    const res = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(parsed.aerId!)}/bundle`);
     if (!res.ok) throw new Error(`failed to fetch bundle: ${res.status}`);
     bundle = (await res.json()) as BundleLike;
   }
 
   // MUST verify the bundle's own hash + Ed25519 signature before trusting any
-  // commitment. A tag match against unsigned/tampered JSON proves nothing - only
-  // that the plaintext matches a tag someone wrote. The public signing key is
-  // fetched from the public /v1/keys endpoint (not a secret). Fail closed.
-  const sig = await verifyBundleSignature(bundle as Record<string, unknown>, opts.baseUrl, fetchImpl, opts.trustRoot ?? builtinTrustRoot());
+  // commitment. A tag match against unsigned/tampered JSON proves nothing, only
+  // that the plaintext matches a tag someone wrote. The public signing key comes
+  // from --key (fully offline) or the public /v1/keys endpoint (not a secret).
+  // Neither is available, refuse rather than silently skip the check: an
+  // unverifiable bundle must never be able to report a match.
+  if (!pinnedKey && !opts.baseUrl) {
+    throw new Error('cannot check the bundle signature: pass --key <public-key.json> or set AER_BASE_URL.');
+  }
+  const sig = await verifyBundleSignature(bundle as Record<string, unknown>, {
+    ...(opts.baseUrl ? { baseUrl: opts.baseUrl } : {}),
+    fetchImpl,
+    trustRoot: opts.trustRoot ?? builtinTrustRoot(),
+    ...(pinnedKey ? { key: pinnedKey } : {}),
+  });
 
   const result = verifyCommitments(bundle, key, inputs, sig.verified);
   result.bundle_signature = sig;

@@ -103,7 +103,7 @@ describe('claudeCodeTranscriptToEvents', () => {
     expect(done[0]!.payload.ok).toBe(false);
   });
 
-  it('is deterministic + idempotent — same input yields identical event_ids', () => {
+  it('is deterministic and idempotent: same input yields identical event_ids', () => {
     const a = claudeCodeTranscriptToEvents([ASSISTANT, TOOL_RESULT], CTX).events;
     const b = claudeCodeTranscriptToEvents([ASSISTANT, TOOL_RESULT], CTX).events;
     expect(a.map((e) => e.event_id)).toEqual(b.map((e) => e.event_id));
