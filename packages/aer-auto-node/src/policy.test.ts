@@ -60,7 +60,7 @@ function policy(over: Partial<UsagePolicy> = {}): UsagePolicy {
   };
 }
 
-describe('PolicyEnforcer.beforeCall — model rules', () => {
+describe('PolicyEnforcer.beforeCall: model rules', () => {
   it('block mode: denied model returns a blocking violation', () => {
     const e = enforcer(policy({ mode: 'block', llm: { denied_models: ['*-vision'] } }));
     const { violations, block } = e.beforeCall('gpt-4-vision');
@@ -104,7 +104,7 @@ describe('PolicyEnforcer.beforeCall — model rules', () => {
   });
 });
 
-describe('PolicyEnforcer.beforeCall — call budget', () => {
+describe('PolicyEnforcer.beforeCall: call budget', () => {
   it('emits call_budget when the call count EXCEEDS the max', () => {
     const e = enforcer(policy({ mode: 'block', llm: { max_calls_per_session: 2 } }));
     expect(e.beforeCall('m').block).toBeNull(); // call 1
@@ -122,7 +122,7 @@ describe('PolicyEnforcer.beforeCall — call budget', () => {
   });
 });
 
-describe('PolicyEnforcer.afterCall — token budget', () => {
+describe('PolicyEnforcer.afterCall: token budget', () => {
   it('emits token_budget when cumulative tokens EXCEED the max (report action in block mode, never throws)', () => {
     const e = enforcer(policy({ mode: 'block', llm: { max_tokens_per_session: 100 } }));
     expect(e.afterCall(40, 40)).toHaveLength(0); // 80 total, under
@@ -149,7 +149,7 @@ describe('PolicyEnforcer.afterCall — token budget', () => {
   });
 });
 
-describe('PolicyEnforcer — disabled paths', () => {
+describe('PolicyEnforcer: disabled paths', () => {
   it('mode off is a no-op', () => {
     const e = enforcer(policy({ mode: 'off', llm: { denied_models: ['*'], max_calls_per_session: 0, max_tokens_per_session: 0 } }));
     expect(e.beforeCall('anything')).toEqual({ violations: [], block: null });
