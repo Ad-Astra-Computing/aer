@@ -10,6 +10,14 @@ Built on [`@adastracomputing/aer-resource-node`](https://www.npmjs.com/package/@
 dependency on `@modelcontextprotocol/sdk`: mount it in front of any MCP HTTP
 endpoint.
 
+`issuer` and `jwksUrl` are not set here; when omitted they fall through to
+`aer-resource-node`'s defaults, documented in that package's README. `issuer`
+is a fixed identifier that matches what AER mints into every token, not a
+fetchable URL, and `jwksUrl` points at `api.aer.run`, the canonical AER API
+host.
+
+ESM only: use `import`, not `require`. Requires Node 20 or newer.
+
 > **Scope:** HTTP MCP transports only, meaning Streamable HTTP and SSE. `stdio` MCP
 > runs locally with no network admission point, so it is out of scope. This package
 > gates the **whole transport**: every MCP HTTP request must carry a valid
@@ -21,8 +29,6 @@ endpoint.
 ```
 npm install @adastracomputing/aer-mcp-guard
 ```
-
-Requires Node 20 or newer.
 
 ## Hono
 

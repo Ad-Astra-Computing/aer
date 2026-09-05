@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
   verifyAttestation, AttestationError, jwksCache, introspectionCache, createMemoryReplayStore,
-  thumbprintFromPeerCert, thumbprintFromForwardedClientCert, type Jwk, type ReplayStore,
+  thumbprintFromPeerCert, thumbprintFromForwardedClientCert, DEFAULT_ISSUER, DEFAULT_JWKS_URL,
+  type Jwk, type ReplayStore,
 } from './index.js';
 import { honoAerAttestation } from './hono.js';
 import {
@@ -86,7 +87,7 @@ describe('verifyAttestation', () => {
     await expect(verifyAttestation(tampered, opts(jwk, jwksFetch([jwk])))).rejects.toMatchObject({ code: 'bad_signature' });
   });
 
-  it('caches JWKS — a second verify does not refetch', async () => {
+  it('caches JWKS: a second verify does not refetch', async () => {
     const { token, jwk } = await mint();
     const f = jwksFetch([jwk]);
     await verifyAttestation(token, opts(jwk, f));
@@ -403,5 +404,15 @@ describe('mTLS thumbprint helpers', () => {
     expect(await thumbprintFromForwardedClientCert('Hash=deadbeef', { format: 'xfcc' })).toBeNull(); // too short
     const tooLong = 'a'.repeat(65);
     expect(await thumbprintFromForwardedClientCert(`Hash=${tooLong}`, { format: 'xfcc' })).toBeNull();
+  });
+});
+
+describe('defaults', () => {
+  it('DEFAULT_ISSUER stays the attestation issuer identifier, not a fetchable URL', () => {
+    expect(DEFAULT_ISSUER).toBe('https://aer-api.adastra.computer');
+  });
+
+  it('DEFAULT_JWKS_URL points at the canonical api.aer.run JWKS endpoint', () => {
+    expect(DEFAULT_JWKS_URL).toBe('https://api.aer.run/.well-known/aer-attestation-jwks.json');
   });
 });
