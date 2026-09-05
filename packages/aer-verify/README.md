@@ -57,7 +57,13 @@ result.checks.key_pinned; // true
 - `checks`: `hash_match`, `signature_valid`, `key_id_binding`, `key_pinned` and
   an `anchor` sub-result.
 - `reasons`: stable machine-readable codes (e.g. `hash_mismatch`,
-  `signature_invalid`, `key_id_binding_mismatch`, `key_not_pinned`).
+  `signature_invalid`, `key_id_binding_mismatch`, `key_not_pinned`,
+  `canonicalize_error`).
+
+`verifyAerBundle` never throws, even on a malformed or attacker-shaped bundle
+(unbounded nesting depth, a non-finite number, a bigint, a Date). Any such
+shape fails canonicalization and comes back as a normal `ok:false` result with
+`canonicalize_error` in `reasons`, rather than an uncaught exception.
 
 ## Browsers without native Ed25519
 

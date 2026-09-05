@@ -162,4 +162,20 @@ describe('verifyRekorEvidence', () => {
     expect(res.verified).toBe(false);
     expect(res.reasons).toContain(REKOR_REASONS.PROOF_MALFORMED);
   });
+
+  it('never throws on a checkpoint string with a huge bogus audit path', async () => {
+    const s = await buildScenario(8, 2);
+    const cp = await s.makeCheckpoint(s.root, s.size);
+    const a = s.anchor(cp);
+    // An attacker-controlled audit path much longer than the tree height must fail
+    // as an ordinary malformed proof, not throw out of verifyRekorEvidence.
+    a.verification.inclusionProof.hashes = Array(50000).fill('00'.repeat(32));
+    await expect(verifyRekorEvidence(a, { keys: [s.key] })).resolves.toMatchObject({ verified: false });
+  });
+
+  it('never throws when the checkpoint text has no signature separator', async () => {
+    const s = await buildScenario(8, 2);
+    const a = s.anchor('not a real checkpoint, no blank line here');
+    await expect(verifyRekorEvidence(a, { keys: [s.key] })).resolves.toMatchObject({ verified: false });
+  });
 });

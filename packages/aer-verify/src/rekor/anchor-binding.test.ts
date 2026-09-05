@@ -252,4 +252,22 @@ describe('verifyAnchoredEvidence', () => {
     expect(res.anchored).toBe(false);
     expect(res.reasons).toContain(ANCHOR_REASONS.ATTESTATION_MISMATCH);
   });
+
+  it('never throws on a body whose JSON payload is deeply nested', async () => {
+    const s = await buildAnchor();
+    // The body is bounded to 16 KiB (BODY_TOO_LARGE), so a document nested past that
+    // size limit cannot reach canonicalize's own depth guard; this exercises the
+    // "still just a normal failed verdict" path for a body JSON.parse can choke on.
+    let node: Record<string, unknown> = {};
+    const root = node;
+    for (let i = 0; i < 200; i++) {
+      const next: Record<string, unknown> = {};
+      node.next = next;
+      node = next;
+    }
+    s.anchor.body = bytesToBase64(utf8(JSON.stringify({ ...s.bodyObj, extra: root })));
+    await expect(
+      verifyAnchoredEvidence(s.anchor, s.bundle, optsFor(s.rekorKey, s.aerKey)),
+    ).resolves.toMatchObject({ anchored: false });
+  });
 });

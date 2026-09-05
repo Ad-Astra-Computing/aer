@@ -92,9 +92,18 @@ export async function verifyAerBundle(
   }
 
   // 1. Recompute the canonical hash (never trust integrity.hash for the compare).
-  const recomputed = await canonicalHash(stripIntegrity(bundle));
-  const hashMatch = hexEqual(recomputed, integrity.hash);
-  if (!hashMatch) reasons.push(REASONS.HASH_MISMATCH);
+  // The bundle is attacker-controlled input: canonicalize() throws on a pathological
+  // shape (excess nesting depth, a non-finite number, a bigint, a Date, and so on).
+  // Surface that as an ordinary failed verdict, never an uncaught exception.
+  let recomputed = '';
+  let hashMatch = false;
+  try {
+    recomputed = await canonicalHash(stripIntegrity(bundle));
+    hashMatch = hexEqual(recomputed, integrity.hash);
+  } catch {
+    reasons.push(REASONS.CANONICALIZE_ERROR);
+  }
+  if (!hashMatch && !reasons.includes(REASONS.CANONICALIZE_ERROR)) reasons.push(REASONS.HASH_MISMATCH);
 
   // 2. Resolve the public key: prefer the pinned set, fall back to the supplied key.
   const pinned = (opts.pinnedKeys ?? []).find((k) => k.signing_key_id.toLowerCase() === integrity.signing_key_id.toLowerCase());

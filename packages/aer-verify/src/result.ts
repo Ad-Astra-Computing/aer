@@ -4,6 +4,10 @@
 
 export const REASONS = {
   BUNDLE_MISSING_INTEGRITY: 'bundle_missing_integrity',
+  // The bundle could not be canonicalized (depth, non-finite number, bigint, Date,
+  // or another non-JSON-safe shape). Reported as a normal failed verdict, never
+  // an uncaught exception, since the bundle is attacker-controlled input.
+  CANONICALIZE_ERROR: 'canonicalize_error',
   HASH_MISMATCH: 'hash_mismatch',
   SIGNATURE_INVALID: 'signature_invalid',
   SIGNATURE_ERROR: 'signature_error',
@@ -48,7 +52,7 @@ export type AnchorStatus = 'verified' | 'claimed' | 'invalid' | 'none';
 
 export interface AnchorCheck {
   status: AnchorStatus;
-  /** What the bundle's UNSIGNED integrity.anchored field claimed — display only. */
+  /** What the bundle's UNSIGNED integrity.anchored field claimed, for display only. */
   claim: boolean | null;
   /** False when the bundle claims anchored:true but status !== 'verified'. */
   claim_consistent: boolean;
@@ -58,7 +62,7 @@ export interface VerifiedAer {
   /** Policy-evaluated verdict. */
   ok: boolean;
   aer_id: string;
-  /** Recomputed locally — never echoed from the bundle. */
+  /** Recomputed locally, never echoed from the bundle. */
   canonical_hash: string;
   signing_key_id: string;
   /** True only when the anchor is cryptographically verified (Phase 2). */

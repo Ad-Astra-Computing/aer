@@ -61,4 +61,19 @@ describe('verifyDsseEnvelope + decodeAttestation against a generator-built envel
     envelope.signatures.push({ sig: envelope.signatures[0]!.sig });
     expect(await verifyDsseEnvelope(envelope, signer.publicKey(), subtleEd25519Verify)).toBe(false);
   });
+
+  it('decodeAttestation never throws on a deeply-nested payload, even one that is otherwise well-formed JSON', () => {
+    // Built by string concatenation (iteratively), not JSON.stringify on a nested
+    // object. JSON.stringify is itself recursive and would overflow the stack
+    // building the fixture, before decodeAttestation ever sees it.
+    const depth = 20000;
+    const nestedJson = '{"a":'.repeat(depth) + '1' + '}'.repeat(depth);
+    const envelope = {
+      payloadType: 'application/vnd.aer.attestation+json',
+      payload: btoa(nestedJson),
+      signatures: [{ sig: btoa('x') }],
+    };
+    expect(() => decodeAttestation(envelope)).not.toThrow();
+    expect(decodeAttestation(envelope)).toBeNull();
+  });
 });
