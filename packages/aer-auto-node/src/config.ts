@@ -216,8 +216,10 @@ export function resolveConfig(opts: ResolveOptions = {}): AerAutoConfig {
 
 /**
  * Resolve the attestation audience for a request host, or null if the host is
- * not a configured protected resource. Matches exact host, subdomain of a bare
- * configured host, or a leading-dot suffix entry. (Port is ignored.)
+ * not a configured protected resource. Matches exact host, or a leading-dot
+ * suffix entry's subdomains. A bare host matches only that exact host, never
+ * its subdomains - a leading dot is the only way to opt into subdomain
+ * matching. (Port is ignored.)
  */
 export function audienceForHost(host: string, resources: ProtectedResource[]): string | null {
   return resourceForHost(host, resources)?.audience ?? null;
@@ -230,8 +232,12 @@ export function resourceForHost(host: string, resources: ProtectedResource[]): P
   const h = host.toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
   for (const r of resources) {
     if (h === r.host) return r;
+    // Only a leading-dot entry authorizes subdomains. A bare entry
+    // (`api.example.com`) is an exact-host match: a customer scoping a
+    // bearer-style attestation token to one host must not have it silently
+    // widened to every subdomain under a wildcard DNS record, an internal
+    // CNAME, or an attacker-controlled zone under that name.
     if (r.host.startsWith('.') && (h.endsWith(r.host) || h === r.host.slice(1))) return r;
-    if (!r.host.startsWith('.') && h.endsWith(`.${r.host}`)) return r;
   }
   return null;
 }
