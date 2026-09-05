@@ -12,7 +12,7 @@ export interface StreamAccumulator {
   output_tokens?: number;
   stop_reason?: string;
   tool_names: string[];
-  /** Count of chunks the host pulled (metadata only — never the chunk content). */
+  /** Count of chunks the host pulled (metadata only: never the chunk content). */
   chunks: number;
   /**
    * Assembled response TEXT, accumulated ONLY on the content-commitment path
@@ -115,7 +115,7 @@ export function tapAsyncIterable(
     });
     return true;
   } catch {
-    return false; // frozen / non-configurable slot — caller falls back
+    return false; // frozen / non-configurable slot: caller falls back
   }
 }
 

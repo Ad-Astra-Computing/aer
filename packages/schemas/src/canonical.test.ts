@@ -24,7 +24,7 @@ describe('canonicalize (json-c14n-v1)', () => {
     expect(canonicalize(a)).toBe(canonicalize(b));
   });
 
-  it('rejects non-finite numbers (NaN, Infinity) — not JSON-safe', () => {
+  it('rejects non-finite numbers (NaN, Infinity): not JSON-safe', () => {
     expect(() => canonicalize({ a: NaN })).toThrow();
     expect(() => canonicalize({ a: Infinity })).toThrow();
     expect(() => canonicalize({ a: -Infinity })).toThrow();

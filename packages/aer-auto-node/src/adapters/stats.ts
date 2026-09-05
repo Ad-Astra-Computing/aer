@@ -33,7 +33,7 @@ export class AdapterStats {
     return b;
   }
 
-  /** Increment a counter. Never throws — counting must not break the host SDK. */
+  /** Increment a counter. Never throws: counting must not break the host SDK. */
   record(provider: string, kind: AdapterRecordKind): void {
     try {
       const b = this.bucket(provider);
