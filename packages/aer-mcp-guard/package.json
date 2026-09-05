@@ -60,8 +60,8 @@
     "@adastracomputing/aer-resource-node": "workspace:*"
   },
   "peerDependencies": {
-    "hono": "*",
-    "express": "*"
+    "hono": "^4",
+    "express": "^5"
   },
   "peerDependenciesMeta": {
     "hono": {
