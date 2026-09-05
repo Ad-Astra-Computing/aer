@@ -137,8 +137,11 @@ describe('audienceForHost', () => {
     expect(audienceForHost('payments.internal.example:443', resources)).toBe('mcp://payments-prod');
     expect(audienceForHost('PAYMENTS.internal.example', resources)).toBe('mcp://payments-prod');
   });
-  it('matches a subdomain of a bare configured host', () => {
-    expect(audienceForHost('api.payments.internal.example', resources)).toBe('mcp://payments-prod');
+  it('does not match a subdomain of a bare configured host', () => {
+    // A bare host is exact-only. Only a leading dot opts into subdomain
+    // matching - otherwise a bearer-style token scoped to one host would be
+    // silently handed to anything resolving under a subdomain of it.
+    expect(audienceForHost('api.payments.internal.example', resources)).toBeNull();
   });
   it('matches a leading-dot suffix entry', () => {
     expect(audienceForHost('mcp.corp.example', resources)).toBe('mcp://corp');

@@ -11,6 +11,8 @@ SDK; a dependency snapshot and a signed coverage report; and three session
 strategies (`process`, `task`, `server`) plus `withAerSession` for explicit
 scoping. The fastest way in is the `register` hook shown below.
 
+ESM only: use `import`, not `require`. Requires Node 20 or newer.
+
 ## Use
 
 ```bash
@@ -164,6 +166,18 @@ binds to the original function before the patch applies and is not captured; use
 default-import property access (`cp.spawn(...)`) or `globalThis.fetch` so the
 patched function is resolved at call time.
 
+`exec` and `execFile` are the one exception to "not captured": Node's own `exec()`
+implementation calls the shared, patched `execFile` property internally regardless
+of which import style the caller used, so a named-import `exec` (or
+`promisify(exec)`) is still observed. In every case, for every import style, the
+recorded `process.exec` event carries only the executable's basename and a
+redacted argument count. The full command line, its arguments and any inline
+`VAR=value` prefix are never recorded.
+
+`node:fs` is not instrumented at all. No file read, write, rename or delete
+produces an event of any kind, so a session's event trail is not a record of file
+activity.
+
 ## Session strategies
 
 Set `session.strategy` in `aer.config.json`:
@@ -207,6 +221,11 @@ token and is denied by the resource's verifier (`@adastracomputing/aer-resource-
 
 - **HTTPS only.** Tokens are never injected over plain `http://`, and never to a
   host that isn't listed (third-party LLM APIs are untouched unless you add them).
+  This also means `enforcement: block` is a no-op for a plain-`http://` resource:
+  since no token can ever be attached, the request is sent whether it would have
+  been blocked or not, and the actual denial has to come from the resource
+  server rejecting the missing token. List a protected resource over `https://`
+  if you need `block` to have any effect client-side.
 - **Never overwrites** a caller-supplied `X-AER-Attestation` header.
 - **No cross-origin leak.** A bearer-style header must not follow a redirect to a
   different origin. On an injected `fetch`, redirects are followed by the
