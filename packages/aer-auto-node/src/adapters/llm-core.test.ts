@@ -221,7 +221,7 @@ describe('patchMethod', () => {
   });
 });
 
-describe('wrapCreate — content commitment (ADR-009)', () => {
+describe('wrapCreate: content commitment (ADR-009)', () => {
   const KEY = commitmentKeyFromString('00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff')!;
   const commit = { key: KEY, kid: deriveKid(KEY) };
   const req = {
@@ -302,7 +302,7 @@ describe('wrapCreate — content commitment (ADR-009)', () => {
   });
 });
 
-describe('wrapCreate — content commitment slice 2 (ADR-011)', () => {
+describe('wrapCreate: content commitment slice 2 (ADR-011)', () => {
   const KEY = commitmentKeyFromString('00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff')!;
   const commit = { key: KEY, kid: deriveKid(KEY) };
 

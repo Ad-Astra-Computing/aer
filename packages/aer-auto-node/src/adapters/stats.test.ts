@@ -26,7 +26,7 @@ describe('AdapterStats', () => {
     });
   });
 
-  it('snapshot is a copy — later records do not mutate an old snapshot', () => {
+  it('snapshot is a copy: later records do not mutate an old snapshot', () => {
     const stats = new AdapterStats();
     stats.record('openai', 'call');
     const snap = stats.snapshot();

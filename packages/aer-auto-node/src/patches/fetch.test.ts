@@ -118,7 +118,7 @@ describe('installFetchPatch', () => {
     uninstall();
   });
 
-  it('is idempotent — double install does not double-wrap', async () => {
+  it('is idempotent: double install does not double-wrap', async () => {
     const orig = vi.fn(async () => new Response('', { status: 200 }));
     globalThis.fetch = orig as unknown as typeof fetch;
     const { capture, events } = withCapture();
@@ -442,7 +442,7 @@ describe('installFetchPatch', () => {
       uninstall();
     });
 
-    it('respects redirect:"manual" — single injected request, no follow', async () => {
+    it('respects redirect:"manual": single injected request, no follow', async () => {
       const s = scripted((u) => (u.endsWith('/start') ? redirect('https://mcp.internal/next') : new Response('ok', { status: 200 })));
       const att = fakeAttestor({ host: 'mcp.internal', token: 'jwt-1' });
       const uninstall = s.install(att);
