@@ -36,7 +36,7 @@ export async function createWebhook(
 
 export async function rotateWebhookSecret(opts: WebhookCmdOptions & { webhookId: string }): Promise<unknown> {
   const f = opts.fetchImpl ?? fetch;
-  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${opts.webhookId}/rotate-secret`, {
+  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${encodeURIComponent(opts.webhookId)}/rotate-secret`, {
     method: 'POST',
     headers: authHeaders(opts.apiKey),
   });
@@ -46,7 +46,7 @@ export async function rotateWebhookSecret(opts: WebhookCmdOptions & { webhookId:
 
 export async function testWebhook(opts: WebhookCmdOptions & { webhookId: string }): Promise<unknown> {
   const f = opts.fetchImpl ?? fetch;
-  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${opts.webhookId}/test`, {
+  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${encodeURIComponent(opts.webhookId)}/test`, {
     method: 'POST',
     headers: authHeaders(opts.apiKey),
   });
@@ -56,7 +56,7 @@ export async function testWebhook(opts: WebhookCmdOptions & { webhookId: string 
 
 export async function deleteWebhook(opts: WebhookCmdOptions & { webhookId: string }): Promise<void> {
   const f = opts.fetchImpl ?? fetch;
-  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${opts.webhookId}`, {
+  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${encodeURIComponent(opts.webhookId)}`, {
     method: 'DELETE',
     headers: authHeaders(opts.apiKey),
   });
@@ -66,7 +66,7 @@ export async function deleteWebhook(opts: WebhookCmdOptions & { webhookId: strin
 export async function listDeliveries(opts: WebhookCmdOptions & { webhookId: string; limit?: number }): Promise<unknown> {
   const f = opts.fetchImpl ?? fetch;
   const q = opts.limit ? `?limit=${opts.limit}` : '';
-  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${opts.webhookId}/deliveries${q}`, {
+  const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${encodeURIComponent(opts.webhookId)}/deliveries${q}`, {
     headers: authHeaders(opts.apiKey),
   });
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);

@@ -10,7 +10,7 @@ import { claudeCodeTranscriptToEvents, type TranscriptCtx } from './claude-code.
 export interface ImportRunOptions {
   stream: Readable;
   baseUrl: string;
-  /** Tenant API key — creates the session (write role). */
+  /** Tenant API key. Creates the session (write role). */
   apiKey: string;
   tenantId: string;
   agentId: string;

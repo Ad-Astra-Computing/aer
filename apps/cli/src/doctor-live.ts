@@ -24,7 +24,7 @@ export async function runLiveChecks(input: LiveDoctorInput): Promise<DoctorRepor
   // 1. Base URL configured.
   const baseUrl = input.baseUrl ? trimUrl(input.baseUrl) : '';
   if (!baseUrl) {
-    checks.push({ name: 'AER_BASE_URL', ok: false, detail: 'not set — export AER_BASE_URL=https://api.aer.run' });
+    checks.push({ name: 'AER_BASE_URL', ok: false, detail: 'not set: export AER_BASE_URL=https://api.aer.run' });
     return { ok: false, checks }; // nothing else can run without a base URL
   }
   checks.push({ name: 'AER_BASE_URL', ok: true, detail: baseUrl });
@@ -37,40 +37,40 @@ export async function runLiveChecks(input: LiveDoctorInput): Promise<DoctorRepor
     checks.push({
       name: 'API reachable (/readyz)',
       ok: res.ok,
-      detail: res.ok ? 'ready (200)' : `not ready — HTTP ${res.status}; check the API status page`,
+      detail: res.ok ? 'ready (200)' : `not ready: HTTP ${res.status}. Check the API status page.`,
     });
   } catch (e) {
     checks.push({
       name: 'API reachable (/readyz)',
       ok: false,
-      detail: `unreachable — ${(e as Error).message}; verify AER_BASE_URL and network`,
+      detail: `unreachable: ${(e as Error).message}. Verify AER_BASE_URL and network.`,
     });
   }
 
   // 3. Tenant auth via a harmless read (GET /v1/agents).
   if (!input.apiKey) {
-    checks.push({ name: 'tenant auth', ok: false, detail: 'no API key — export AER_API_KEY (or AER_TENANT_API_KEY)' });
+    checks.push({ name: 'tenant auth', ok: false, detail: 'no API key: export AER_API_KEY (or AER_TENANT_API_KEY)' });
   } else if (!reachable) {
-    checks.push({ name: 'tenant auth', ok: false, detail: 'skipped — API not reachable' });
+    checks.push({ name: 'tenant auth', ok: false, detail: 'skipped, API not reachable' });
   } else {
     try {
       const res = await fetchFn(`${baseUrl}/v1/agents`, { headers: { authorization: `Bearer ${input.apiKey}` } });
       if (res.ok) {
         checks.push({ name: 'tenant auth', ok: true, detail: 'API key accepted (GET /v1/agents 200)' });
       } else if (res.status === 401 || res.status === 403) {
-        checks.push({ name: 'tenant auth', ok: false, detail: `key rejected (HTTP ${res.status}) — check AER_API_KEY is a valid tenant key` });
+        checks.push({ name: 'tenant auth', ok: false, detail: `key rejected (HTTP ${res.status}). Check AER_API_KEY is a valid tenant key.` });
       } else {
         checks.push({ name: 'tenant auth', ok: false, detail: `unexpected HTTP ${res.status} from GET /v1/agents` });
       }
     } catch (e) {
-      checks.push({ name: 'tenant auth', ok: false, detail: `request failed — ${(e as Error).message}` });
+      checks.push({ name: 'tenant auth', ok: false, detail: `request failed: ${(e as Error).message}` });
     }
   }
 
   // 4. Optional: agent_id resolves for this tenant.
   if (input.agentId) {
     if (!input.apiKey || !reachable) {
-      checks.push({ name: 'agent_id', ok: false, detail: 'skipped — needs a reachable API and a valid key' });
+      checks.push({ name: 'agent_id', ok: false, detail: 'skipped, needs a reachable API and a valid key' });
     } else {
       try {
         const res = await fetchFn(`${baseUrl}/v1/agents`, { headers: { authorization: `Bearer ${input.apiKey}` } });
@@ -80,13 +80,13 @@ export async function runLiveChecks(input: LiveDoctorInput): Promise<DoctorRepor
           checks.push({
             name: 'agent_id',
             ok: found,
-            detail: found ? `${input.agentId} found` : `${input.agentId} not found for this tenant — create it with \`aer agents create\` or check the id`,
+            detail: found ? `${input.agentId} found` : `${input.agentId} not found for this tenant. Create it with \`aer agents create\` or check the id.`,
           });
         } else {
           checks.push({ name: 'agent_id', ok: false, detail: `could not list agents (HTTP ${res.status})` });
         }
       } catch (e) {
-        checks.push({ name: 'agent_id', ok: false, detail: `request failed — ${(e as Error).message}` });
+        checks.push({ name: 'agent_id', ok: false, detail: `request failed: ${(e as Error).message}` });
       }
     }
   }
