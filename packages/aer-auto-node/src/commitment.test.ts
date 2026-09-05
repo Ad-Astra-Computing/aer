@@ -99,7 +99,7 @@ describe('deriveKid', () => {
   });
 });
 
-describe('canonicalizeRequest — cross-provider equivalence (the headline vector)', () => {
+describe('canonicalizeRequest: cross-provider equivalence (the headline vector)', () => {
   it('OpenAI and Anthropic shapes of the same logical prompt produce the SAME prompt_canon_tag', () => {
     const oa = canonicalizeRequest('openai', openaiArgs)!;
     const an = canonicalizeRequest('anthropic', anthropicArgs)!;
@@ -119,7 +119,7 @@ describe('canonicalizeRequest — cross-provider equivalence (the headline vecto
   });
 });
 
-describe('canonicalizeRequest — normalization invariants', () => {
+describe('canonicalizeRequest: normalization invariants', () => {
   const base = { model: 'gpt-4o', messages: [{ role: 'user', content: 'Hi there.' }] };
   const tagFor = (a: unknown[]) => promptCanonTag(KEY, canonicalizeRequest('openai', a)!);
 
@@ -211,7 +211,7 @@ describe('canonicalizeRequest — normalization invariants', () => {
   });
 });
 
-describe('promptCanonTag — keyed (no brute-force oracle)', () => {
+describe('promptCanonTag: keyed (no brute-force oracle)', () => {
   it('is deterministic for a given key', () => {
     const c = canonicalizeRequest('openai', openaiArgs)!;
     expect(promptCanonTag(KEY, c)).toBe(promptCanonTag(KEY, c));

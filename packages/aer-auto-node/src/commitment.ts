@@ -175,7 +175,7 @@ export function promptCanonTag(key: Buffer, canon: CanonRequest): string {
   return hmacHex(key, preimage);
 }
 
-/** response_tag — HMAC over the assembled final text (NFC). Empty output has a
+/** response_tag: HMAC over the assembled final text (NFC). Empty output has a
  * defined tag (HMAC of ""), so a partial/aborted completion is unambiguous. Used
  * for BOTH non-streaming and streaming responses (slice 2 accumulates the
  * streamed text in-process on the commitment path); the same text yields the same
@@ -226,14 +226,14 @@ export function wireBodyTag(key: Buffer, body: unknown): string {
   return hmacHex(key, canonValue({ v: 'aer-wire.v1', body }));
 }
 
-/** tool_args_tag — HMAC over one tool call's name + arguments. Cross-provider
+/** tool_args_tag: HMAC over one tool call's name + arguments. Cross-provider
  * equivalent: OpenAI's JSON-string arguments and Anthropic's object input produce
  * the same tag for the same logical args. Domain `aer-toolargs.v1`. */
 export function toolArgsTag(key: Buffer, name: string, args: unknown): string {
   return hmacHex(key, canonValue({ v: 'aer-toolargs.v1', name, args: parseJsonish(args) }));
 }
 
-/** tool_result_tag — HMAC over one tool result's content (the value fed back to
+/** tool_result_tag: HMAC over one tool result's content (the value fed back to
  * the model). JSON-string results and object results of the same data match.
  * Domain `aer-toolresult.v1`. */
 export function toolResultTag(key: Buffer, content: unknown): string {

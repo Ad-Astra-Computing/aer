@@ -19,7 +19,7 @@ export interface DpopProofArgs {
 }
 
 export interface DpopKey {
-  /** RFC 7638 thumbprint of the public key — sent as `dpop_jkt` at mint. */
+  /** RFC 7638 thumbprint of the public key: sent as `dpop_jkt` at mint. */
   readonly jkt: string;
   /** Sign a DPoP proof JWT for one request. Synchronous. */
   proof(args: DpopProofArgs): string;

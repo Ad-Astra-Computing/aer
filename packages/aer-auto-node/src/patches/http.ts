@@ -187,7 +187,7 @@ function injectHeaderIntoArgs(args: unknown[], token: string, dpopProof?: string
     }
     const existingHeaders = options?.['headers'];
     if (existingHeaders !== undefined && (typeof existingHeaders !== 'object' || Array.isArray(existingHeaders))) {
-      return null; // unusual header shape (array/iterable) — don't risk corrupting it
+      return null; // unusual header shape (array/iterable): don't risk corrupting it
     }
     const headers: Record<string, unknown> = { ...((existingHeaders as Record<string, unknown> | undefined) ?? {}) };
     let hasDpop = false;

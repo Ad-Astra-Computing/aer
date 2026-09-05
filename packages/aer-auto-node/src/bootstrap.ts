@@ -31,7 +31,7 @@ export function bootstrap(deps: BootstrapDeps = {}): Collector | null {
   if (!isConfigured(config)) {
     // Graceful no-op: the host app runs unaffected; `aer doctor` explains the gap.
     console.warn(
-      '[aer:auto] not started — missing AER_API_KEY and/or tenant/agent/env identity. Run `npx @adastracomputing/aer doctor`.',
+      '[aer:auto] not started: missing AER_API_KEY and/or tenant/agent/env identity. Run `npx @adastracomputing/aer doctor`.',
     );
     return null;
   }

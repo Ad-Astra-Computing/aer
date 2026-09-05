@@ -39,7 +39,7 @@ function policyOpt(events: CollectorEvent[], p: UsagePolicy | null) {
   return { enforcer, emit };
 }
 
-describe('wrapCreate policy enforcement — block mode', () => {
+describe('wrapCreate policy enforcement: block mode', () => {
   it('throws AerPolicyError BEFORE calling original for a denied model and emits policy.violation', async () => {
     const { capture, events } = capt();
     const original = vi.fn(async () => ({ model: 'gpt-4-vision', usage: { in: 1, out: 1 } }));
@@ -72,7 +72,7 @@ describe('wrapCreate policy enforcement — block mode', () => {
   });
 });
 
-describe('wrapCreate policy enforcement — report mode', () => {
+describe('wrapCreate policy enforcement: report mode', () => {
   it('emits policy.violation AND calls original and returns its result', async () => {
     const { capture, events } = capt();
     const response = { model: 'gpt-4-vision', usage: { in: 1, out: 1 } };
@@ -91,7 +91,7 @@ describe('wrapCreate policy enforcement — report mode', () => {
   });
 });
 
-describe('wrapCreate policy enforcement — budgets', () => {
+describe('wrapCreate policy enforcement: budgets', () => {
   it('emits a call_budget violation in report mode when calls exceed the max', async () => {
     const { capture, events } = capt();
     const opt = policyOpt(events, policy({ mode: 'report', llm: { max_calls_per_session: 1 } }));
@@ -114,7 +114,7 @@ describe('wrapCreate policy enforcement — budgets', () => {
   });
 });
 
-describe('wrapCreate policy enforcement — inert paths', () => {
+describe('wrapCreate policy enforcement: inert paths', () => {
   it('no policy option => original called, no policy events', async () => {
     const { capture, events } = capt();
     const original = vi.fn(async () => ({ model: 'm', usage: { in: 1, out: 1 } }));

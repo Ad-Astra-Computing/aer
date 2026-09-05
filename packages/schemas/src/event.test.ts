@@ -10,7 +10,7 @@ const base = () => ({
   severity_hint: 'info' as const,
 });
 
-describe('EventSchema — structural requirements', () => {
+describe('EventSchema: structural requirements', () => {
   it('accepts a minimally-valid session.started event', () => {
     const parsed = EventSchema.safeParse({
       ...base(),
@@ -105,7 +105,7 @@ describe('EventSchema — structural requirements', () => {
   });
 });
 
-describe('EventSchema — event_type-specific payloads', () => {
+describe('EventSchema: event_type-specific payloads', () => {
   it('tool.started requires a tool name', () => {
     expect(
       EventSchema.safeParse({
@@ -224,7 +224,7 @@ describe('EventSchema — event_type-specific payloads', () => {
   });
 });
 
-describe('EventSchema — captured-field length bounds', () => {
+describe('EventSchema: captured-field length bounds', () => {
   it('rejects an over-length host on http.requested', () => {
     const parsed = EventSchema.safeParse({
       ...base(),

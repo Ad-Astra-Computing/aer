@@ -181,7 +181,7 @@ function buildInjectedSender(
   } catch {
     return null;
   }
-  if (headers.has(ATTESTATION_HEADER)) return null; // caller already attested — never overwrite
+  if (headers.has(ATTESTATION_HEADER)) return null; // caller already attested: never overwrite
   headers.set(ATTESTATION_HEADER, token);
 
   // M3: a DPoP proof is bound to THIS method+url. Attach it and never auto-follow

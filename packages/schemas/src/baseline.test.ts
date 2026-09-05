@@ -155,7 +155,7 @@ describe('Finding', () => {
   });
 });
 
-describe('BaselineModel — finite bounds (amplification defense)', () => {
+describe('BaselineModel: finite bounds (amplification defense)', () => {
   const model = {
     model_version: 'rules.v1' as const,
     allowed_domains: [] as string[],
