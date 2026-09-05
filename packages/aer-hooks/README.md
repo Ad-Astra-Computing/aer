@@ -5,6 +5,8 @@ OpenAI Codex CLI both fire shell hooks that pass a JSON event on stdin
 (SessionStart, PreToolUse, PostToolUse, Stop, UserPromptSubmit). One binary
 normalizes both harnesses' payloads and emits the tool events into AER.
 
+ESM only: use `import`, not `require`. Requires Node 20 or newer.
+
 ## Install
 
 ```
@@ -41,6 +43,12 @@ ingest token, so it is written owner-only (0600) and removed when the harness
 session ends. Stale entries expire after a day. If the cache cannot be written the
 hook still records, it just falls back to a session per event.
 
+Two hook processes can fire for the same harness session close together (a fast
+tool sequence, parallel subagents). A short-lived lock file next to the store
+makes the "is there already a session" check and the "open one and save it" write
+atomic across processes, so concurrent hooks converge on one AER session instead
+of racing to open two.
+
 ## Redaction by default
 
 The hook records tool names, argument KEY names (the `Object.keys` of the tool
@@ -50,10 +58,12 @@ Set `AER_HOOK_RECORD_ARGS=1` to opt in to recording argument values.
 ## Fail-open, never blocking
 
 The `aer-hook` binary is designed so it can never break or slow the harness. It
-wraps everything in try/catch, caps its own runtime with a hard timeout after which
-it exits 0 regardless and never writes to stdout (some harnesses interpret hook
-stdout). If AER is unconfigured it does nothing and exits 0. Recording is always
-best-effort and never in the critical path of the tool the harness is running.
+wraps everything in try/catch, caps its own runtime with a hard timeout (default
+10000ms, override with `AER_HOOK_TIMEOUT_MS`) after which it exits 0 regardless
+and never writes to stdout (some harnesses interpret hook stdout). If the budget
+is exceeded, it writes one stderr line noting the record may be incomplete. If
+AER is unconfigured it does nothing and exits 0. Recording is always best-effort
+and never in the critical path of the tool the harness is running.
 
 ## Install safety
 
