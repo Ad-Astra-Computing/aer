@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { createStdioProxy } from './stdio.js';
+import { createStdioProxy, DEFAULT_CLOSE_TIMEOUT_MS } from './stdio.js';
 import type { ProxyChild, SpawnFn } from './stdio.js';
 import { McpRecorder } from './recorder.js';
 import type { EventSink } from './sink.js';
@@ -14,6 +14,7 @@ function makeFakeChild(): {
   stdinReceived: () => Buffer;
   emitStdout: (data: string | Buffer) => void;
   exit: (code: number) => void;
+  exitWithSignal: (signal: NodeJS.Signals) => void;
   killed: NodeJS.Signals[];
 } {
   const emitter = new EventEmitter();
@@ -47,6 +48,7 @@ function makeFakeChild(): {
     stdinReceived: () => Buffer.concat(received),
     emitStdout: (data) => childStdout.write(data),
     exit: (code) => emitter.emit('exit', code, null),
+    exitWithSignal: (signal) => emitter.emit('exit', null, signal),
     killed,
   };
 }
@@ -72,6 +74,111 @@ function throwingRecorder(): McpRecorder {
   };
   return rec;
 }
+
+/** A recorder whose close() never settles, to exercise the shutdown timeout. */
+function hangingRecorder(): McpRecorder {
+  const hangingSink: EventSink = {
+    emit() {
+      /* no-op */
+    },
+    close() {
+      return new Promise<void>(() => {
+        /* deliberately never resolves */
+      });
+    },
+  };
+  return new McpRecorder({ sink: hangingSink });
+}
+
+describe('createStdioProxy shutdown budget and exit codes', () => {
+  it('defaults closeTimeoutMs to 15000ms', () => {
+    expect(DEFAULT_CLOSE_TIMEOUT_MS).toBe(15000);
+  });
+
+  it('exits 70 and logs an incomplete-record diagnostic (no token) when the recorder close exceeds the budget', async () => {
+    const fake = makeFakeChild();
+    const stderrWrites: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    });
+
+    const proxy = createStdioProxy({
+      command: 'fake',
+      args: [],
+      recorder: hangingRecorder(),
+      spawn: fake.spawn,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      handleSignals: false,
+      closeTimeoutMs: 20,
+    });
+    fake.exit(0);
+
+    await expect(proxy.done).resolves.toBe(70);
+    spy.mockRestore();
+
+    const logged = stderrWrites.join('');
+    expect(logged).toMatch(/incomplete/i);
+    expect(logged).not.toMatch(/bearer|ingest[-_]?token|tok-/i);
+  });
+
+  it('propagates the child\'s own failing exit code even when the recorder close also times out', async () => {
+    const fake = makeFakeChild();
+    const proxy = createStdioProxy({
+      command: 'fake',
+      args: [],
+      recorder: hangingRecorder(),
+      spawn: fake.spawn,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      handleSignals: false,
+      closeTimeoutMs: 20,
+    });
+    fake.exit(3);
+    await expect(proxy.done).resolves.toBe(3);
+  });
+
+  it('a signal-killed child reports 128+signum, not 0, and names the signal in the diagnostic', async () => {
+    const fake = makeFakeChild();
+    const stderrWrites: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    });
+
+    const proxy = createStdioProxy({
+      command: 'fake',
+      args: [],
+      recorder: null,
+      spawn: fake.spawn,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      handleSignals: false,
+    });
+    fake.exitWithSignal('SIGTERM');
+
+    await expect(proxy.done).resolves.toBe(128 + 15); // SIGTERM == 15 on POSIX
+    spy.mockRestore();
+    expect(stderrWrites.join('')).toContain('SIGTERM');
+  });
+
+  it('a recorder that closes within the budget does not alter a clean exit code', async () => {
+    const fake = makeFakeChild();
+    const proxy = createStdioProxy({
+      command: 'fake',
+      args: [],
+      recorder: null,
+      spawn: fake.spawn,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      handleSignals: false,
+      closeTimeoutMs: 5000,
+    });
+    fake.exit(0);
+    await expect(proxy.done).resolves.toBe(0);
+  });
+});
 
 describe('createStdioProxy byte transparency', () => {
   it('forwards harness bytes to the child unchanged and child bytes to the harness unchanged', async () => {

@@ -13,7 +13,23 @@ import { McpRecorder } from './recorder.js';
 import { sinkFromEnv, NullSink } from './sink.js';
 import { isInvokedDirectly } from './invoked-directly.js';
 
-const USAGE = `aer-mcp-recorder — transparent MCP proxy that records tool activity for AER
+/**
+ * Parse AER_CLOSE_TIMEOUT_MS: a positive integer, in ms, or unset. An unset or
+ * invalid value falls back to stdio.ts's DEFAULT_CLOSE_TIMEOUT_MS; an invalid
+ * one is reported once so a typo does not silently pick the default.
+ */
+export function parseCloseTimeoutMs(env: NodeJS.ProcessEnv, warn: (message: string) => void): number | undefined {
+  const raw = env['AER_CLOSE_TIMEOUT_MS'];
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    warn(`aer-mcp-recorder: ignoring invalid AER_CLOSE_TIMEOUT_MS=${JSON.stringify(raw)}; using the default`);
+    return undefined;
+  }
+  return n;
+}
+
+const USAGE = `aer-mcp-recorder: transparent MCP proxy that records tool activity for AER
 
 Usage:
   aer-mcp-recorder [--] <command> [args...]
@@ -30,11 +46,13 @@ values and AER_MCP_RECORD_RESULTS=1 to capture result content.
 
 Configuration (environment):
   AER_API_KEY, AER_TENANT_ID, AER_AGENT_ID   required to record (else no-op)
-  AER_ENV_ID, AER_AGENT_VERSION              optional session metadata
+  AER_ENV_ID                                 optional session metadata
+  AER_AGENT_VERSION                          defaults to mcp-recorder/<version>
   AER_BASE_URL                               default https://api.aer.run
   AER_PRINCIPAL_ID/_KIND/_DISPLAY            optional human/service/ci attribution
   AER_MCP_RECORD_ARGS=1                       capture argument values (off by default)
   AER_MCP_RECORD_RESULTS=1                    capture result content (off by default)
+  AER_CLOSE_TIMEOUT_MS                        shutdown flush budget in ms (default 15000)
 `;
 
 function parseArgs(argv: string[]): { command: string; args: string[] } | { help: true } | null {
@@ -70,7 +88,7 @@ function buildRecorder(): McpRecorder {
   return new McpRecorder({ sink, recordArgumentValues: recordArgs, recordResultContent: recordResults });
 }
 
-export async function main(argv: string[] = process.argv): Promise<number> {
+export async function main(argv: string[] = process.argv, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const parsed = parseArgs(argv);
   if (parsed === null) {
     process.stderr.write(USAGE + '\n');
@@ -88,7 +106,20 @@ export async function main(argv: string[] = process.argv): Promise<number> {
     recorder = null; // a recorder failure must never crash the child
   }
 
-  const proxy = createStdioProxy({ command: parsed.command, args: parsed.args, recorder });
+  const closeTimeoutMs = parseCloseTimeoutMs(env, (message) => {
+    try {
+      process.stderr.write(message + '\n');
+    } catch {
+      /* stderr may already be gone; never throw from a diagnostic */
+    }
+  });
+
+  const proxy = createStdioProxy({
+    command: parsed.command,
+    args: parsed.args,
+    recorder,
+    ...(closeTimeoutMs !== undefined ? { closeTimeoutMs } : {}),
+  });
   return proxy.done;
 }
 

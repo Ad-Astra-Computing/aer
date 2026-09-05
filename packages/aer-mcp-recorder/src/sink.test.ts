@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createHttpSink, sinkFromEnv, NullSink } from './sink.js';
+import { COLLECTOR_VERSION } from './recorder.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -22,6 +23,59 @@ describe('sinkFromEnv', () => {
     const sink = sinkFromEnv({ AER_API_KEY: 'k', AER_TENANT_ID: 't', AER_AGENT_ID: 'a' });
     expect(sink).not.toBeNull();
     expect(typeof sink!.emit).toBe('function');
+  });
+
+  describe('AER_AGENT_VERSION default', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('defaults to mcp-recorder/<version> when unset, so POST /v1/sessions never 400s on a missing var', async () => {
+      const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+          calls.push({ url, body });
+          if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 'tok' }, 201);
+          return jsonResponse({ accepted: 1, rejected: 0 }, 202);
+        }),
+      );
+
+      const sink = sinkFromEnv({ AER_API_KEY: 'k', AER_TENANT_ID: 't', AER_AGENT_ID: 'a' });
+      sink!.emit('tool.started', {});
+      await sink!.close();
+
+      const open = calls.find((c) => c.url.endsWith('/v1/sessions'));
+      expect(open?.body['agent_version']).toBe(`mcp-recorder/${COLLECTOR_VERSION}`);
+    });
+
+    it('leaves an explicit AER_AGENT_VERSION untouched', async () => {
+      const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+          calls.push({ url, body });
+          if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 's1', ingest_token: 'tok' }, 201);
+          return jsonResponse({ accepted: 1, rejected: 0 }, 202);
+        }),
+      );
+
+      const sink = sinkFromEnv({
+        AER_API_KEY: 'k',
+        AER_TENANT_ID: 't',
+        AER_AGENT_ID: 'a',
+        AER_AGENT_VERSION: 'my-agent/2.3.0',
+      });
+      sink!.emit('tool.started', {});
+      await sink!.close();
+
+      const open = calls.find((c) => c.url.endsWith('/v1/sessions'));
+      expect(open?.body['agent_version']).toBe('my-agent/2.3.0');
+    });
   });
 });
 

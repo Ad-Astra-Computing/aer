@@ -14,6 +14,8 @@ This is the observation half. It is separate from
 which is the admission half (deny or allow). The recorder observes and emits, the
 guard denies and allows, and the two can run side by side.
 
+ESM only: use `import`, not `require`. Requires Node 20 or newer.
+
 ## Two properties this package is designed for
 
 **Fail-open byte transparency.** The proxy forwards the raw byte streams unchanged
@@ -63,13 +65,14 @@ bytes.
 | `AER_TENANT_ID` | Tenant id. Required to record. |
 | `AER_AGENT_ID` | Agent id. Required to record. |
 | `AER_ENV_ID` | Environment id. Optional. |
-| `AER_AGENT_VERSION` | Agent version string. Optional. |
+| `AER_AGENT_VERSION` | Agent version string. Defaults to `mcp-recorder/<package version>` when unset, since the API requires an agent version on every session. |
 | `AER_BASE_URL` | API base URL. Default `https://api.aer.run`. |
 | `AER_PRINCIPAL_ID` | Human, service or CI identity the run is on behalf of. Optional. |
 | `AER_PRINCIPAL_KIND` | `user`, `service` or `ci`. Optional. |
 | `AER_PRINCIPAL_DISPLAY` | Short label for feeds. Optional. |
 | `AER_MCP_RECORD_ARGS` | Set to `1` to also capture argument values. Off by default. |
 | `AER_MCP_RECORD_RESULTS` | Set to `1` to also capture result content. Off by default. |
+| `AER_CLOSE_TIMEOUT_MS` | Shutdown flush budget in milliseconds. Default `15000`. Must be a positive integer; an invalid value is ignored (with a stderr warning) and the default is used. |
 
 ## What it records
 
@@ -90,6 +93,17 @@ No argument values and no result content appear unless you opt in with
 `AER_MCP_RECORD_ARGS=1` or `AER_MCP_RECORD_RESULTS=1`. On close the recorder emits a
 `mcp.recorder.report` coverage event carrying the recorder version, the server name
 and version, the tools it saw, plus call and error counts.
+
+## Shutdown and exit codes
+
+The wrapped server's own exit code always wins: if it exits non-zero, or dies to a
+signal, the proxy reports that outcome unchanged (a signal death is reported as
+`128 + signal number`, matching shell convention, never as a clean `0`). Only when
+the wrapped server exits cleanly does the recorder's own shutdown matter: on a clean
+exit, the proxy waits up to `AER_CLOSE_TIMEOUT_MS` (default 15000ms) for the
+recorder to flush its last events and close the AER session. If that budget is
+exceeded, the proxy exits `70` and writes one line to stderr noting the record may
+be incomplete, rather than reporting a silent success.
 
 ## Caveat
 

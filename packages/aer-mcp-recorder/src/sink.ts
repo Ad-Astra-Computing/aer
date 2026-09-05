@@ -14,9 +14,18 @@ import {
   type HttpSinkOptions,
   type Principal,
 } from '@adastracomputing/aer-emit';
+import { COLLECTOR_VERSION } from './recorder.js';
 
 export { createHttpSink, NullSink };
 export type { EventSink, HttpSinkOptions, Principal };
+
+/**
+ * Default AER_AGENT_VERSION when the customer does not set one. POST /v1/sessions
+ * requires agent_version; without a default, an unset var 400s the first session
+ * open and the sink disables itself for the rest of the process, recording
+ * nothing for the whole run.
+ */
+const DEFAULT_AGENT_VERSION = `mcp-recorder/${COLLECTOR_VERSION}`;
 
 /**
  * Build an HTTP sink from the standard AER environment variables, or return null
@@ -27,6 +36,8 @@ export type { EventSink, HttpSinkOptions, Principal };
  * maps that NullSink back to `null` so the recorder's long-standing API is intact.
  */
 export function sinkFromEnv(env: NodeJS.ProcessEnv = process.env): EventSink | null {
-  const sink = emitSinkFromEnv(env, { logLabel: 'aer-mcp-recorder' });
+  const withAgentVersion: NodeJS.ProcessEnv =
+    env['AER_AGENT_VERSION'] !== undefined ? env : { ...env, AER_AGENT_VERSION: DEFAULT_AGENT_VERSION };
+  const sink = emitSinkFromEnv(withAgentVersion, { logLabel: 'aer-mcp-recorder' });
   return sink instanceof NullSink ? null : sink;
 }
