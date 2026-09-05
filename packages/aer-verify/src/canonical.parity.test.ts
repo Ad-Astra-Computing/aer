@@ -55,6 +55,28 @@ describe('canonicalize parity with @aer/schemas', () => {
   });
 });
 
+describe('canonicalize depth bound', () => {
+  function nest(depth: number): unknown {
+    let node: Record<string, unknown> = {};
+    const root = node;
+    for (let i = 0; i < depth; i++) {
+      const next: Record<string, unknown> = {};
+      node.next = next;
+      node = next;
+    }
+    return root;
+  }
+
+  it('canonicalizes a document right at the depth limit', () => {
+    expect(() => canonicalize(nest(256))).not.toThrow();
+  });
+
+  it('throws a predictable TypeError past the depth limit instead of a stack-overflow RangeError', () => {
+    expect(() => canonicalize(nest(20000))).toThrow(TypeError);
+    expect(() => canonicalize(nest(20000))).toThrow(/max depth/);
+  });
+});
+
 describe('canonicalHash parity with @aer/schemas', () => {
   for (const [i, value] of CASES.entries()) {
     it(`case ${i} hashes identically`, async () => {
