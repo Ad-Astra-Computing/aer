@@ -23,10 +23,12 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
 
+from ._version import __version__
 from .uuid7 import uuid7
 
 Transport = Callable[[str, str, dict, Optional[bytes]], tuple]
 SEVERITIES = ("info", "low", "medium", "high", "critical")
+DEFAULT_TIMEOUT_S = 30.0
 
 
 class AerIngestError(Exception):
@@ -48,15 +50,30 @@ def _require_safe_base_url(base_url: str) -> str:
     raise ValueError("base_url must be https:// (http:// is allowed for localhost only)")
 
 
-def _default_transport(url: str, method: str, headers: dict, body: Optional[bytes]) -> tuple:
-    req = urllib.request.Request(url, data=body, method=method)
-    for k, v in headers.items():
-        req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as res:  # noqa: S310 (https URLs only in practice)
-            return res.status, res.read()
-    except urllib.error.HTTPError as err:  # 4xx/5xx still carry a body
-        return err.code, err.read()
+def _make_default_transport(timeout_s: float) -> Transport:
+    """Build the stdlib urllib transport, closed over a fixed timeout.
+
+    Production's edge blocks the bare `Python-urllib/x.y` default User-Agent
+    with an empty-body 403 - confirmed against api.aer.run, any other UA
+    (including curl's) succeeds. Every request must therefore identify
+    itself, or the SDK fails out of the box with zero configuration.
+    """
+
+    def transport(url: str, method: str, headers: dict, body: Optional[bytes]) -> tuple:
+        req = urllib.request.Request(url, data=body, method=method)
+        req.add_header("User-Agent", f"aer-sdk-py/{__version__}")
+        for k, v in headers.items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as res:  # noqa: S310 (https URLs only in practice)
+                return res.status, res.read()
+        except urllib.error.HTTPError as err:  # 4xx/5xx still carry a body
+            return err.code, err.read()
+
+    return transport
+
+
+_default_transport = _make_default_transport(DEFAULT_TIMEOUT_S)
 
 
 def _request_json(transport: Transport, url: str, method: str, token: str,
@@ -76,9 +93,10 @@ def _request_json(transport: Transport, url: str, method: str, token: str,
 
 def create_session(*, base_url: str, tenant_api_key: str, tenant_id: str,
                    agent_id: str, agent_version: str, environment_id: str,
-                   transport: Optional[Transport] = None) -> dict:
+                   transport: Optional[Transport] = None,
+                   request_timeout_s: float = DEFAULT_TIMEOUT_S) -> dict:
     """Create a session with a tenant API key; returns ids and the ingest token."""
-    t = transport or _default_transport
+    t = transport or _make_default_transport(request_timeout_s)
     url = f"{_require_safe_base_url(base_url)}/v1/sessions"
     status, body = _request_json(t, url, "POST", tenant_api_key, {
         "tenant_id": tenant_id,
@@ -95,16 +113,21 @@ class AerClient:
     def __init__(self, *, base_url: str, session_id: str, ingest_token: str,
                  batch_size: int = 50, flush_interval_ms: int = 500,
                  max_retries: int = 3, retry_base_ms: int = 100,
+                 request_timeout_s: float = DEFAULT_TIMEOUT_S,
                  transport: Optional[Transport] = None,
-                 clock: Optional[Callable[[], float]] = None):
+                 clock: Optional[Callable[[], float]] = None,
+                 on_ingest_result: Optional[Callable[[dict], None]] = None):
         self._base = _require_safe_base_url(base_url)
         self._session = session_id
         self._token = ingest_token
         self._batch = max(1, batch_size)
         self._max_retries = max(0, max_retries)
         self._retry_base = max(0, retry_base_ms) / 1000.0
-        self._transport = transport or _default_transport
+        self._transport = transport or _make_default_transport(request_timeout_s)
         self._clock = clock or time.time
+        self._on_ingest_result = on_ingest_result
+        self._stats = {"accepted": 0, "rejected": 0}
+        self._stats_lock = threading.Lock()
 
         self._buffer: list = []
         self._lock = threading.RLock()
@@ -173,9 +196,10 @@ class AerClient:
 
         A 207 response is transport success with per-event rejections inside
         (`rejected` and `errors`); rejected events are deliberately not
-        requeued. Inspect explicit flush() results to observe rejections;
-        background and size-triggered flushes cannot surface them
-        synchronously.
+        requeued. Every result - whether from this explicit call or from the
+        background timer or a size-triggered flush nested inside emit() -
+        also updates stats() and, if configured, on_ingest_result(), so a
+        207 from a flush the caller did not itself await is still visible.
         """
         results = []
         with self._flush_lock:
@@ -186,11 +210,31 @@ class AerClient:
                     chunk = self._buffer[: self._batch]
                     del self._buffer[: len(chunk)]
                 try:
-                    results.append(self._post_with_retry(chunk))
+                    result = self._post_with_retry(chunk)
                 except Exception:
                     with self._lock:
                         self._buffer[0:0] = chunk  # requeue for the next flush
                     raise
+                results.append(result)
+                self._record_result(result)
+
+    def stats(self) -> dict:
+        """Cumulative accepted/rejected counts across every flush so far,
+        including ones triggered internally that the caller never awaited."""
+        with self._stats_lock:
+            return dict(self._stats)
+
+    def _record_result(self, result: dict) -> None:
+        accepted = result.get("accepted") or 0
+        rejected = result.get("rejected") or 0
+        with self._stats_lock:
+            self._stats["accepted"] += accepted
+            self._stats["rejected"] += rejected
+        if self._on_ingest_result is not None:
+            try:
+                self._on_ingest_result(result)
+            except Exception:  # noqa: BLE001 the caller's callback must never break a flush
+                pass
 
     def complete(self) -> dict:
         self.flush()
