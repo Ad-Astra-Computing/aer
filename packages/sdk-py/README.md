@@ -8,7 +8,11 @@ Stdlib only, no dependencies. Python 3.10 or newer.
 
 ## Install
 
-From the repository:
+```
+pip install aer-sdk
+```
+
+From the repository, before a release is published:
 
 ```
 pip install "git+https://github.com/Ad-Astra-Computing/aer.git#subdirectory=packages/sdk-py"

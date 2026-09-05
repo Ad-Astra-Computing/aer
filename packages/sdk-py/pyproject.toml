@@ -28,6 +28,8 @@ dependencies = []
 [project.urls]
 Homepage = "https://aer.run"
 Documentation = "https://aer.run/docs"
+Repository = "https://github.com/Ad-Astra-Computing/aer"
+"Bug Tracker" = "https://github.com/Ad-Astra-Computing/aer/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aer_sdk"]
