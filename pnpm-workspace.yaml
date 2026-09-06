@@ -9,3 +9,6 @@ allowBuilds:
 
 overrides:
   vite: ^7.2.0
+  # Reached only through the express peer dependency our tests install, so no
+  # published package carries it, but the release gate wants a clean audit.
+  qs: '>=6.16.0'

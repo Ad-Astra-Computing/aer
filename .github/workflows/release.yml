@@ -40,5 +40,8 @@ jobs:
           publish-script: pnpm release
           commit-message: "release: version packages"
           pr-title: "release: version packages"
+          # Tag every published version. Without a tag there is no way to get
+          # from a version on npm back to the commit that produced it.
+          create-github-releases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
