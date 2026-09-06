@@ -1,7 +1,5 @@
-#!/usr/bin/env node
-import { createReadStream, readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
+import { createReadStream, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { pathToFileURL, fileURLToPath } from 'node:url';
 import { planInit, applyInit, runDoctor, type FsLike, type InitOptions } from './init.js';
 import { runLiveChecks } from './doctor-live.js';
 import { ingestJsonlStream } from './ingest.js';
@@ -579,28 +577,3 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   usage();
 }
 
-// Only run when this file is the actual entry point, not when a test imports
-// it, so importing `main` never triggers a real run against process.argv.
-//
-// argv[1] has to be resolved first. npm links node_modules/.bin/aer to this
-// file, and Node resolves that symlink for import.meta.url but not for argv[1],
-// so comparing them verbatim is false for every installed copy: the CLI would
-// load, run nothing and exit 0.
-function isEntry(): boolean {
-  const arg = process.argv[1];
-  if (arg === undefined) return false;
-  try {
-    // Resolve both sides, the way aer-hooks and aer-mcp-recorder already do:
-    // the module can sit under a symlinked path too.
-    return realpathSync(arg) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return import.meta.url === pathToFileURL(arg).href;
-  }
-}
-const isEntryPoint = isEntry();
-if (isEntryPoint) {
-  main().catch((err) => {
-    console.error(formatCliError(err));
-    process.exit(1);
-  });
-}

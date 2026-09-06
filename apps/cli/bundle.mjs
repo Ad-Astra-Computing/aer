@@ -6,7 +6,7 @@
 import { build } from 'esbuild';
 
 await build({
-  entryPoints: ['src/main.ts'],
+  entryPoints: ['src/bin.ts'],
   bundle: true,
   platform: 'node',
   format: 'esm',
