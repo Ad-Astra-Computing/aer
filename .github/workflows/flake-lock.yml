@@ -36,7 +36,7 @@ jobs:
       # Prove the update before proposing it. An update that fails the checks is
       # worse than no update, because it looks routine.
       - if: steps.diff.outputs.changed == 'true'
-        run: nix flake check --print-build-logs
+        run: nix flake check --all-systems --print-build-logs
 
       - if: steps.diff.outputs.changed == 'true'
         env:
