@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- [`e3e013b`](https://github.com/Ad-Astra-Computing/aer/commit/e3e013be8617e9746ab43d4de572c38272392b54) Thanks [@jasonodoom](https://github.com/jasonodoom)! - The collector declares its name, version and event-schema capability when it
+  opens a session, and http.completed events carry the response size from
+  Content-Length where the server sent one.
+
+### Patch Changes
+
+- [`866718a`](https://github.com/Ad-Astra-Computing/aer/commit/866718a28173c938d44adf3a45bd58516eebe353) Thanks [@jasonodoom](https://github.com/jasonodoom)! - Fixed a secret leak: a named import of `child_process.exec` (or
+  `promisify(exec)`) recorded the full, unredacted shell command in the signed
+  record instead of just the executable name. Command capture is now
+  path-independent, so every import style records only a basename and a
+  redacted argument count.
+  
+  Also fixed `protected_resources` host matching: a bare host entry
+  (`api.example.com`) now matches that host only, not its subdomains. A
+  leading dot (`.api.example.com`) remains the only way to opt a resource into
+  subdomain matching, matching what the README already documented.
+
+- [`8333d44`](https://github.com/Ad-Astra-Computing/aer/commit/8333d4414323c7e416efa3934bbda84d5412feb8) Thanks [@jasonodoom](https://github.com/jasonodoom)! - README now states the package is ESM only and lists its Node floor. Also
+  reworded the `[aer:auto] not started` console message and a few JSDoc
+  comments to drop an em dash, with no change in behavior.
+
+- [`28cae78`](https://github.com/Ad-Astra-Computing/aer/commit/28cae78c22030a5a52aac6f2c84cf87394bcbedb) Thanks [@jasonodoom](https://github.com/jasonodoom)! - Exec command strings are no longer double-captured. Node's `exec()` calls its
+  own patched `execFile()` internally, and the reentrant capture recorded the
+  raw shell string (including flags and secrets) in addition to the redacted,
+  basename-only command.
+
 ## 0.2.0 - 2026-07-20
 
 ### Changed

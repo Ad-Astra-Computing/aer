@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer-verify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Independent, dependency-free verifier for AER bundles. Recompute the canonical hash and check the Ed25519 signature against a pinned key set, in any Web Crypto runtime (Node, Workers, browsers).",
   "type": "module",
   "private": false,
