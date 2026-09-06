@@ -67,6 +67,7 @@ If you are a coding agent, or you are pointing one at this repository, read
 | [`aer-hooks`](https://www.npmjs.com/package/@adastracomputing/aer-hooks) | Hook adapters for coding harnesses. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-hooks?label=%20) |
 | [`aer-emit`](https://www.npmjs.com/package/@adastracomputing/aer-emit) | Shared emit core used by the recorder and hooks. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-emit?label=%20) |
 | [`aer-sdk-ts`](https://www.npmjs.com/package/@adastracomputing/aer-sdk-ts) | TypeScript SDK for emitting events directly. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-sdk-ts?label=%20) |
+| [`aer_sdk`](./packages/sdk-py) | Python SDK. Installed from this repo, not npm or PyPI. | ![release](https://img.shields.io/github/v/release/Ad-Astra-Computing/aer?filter=sdk-py-v*&label=%20) |
 
 Every library package is ESM and ships its own types. All target Node 20 or newer.
 
@@ -158,6 +159,8 @@ npx @adastracomputing/aer verify <aer-id>
 ```
 
 ## Python SDK
+
+[![latest Python SDK release](https://img.shields.io/github/v/release/Ad-Astra-Computing/aer?filter=sdk-py-v*&label=python%20sdk)](https://github.com/Ad-Astra-Computing/aer/releases?q=sdk-py)
 
 The Python SDK lives in [`packages/sdk-py`](./packages/sdk-py) and imports as
 `aer_sdk`. It is stdlib-only and needs Python 3.10 or newer.
