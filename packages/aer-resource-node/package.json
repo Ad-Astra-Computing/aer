@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer-resource-node",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Verify AER Attestation tokens at a protected resource or MCP server, offline against cached JWKS, fail-closed.",
   "type": "module",
   "private": false,

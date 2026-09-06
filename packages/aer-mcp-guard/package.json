@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer-mcp-guard",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Admission control for HTTP MCP servers: only AER-attested agents reach your tools; rogue agents get a JSON-RPC deny.",
   "type": "module",
   "private": false,

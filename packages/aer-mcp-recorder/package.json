@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer-mcp-recorder",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Transparent MCP proxy that records the tool activity a coding harness drives through MCP, with no harness integration. Fail-open byte transparency and redaction by default.",
   "type": "module",
   "private": false,
