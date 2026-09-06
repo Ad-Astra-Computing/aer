@@ -39,6 +39,8 @@ function parseArgs(argv: string[]): Parsed {
   return { cmd, harness, dir };
 }
 
+const HELP_FLAGS = new Set(['--help', '-h', 'help']);
+
 const USAGE = `aer-hooks: wire AER recording into a coding harness
 
 Usage:
@@ -101,8 +103,11 @@ export async function run(
       return 0;
     }
 
+    // Asking for help is not a usage error. A CI smoke step or a Nix check
+    // that runs `aer-hooks --help` reads a non-zero exit as a broken binary,
+    // so only an unrecognized command earns one.
     out(USAGE);
-    return cmd === undefined ? 0 : 2;
+    return cmd === undefined || HELP_FLAGS.has(cmd) ? 0 : 2;
   } catch (e) {
     err(e instanceof Error ? e.message : String(e));
     return 1;
