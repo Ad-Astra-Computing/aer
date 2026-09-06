@@ -1,0 +1,26 @@
+{
+  "schema": "aer.integration.v1",
+  "runtime": "node",
+  "package_manager": "unknown",
+  "entrypoints": [
+    "dev"
+  ],
+  "instrumentation": {
+    "register": "@adastracomputing/aer-auto-node/register",
+    "session_strategy": "process",
+    "adapters": [],
+    "transport": [
+      "fetch",
+      "http",
+      "https",
+      "child_process"
+    ]
+  },
+  "env_required": [
+    "AER_API_KEY"
+  ],
+  "files_changed": [
+    "AER_INTEGRATION.md"
+  ],
+  "verify_command": "npx @adastracomputing/aer doctor"
+}

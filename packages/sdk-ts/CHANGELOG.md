@@ -4,9 +4,9 @@
 
 ### Patch Changes
 
-- [`5d17a58`](https://github.com/Ad-Astra-Computing/aer/commit/5d17a58fd11a5b0c552ad0c4c90816319f13ea62) Thanks [@jasonodoom](https://github.com/jasonodoom)! - README now states the package is ESM only and lists its Node floor.
+- [`5d17a58`](https://github.com/Ad-Astra-Computing/aer/commit/5d17a58fd11a5b0c552ad0c4c90816319f13ea62) - README now states the package is ESM only and lists its Node floor.
 
-- [`5d17a58`](https://github.com/Ad-Astra-Computing/aer/commit/5d17a58fd11a5b0c552ad0c4c90816319f13ea62) Thanks [@jasonodoom](https://github.com/jasonodoom)! - close() now always waits for a flush already in progress, even when the
+- [`5d17a58`](https://github.com/Ad-Astra-Computing/aer/commit/5d17a58fd11a5b0c552ad0c4c90816319f13ea62) - close() now always waits for a flush already in progress, even when the
   buffer has already drained, so a background or size-triggered flush can no
   longer lose its own batch to a race with the caller. Every POST is now
   capped at 500 events regardless of the configured batchSize, matching the

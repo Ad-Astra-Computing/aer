@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- [`8ccc1b3`](https://github.com/Ad-Astra-Computing/aer/commit/8ccc1b3fa0bd52983476783c2469e82f5c8fd8d2) Thanks [@jasonodoom](https://github.com/jasonodoom)! - `DEFAULT_JWKS_URL` now points at `api.aer.run`, the canonical AER API host,
+- [`8ccc1b3`](https://github.com/Ad-Astra-Computing/aer/commit/8ccc1b3fa0bd52983476783c2469e82f5c8fd8d2) - `DEFAULT_JWKS_URL` now points at `api.aer.run`, the canonical AER API host,
   instead of the legacy `aer-api.adastra.computer` hostname. `DEFAULT_ISSUER`
   is unchanged: it is a stable identifier that matches the `iss` claim AER
   mints into every attestation token, not a URL to fetch. The README now
@@ -13,11 +13,11 @@
   The `hono` and `express` peer dependencies now declare the ranges this
   package is actually tested against (`^4` and `^5`) instead of a bare `*`.
 
-- [`a08ab65`](https://github.com/Ad-Astra-Computing/aer/commit/a08ab65acef0b3bf1edbe731163b7c5bfeb659a2) Thanks [@jasonodoom](https://github.com/jasonodoom)! - A token whose signature segment is not valid base64url now fails verification
+- [`a08ab65`](https://github.com/Ad-Astra-Computing/aer/commit/a08ab65acef0b3bf1edbe731163b7c5bfeb659a2) - A token whose signature segment is not valid base64url now fails verification
   with the typed AttestationError('malformed') instead of throwing a raw decode
   error.
 
-- [`64ac874`](https://github.com/Ad-Astra-Computing/aer/commit/64ac874d765089440cf94a2bb8455fe258e9e2af) Thanks [@jasonodoom](https://github.com/jasonodoom)! - Deny a non-string token with AttestationError('malformed') instead of throwing
+- [`64ac874`](https://github.com/Ad-Astra-Computing/aer/commit/64ac874d765089440cf94a2bb8455fe258e9e2af) - Deny a non-string token with AttestationError('malformed') instead of throwing
   a TypeError, so the reason stays mappable to a status code for a caller using
   verifyAttestation directly. The bundled middleware already guarded this.
 

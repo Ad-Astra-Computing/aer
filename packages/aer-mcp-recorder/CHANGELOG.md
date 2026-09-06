@@ -4,11 +4,11 @@
 
 ### Patch Changes
 
-- [`76fa987`](https://github.com/Ad-Astra-Computing/aer/commit/76fa987981cd578bba88f306ac51a120dde7d98b) Thanks [@jasonodoom](https://github.com/jasonodoom)! - README now states the package is ESM only and lists its Node floor. Also
+- [`76fa987`](https://github.com/Ad-Astra-Computing/aer/commit/76fa987981cd578bba88f306ac51a120dde7d98b) - README now states the package is ESM only and lists its Node floor. Also
   reworded the `--help` usage text to drop an em dash, with no change in
   behavior.
 
-- [`76fa987`](https://github.com/Ad-Astra-Computing/aer/commit/76fa987981cd578bba88f306ac51a120dde7d98b) Thanks [@jasonodoom](https://github.com/jasonodoom)! - Raise the default shutdown flush budget from 3s to 15s (covers the three
+- [`76fa987`](https://github.com/Ad-Astra-Computing/aer/commit/76fa987981cd578bba88f306ac51a120dde7d98b) - Raise the default shutdown flush budget from 3s to 15s (covers the three
   sequential prod round trips at close: open, events, complete), make it
   configurable with `AER_CLOSE_TIMEOUT_MS`, and exit 70 with a stderr diagnostic
   when it is exceeded instead of a silent 0. A signal-killed child now reports

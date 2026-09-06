@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- [`8468e31`](https://github.com/Ad-Astra-Computing/aer/commit/8468e3131ed756c222551f9f11636302913c7647) Thanks [@jasonodoom](https://github.com/jasonodoom)! - Exit 0 when `aer-hooks` is asked for help. `--help`, `-h` and `help` printed
+- [`8468e31`](https://github.com/Ad-Astra-Computing/aer/commit/8468e3131ed756c222551f9f11636302913c7647) - Exit 0 when `aer-hooks` is asked for help. `--help`, `-h` and `help` printed
   the usage text but exited 2, so a CI smoke step or a shell script that ran
   `aer-hooks --help` read the binary as broken. An unrecognized command still
   exits 2.
@@ -13,11 +13,11 @@
 
 ### Patch Changes
 
-- [`c8b596a`](https://github.com/Ad-Astra-Computing/aer/commit/c8b596a677a058e5100492c9a7120f77d9baf6c0) Thanks [@jasonodoom](https://github.com/jasonodoom)! - README now states the package is ESM only and lists its Node floor. Also
+- [`c8b596a`](https://github.com/Ad-Astra-Computing/aer/commit/c8b596a677a058e5100492c9a7120f77d9baf6c0) - README now states the package is ESM only and lists its Node floor. Also
   rewords a couple of code comments and test names that used an em dash,
   with no change in behavior.
 
-- [`c8b596a`](https://github.com/Ad-Astra-Computing/aer/commit/c8b596a677a058e5100492c9a7120f77d9baf6c0) Thanks [@jasonodoom](https://github.com/jasonodoom)! - Raise the hard timeout from 2.5s to 10s (production session creation measures
+- [`c8b596a`](https://github.com/Ad-Astra-Computing/aer/commit/c8b596a677a058e5100492c9a7120f77d9baf6c0) - Raise the hard timeout from 2.5s to 10s (production session creation measures
   3-4s, so the old budget abandoned most single-shot sessions before they
   saved), and make it configurable with `AER_HOOK_TIMEOUT_MS`. A timeout still
   exits 0 but now writes one stderr diagnostic. Fix a TOCTOU race where two

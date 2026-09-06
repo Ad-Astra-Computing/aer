@@ -1,0 +1,13 @@
+{
+  "schema": "aer.config.v1",
+  "tenant_id": "REPLACE_WITH_TENANT_ID",
+  "agent_id": "REPLACE_WITH_AGENT_ID",
+  "env_id": "REPLACE_WITH_ENV_ID",
+  "base_url": "https://api.aer.run",
+  "session": {
+    "strategy": "process"
+  },
+  "capture": {
+    "adapters": []
+  }
+}
