@@ -99,6 +99,18 @@
               (cd packages/${dir} && pnpm pack --pack-destination $out)
             '';
           };
+        # The Python SDK is deliberately never published to PyPI, so Nix is how
+        # you consume it without a git URL. Same flake, same nixpkgs pin: a
+        # second flake would drift from this one.
+        sdkPy = pkgs.python3Packages.buildPythonPackage {
+          pname = "aer-sdk";
+          version = "0.1.0";
+          pyproject = true;
+          src = ./packages/sdk-py;
+          build-system = [ pkgs.python3Packages.hatchling ];
+          nativeCheckInputs = [ pkgs.python3Packages.pytestCheckHook ];
+          pythonImportsCheck = [ "aer_sdk" ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -112,7 +124,9 @@
           ];
         };
 
-        packages = pkgs.lib.mapAttrs mkPackageTarball publishablePackages;
+        packages = pkgs.lib.mapAttrs mkPackageTarball publishablePackages // {
+          sdk-py = sdkPy;
+        };
 
         # Fallback per the project's own ADR-style rule for this flake: a
         # faithful `packages.<name>` output IS achievable here (pnpm workspace
@@ -120,6 +134,10 @@
         # so it is provided above. `checks.default` additionally runs the full
         # build+test+typecheck matrix for every workspace member offline, so
         # `nix flake check` is a real correctness gate, not just a smoke test.
+        # buildPythonPackage runs the package's pytest suite, so exposing it as a
+        # check makes `nix flake check` cover the Python SDK too.
+        checks.sdk-py = sdkPy;
+
         checks.default = mkAerDerivation {
           name = "aer-workspace-checks";
           buildPhaseScript = ''
