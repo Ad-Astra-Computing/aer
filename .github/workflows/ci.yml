@@ -98,7 +98,10 @@ jobs:
           nix flake metadata --json > /dev/null
           git diff --exit-code flake.lock
 
-      - run: nix flake check --print-build-logs
+      # --all-systems evaluates every system we claim to support, not just the
+      # runner architecture. That is what catches an eval error on a platform
+      # CI cannot build, which is exactly how the darwin breakage got in.
+      - run: nix flake check --all-systems --print-build-logs
 
       - name: The CLI must run from the flake
         run: nix run .#aer -- --help > /dev/null
