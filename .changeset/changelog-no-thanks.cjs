@@ -9,6 +9,9 @@
 const getReleaseLine = async (changeset, _type, options) => {
   const repo = options && options.repo;
   const lines = changeset.summary.split('\n').map((l) => l.trimEnd());
+  // A summary that opens with a blank line would otherwise render as a bare
+  // "- " bullet with its text dangling underneath.
+  while (lines.length > 0 && lines[0].trim() === '') lines.shift();
   const first = lines.shift() || '';
   const rest = lines.map((l) => (l ? `  ${l}` : '')).join('\n');
   const link =
