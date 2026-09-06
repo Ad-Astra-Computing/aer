@@ -36,7 +36,16 @@ if (published.size === 0) {
   process.exit(0);
 }
 
-if (changed.some((f) => /^\.changeset\/.+\.md$/.test(f))) {
+// Added, not merely changed. A deletion also shows up in --name-only, so a
+// branch that removes an unrelated changeset would otherwise satisfy the gate
+// while shipping source with nothing to release it.
+const added = execFileSync('git', ['diff', '--diff-filter=A', '--name-only', `${base}...${head}`], {
+  encoding: 'utf8',
+})
+  .split('\n')
+  .filter((f) => /^\.changeset\/.+\.md$/.test(f));
+
+if (added.length > 0) {
   console.log(`changeset present for: ${[...published].join(', ')}`);
   process.exit(0);
 }
