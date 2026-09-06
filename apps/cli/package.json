@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "AER command line: wire auto-instrumentation into a project, ingest and import agent runs, and independently verify signed execution records",
   "type": "module",
   "private": false,
