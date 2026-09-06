@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer-auto-node",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Auto-instrumentation for Node agents: drop it in and AER records what your agent is actually doing, with zero manual emit()",
   "type": "module",
   "private": false,
