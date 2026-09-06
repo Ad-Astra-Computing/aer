@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/aer-mark.svg" width="88" height="88" alt="AER">
+  <img src="docs/assets/aer-mark.svg" width="88" alt="AER">
 </p>
 
 <h1 align="center">AER client packages</h1>
@@ -10,10 +10,9 @@
 
 <p align="center">
   <a href="https://github.com/Ad-Astra-Computing/aer/actions/workflows/ci.yml"><img src="https://github.com/Ad-Astra-Computing/aer/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://www.npmjs.com/org/adastracomputing"><img src="https://img.shields.io/npm/v/@adastracomputing/aer?label=cli" alt="CLI version"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node 20 or newer">
-  <img src="https://img.shields.io/badge/types-included-blue" alt="TypeScript types included">
+  <a href="https://www.npmjs.com/package/@adastracomputing/aer"><img src="https://img.shields.io/npm/v/@adastracomputing/aer?label=cli" alt="Latest CLI version on npm"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Requires Node 20 or newer">
 </p>
 
 ---
@@ -71,26 +70,80 @@ If you are a coding agent, or you are pointing one at this repository, read
 
 Every library package is ESM and ships its own types. All target Node 20 or newer.
 
-## Quickstart
+## Install
 
-Set up auto-instrumentation in a Node project:
+### Requirements
+
+Node 20 or newer. An AER account for anything that records a run; nothing
+for verifying one.
+
+### Set up a Node project
 
 ```sh
 npx @adastracomputing/aer init
 ```
 
-Then run your agent with the collector loaded:
+On Nix, run the CLI from the flake instead:
+
+```sh
+nix run github:Ad-Astra-Computing/aer -- init
+```
+
+`init` wires the collector into the run scripts and writes `aer.config.json`,
+`.env.example` and a manifest of what it changed. It does not touch
+application code.
+
+To run without npm at all, take the packages as a node_modules tree:
+
+```sh
+nix build github:Ad-Astra-Computing/aer#node-modules
+ln -s ./result/lib/node_modules node_modules
+```
+
+## Usage
+
+Run your agent with the collector loaded:
 
 ```sh
 node --import @adastracomputing/aer-auto-node/register your-agent.js
 ```
 
-Check the integration, then send a tiny run end to end:
+Check the integration. `doctor` exits non-zero if anything is wrong, so it is
+safe to gate on in CI:
 
 ```sh
-npx @adastracomputing/aer doctor
+$ npx @adastracomputing/aer doctor
+AER_BASE_URL          ok    https://api.aer.run
+API reachable         ok    ready (200)
+tenant auth           ok
+```
+
+Then send a tiny instrumented run end to end and verify what comes out:
+
+```sh
 npx @adastracomputing/aer smoke
 ```
+
+## Configuration
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `AER_API_KEY` | Yes, to record | The only secret. Never commit it |
+| `AER_BASE_URL` | No | Defaults to `https://api.aer.run` |
+| `AER_DISABLE` | No | Set to turn the collector off without code changes |
+
+Non-secret identity (tenant, agent and environment) lives in
+`aer.config.json`, written by `init`.
+
+## Documentation
+
+- [Adding AER with a coding agent](./docs/agent-integration.md)
+- [What is in a record](./docs/concepts/what-is-in-a-record.md)
+- [Bodies-off](./docs/concepts/bodies-off.md)
+- [Verifying a record](./docs/concepts/verifying-a-record.md)
+- [Attestation and admission control](./docs/concepts/attestation.md)
+
+Each package carries its own README with its full API.
 
 ## Verifying a record
 
@@ -132,11 +185,23 @@ With [Nix](https://nixos.org), `nix develop` gives a shell with Node, pnpm,
 Python and pytest. Otherwise install Node 20 or newer and pnpm 11.
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
 pnpm -r build
 pnpm -r typecheck
-pnpm -r test
 ```
+
+Agents working in this repository should read [AGENTS.md](./AGENTS.md).
+Contribution guidelines are in [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Testing
+
+```sh
+pnpm -r test
+nix flake check
+```
+
+`nix flake check` builds, typechecks and tests every workspace member inside
+the sandbox with no network, and builds the Python SDK with its own suite.
 
 Releases are managed with
 [changesets](https://github.com/changesets/changesets): a change that should
@@ -176,4 +241,5 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md).
 ## License
 
 The AER service is a hosted product and is not open source. The client packages
-in this repository are licensed under Apache-2.0. See [LICENSE](./LICENSE).
+in this repository are licensed under Apache-2.0 (SPDX: `Apache-2.0`),
+copyright Ad Astra Computing Inc. See [LICENSE](./LICENSE).
