@@ -237,6 +237,25 @@ versions and changelogs, and merging it publishes to npm. Publishing uses npm
 trusted publishing over OIDC, so no npm token exists in this repository or in
 its secrets.
 
+Every package here is pre-1.0, so a release publishes to the `next` dist-tag,
+not `latest`. A version that has only just been cut has not been proven by
+anyone yet, and `latest` is what an unpinned `npm install` resolves to, so
+moving it is a claim about maturity rather than a side effect of merging a pull
+request. Install a fresh release explicitly:
+
+```
+npm install @adastracomputing/aer-auto-node@next
+```
+
+Once a version has run somewhere real, promote it:
+
+```
+pnpm promote                      # show what would move, change nothing
+pnpm promote @adastracomputing/aer --yes
+```
+
+`latest` moves only through that second command.
+
 ## Nix
 
 The root `flake.nix` provides:
