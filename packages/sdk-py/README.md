@@ -8,18 +8,25 @@ Stdlib only, no dependencies. Python 3.10 or newer.
 
 ## Install
 
-Not on PyPI. Install from the repository:
+Not on PyPI, and there is no plan to publish it there. The package is maintained
+in this repository and installed from it, so there is one source of truth rather
+than a copy that drifts from the code under test.
 
 ```
 pip install "git+https://github.com/Ad-Astra-Computing/aer.git#subdirectory=packages/sdk-py"
 ```
 
-Or with Nix, use the repo flake's dev shell, which carries Python and the
-package's test tooling:
+With Nix, take it as a flake output rather than a git URL:
 
+```nix
+inputs.aer.url = "github:Ad-Astra-Computing/aer";
+
+# then, in your own package set
+python3.withPackages (ps: [ aer.packages.${system}.sdk-py ])
 ```
-nix develop github:Ad-Astra-Computing/aer
-```
+
+`nix develop github:Ad-Astra-Computing/aer` gives a shell with Python and the
+package's test tooling.
 
 ## Use
 
