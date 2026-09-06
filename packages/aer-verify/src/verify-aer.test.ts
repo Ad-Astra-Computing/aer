@@ -170,6 +170,27 @@ describe('verifyAerBundle never throws on a pathological bundle', () => {
     expect(res.canonical_hash).toBe('');
   });
 
+  it('resolves ok:false rather than throwing when the bundle is null', async () => {
+    // A caller that hands us the result of a failed parse, or an API that
+    // answered null, must get a verdict. Throwing here turns a fail-closed
+    // check into a crash in whatever is doing the verifying.
+    const res = await verifyAerBundle(null as unknown as Record<string, unknown>, { publicKeyHex: 'aa' });
+    expect(res.ok).toBe(false);
+    expect(res.reasons).toContain(REASONS.BUNDLE_MISSING_INTEGRITY);
+  });
+
+  it('resolves ok:false rather than throwing when the bundle is undefined', async () => {
+    const res = await verifyAerBundle(undefined as unknown as Record<string, unknown>, { publicKeyHex: 'aa' });
+    expect(res.ok).toBe(false);
+    expect(res.reasons).toContain(REASONS.BUNDLE_MISSING_INTEGRITY);
+  });
+
+  it('resolves ok:false rather than throwing when the bundle is an array', async () => {
+    const res = await verifyAerBundle([] as unknown as Record<string, unknown>, { publicKeyHex: 'aa' });
+    expect(res.ok).toBe(false);
+    expect(res.reasons).toContain(REASONS.BUNDLE_MISSING_INTEGRITY);
+  });
+
   it('resolves ok:false with canonicalize_error on a non-finite number field', async () => {
     const bundle = { aer_id: 'x', integrity: validIntegrity, score: Infinity };
     const res = await verifyAerBundle(bundle, { publicKeyHex: 'aa' });

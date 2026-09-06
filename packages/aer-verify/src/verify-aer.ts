@@ -69,6 +69,12 @@ export async function verifyAerBundle(
   opts: VerifyAerOptions = {},
 ): Promise<VerifiedAer> {
   const verify = opts.ed25519Verify ?? subtleEd25519Verify;
+  // The bundle is caller-supplied and may be null, a failed parse or a
+  // primitive. Reading through it before this guard turned a fail-closed check
+  // into a crash in whatever was doing the verifying.
+  if (bundle === null || typeof bundle !== 'object') {
+    bundle = {} as Record<string, unknown>;
+  }
   const aerId = typeof bundle['aer_id'] === 'string' ? (bundle['aer_id'] as string) : '';
   const reasons: ReasonCode[] = [];
 
