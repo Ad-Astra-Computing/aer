@@ -16,6 +16,13 @@ than a copy that drifts from the code under test.
 pip install "git+https://github.com/Ad-Astra-Computing/aer.git#subdirectory=packages/sdk-py"
 ```
 
+That tracks `main`. To pin a released version, install its tag, which is what
+the GitHub release for each version points at:
+
+```
+pip install "git+https://github.com/Ad-Astra-Computing/aer.git@sdk-py-v0.1.0#subdirectory=packages/sdk-py"
+```
+
 With Nix, take it as a flake output rather than a git URL:
 
 ```nix

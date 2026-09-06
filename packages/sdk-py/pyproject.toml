@@ -4,7 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aer-sdk"
-version = "0.1.0"
+# Read from src/aer_sdk/_version.py so the packaged version and the version
+# the SDK reports in its User-Agent can never drift apart.
+dynamic = ["version"]
 description = "AER Python SDK: signed, independently verifiable execution records for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,6 +32,9 @@ Homepage = "https://aer.run"
 Documentation = "https://aer.run/docs"
 Repository = "https://github.com/Ad-Astra-Computing/aer"
 "Bug Tracker" = "https://github.com/Ad-Astra-Computing/aer/issues"
+
+[tool.hatch.version]
+path = "src/aer_sdk/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aer_sdk"]

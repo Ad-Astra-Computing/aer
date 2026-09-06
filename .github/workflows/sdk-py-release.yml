@@ -1,0 +1,77 @@
+name: Release the Python SDK
+
+# changesets only manages the npm workspace, so packages/sdk-py would otherwise
+# never get a tag. Without one, "pip install from git" resolves to main, and two
+# people installing the same declared version weeks apart get different code.
+# This tags the version and attaches built artifacts so it can be pinned.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/sdk-py/src/aer_sdk/_version.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sdk-py-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - id: version
+        run: |
+          v=$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('packages/sdk-py/src/aer_sdk/_version.py').read_text()).group(1))")
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=sdk-py-v$v" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to retag a version that already shipped
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "${{ steps.version.outputs.tag }} already exists. Bump _version.py." >&2
+            exit 1
+          fi
+
+      - run: python -m pip install --upgrade pip build pytest
+
+      - run: python -m pytest -q
+        working-directory: packages/sdk-py
+        env:
+          PYTHONPATH: src
+
+      - run: python -m build --outdir dist packages/sdk-py
+
+      # The wheel, not the repo, is what someone installs.
+      - name: The built wheel must import and report the tagged version
+        run: |
+          python -m pip install dist/*.whl
+          got=$(python -c "import aer_sdk; print(aer_sdk.__version__)")
+          test "$got" = "${{ steps.version.outputs.value }}" \
+            || { echo "wheel reports $got, tag says ${{ steps.version.outputs.value }}" >&2; exit 1; }
+
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+          gh release create "${{ steps.version.outputs.tag }}" dist/* \
+            --title "Python SDK ${{ steps.version.outputs.value }}" \
+            --notes "Install this exact version:
+
+          \`\`\`sh
+          pip install \"git+https://github.com/Ad-Astra-Computing/aer.git@${{ steps.version.outputs.tag }}#subdirectory=packages/sdk-py\"
+          \`\`\`
+
+          The Python SDK is not published to PyPI. It is maintained here and installed from this repository or through the flake."
