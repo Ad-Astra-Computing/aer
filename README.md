@@ -26,9 +26,34 @@ they can check without trusting you or us.
 This repository holds the client side: the code you install into your own agents
 and services. The service itself is a hosted product and is not open source.
 
-Using these packages requires an AER account. Request access at
-[aer.run](https://aer.run). Verifying a published record with
-`@adastracomputing/aer-verify` needs no account at all.
+## How this fits together
+
+AER has two halves, and only one of them is here.
+
+**The service is hosted and closed.** Ingest, signing, storage and the console
+run at [aer.run](https://aer.run). Recording a run needs an account, because
+something has to hold the signing key and stand behind the record.
+
+**The client is open, and this is it.** Everything you install into your own
+agents, services and CI is Apache-2.0: the collector that watches a run, the
+SDKs that emit events, the guards that check attestation tokens, and the
+verifier.
+
+The split is deliberate rather than a licensing compromise. A record is only
+worth something if the person reading it does not have to trust the party that
+produced it, so the part that proves a record is genuine is the part you can
+read, audit and run yourself. `@adastracomputing/aer-verify` makes no network
+calls and needs no account: given a bundle it checks the hash, the signature and
+the transparency-log evidence on your machine. If we disappeared tomorrow, every
+record already issued would still verify.
+
+So: you need an account to *produce* records. You need nothing from us to
+*check* one.
+
+Request access at [aer.run](https://aer.run).
+
+If you are a coding agent, or you are pointing one at this repository, read
+[AGENTS.md](./AGENTS.md) instead of inferring the integration from the READMEs.
 
 ## Packages
 
