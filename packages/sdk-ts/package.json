@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer-sdk-ts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "TypeScript SDK for emitting agent execution events to AER (https://aer.run)",
   "type": "module",
   "main": "./dist/index.js",
