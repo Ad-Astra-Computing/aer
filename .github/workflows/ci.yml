@@ -118,7 +118,7 @@ jobs:
       # a scratch directory, confirm it reports itself wired, then remove it.
       - name: Harness wiring must work from the installed tools
         run: |
-          nix profile install .#tools
+          nix profile add .#tools
           workdir="$(mktemp -d)"
           aer-hooks install claude-code --dir "$workdir"
           aer-hooks status --dir "$workdir" | grep -q 'wired: '

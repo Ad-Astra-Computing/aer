@@ -141,7 +141,7 @@ On Nix, install the tools first so the hook binary is on `PATH`, then wire the
 harness:
 
 ```sh
-nix profile install github:Ad-Astra-Computing/aer#tools
+nix profile add github:Ad-Astra-Computing/aer#tools
 aer-hooks install claude-code
 ```
 
@@ -251,7 +251,7 @@ The root `flake.nix` provides:
   binary the packages ship, runnable with `nix run .#<name>`. Libraries have no
   app output because there is nothing to run.
 - `packages.tools`: all of those binaries in one output, for
-  `nix profile install github:Ad-Astra-Computing/aer#tools` or a devShell. Use
+  `nix profile add github:Ad-Astra-Computing/aer#tools` or a devShell. Use
   this rather than `nix run` when wiring a coding harness: the hook config
   invokes a bare `aer-hook`, so that binary has to be on `PATH` at the moment
   the harness runs a tool, which an ephemeral `nix run` cannot provide.
