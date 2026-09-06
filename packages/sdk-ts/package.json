@@ -46,7 +46,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src",
-    "prepublishOnly": "pnpm test && pnpm build"
+    "prepublishOnly": "pnpm test",
+    "prepack": "pnpm build"
   },
   "dependencies": {},
   "devDependencies": {
