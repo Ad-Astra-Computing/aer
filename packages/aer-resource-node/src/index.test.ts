@@ -114,6 +114,22 @@ describe('verifyAttestation', () => {
   });
 });
 
+describe('verifyAttestation rejects a non-string token', () => {
+  // A direct caller can hand over null from a missed lookup. Denying with a
+  // structured AttestationError keeps the reason mappable to a status code,
+  // where a TypeError is not.
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a number', 12345],
+    ['an object', {}],
+  ])('denies %s with malformed', async (_label, token) => {
+    await expect(
+      verifyAttestation(token as unknown as string, { audience: 'mcp://x' }),
+    ).rejects.toMatchObject({ code: 'malformed' });
+  });
+});
+
 describe('honoAerAttestation', () => {
   it('403s a request with no token (fail-closed)', async () => {
     const { jwk } = await mint();
