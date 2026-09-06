@@ -256,6 +256,11 @@ pnpm promote @adastracomputing/aer --yes
 
 `latest` moves only through that second command.
 
+One consequence to be deliberate about: a fix sits on `next` until someone
+promotes it, and that includes a security fix. `latest` is what the quick start
+above resolves, so promoting is part of shipping a security patch, not a
+follow-up chore.
+
 ## Nix
 
 The root `flake.nix` provides:
