@@ -44,7 +44,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "prepublishOnly": "pnpm test && pnpm build"
+    "prepublishOnly": "pnpm test",
+    "prepack": "pnpm build"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
