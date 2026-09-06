@@ -167,3 +167,9 @@ function bytesToB64url(bytes: Uint8Array): string {
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 export * from './dsse.js';
+
+export {
+  HOSTILE_OBJECTS,
+  HOSTILE_STRINGS,
+  answersRatherThanCrashes,
+} from './hostile-input.js';
