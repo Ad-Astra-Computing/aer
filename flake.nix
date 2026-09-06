@@ -54,12 +54,12 @@
         # Common offline build environment shared by every package/check
         # derivation below: real network access is never needed past this
         # point, node_modules is populated entirely from pnpmDeps.
-        mkAerDerivation = { name, buildPhaseScript, installPhaseScript }:
+        mkAerDerivation = { name, buildPhaseScript, installPhaseScript, extraInputs ? [ ] }:
           pkgs.stdenvNoCC.mkDerivation {
             inherit name;
             src = self;
             inherit pnpmDeps;
-            nativeBuildInputs = [ pkgs.nodejs_24 pkgs.pnpm pkgs.pnpmConfigHook ];
+            nativeBuildInputs = [ pkgs.nodejs_24 pkgs.pnpm pkgs.pnpmConfigHook ] ++ extraInputs;
             buildPhase = ''
               runHook preBuild
               export HOME=$TMPDIR
@@ -99,6 +99,42 @@
               (cd packages/${dir} && pnpm pack --pack-destination $out)
             '';
           };
+        # The CLI as something you can actually run, so a Nix user is not forced
+        # through npx. dist/main.js is a single bundled file, so the wrapper only
+        # needs node.
+        aerCli = mkAerDerivation {
+          name = "aer";
+          extraInputs = [ pkgs.makeWrapper ];
+          buildPhaseScript = ''
+            pnpm --filter "@adastracomputing/aer^..." --filter "@adastracomputing/aer" build
+          '';
+          installPhaseScript = ''
+            mkdir -p $out/lib $out/bin
+            cp apps/cli/dist/main.js $out/lib/main.js
+            makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/aer \
+              --add-flags $out/lib/main.js
+          '';
+        };
+
+        # Every published package has zero external runtime dependencies, only
+        # workspace siblings, so a plain node_modules tree is enough to run the
+        # collector with no npm anywhere. Point NODE_PATH at it.
+        nodeModules = mkAerDerivation {
+          name = "aer-node-modules";
+          buildPhaseScript = ''
+            pnpm -r build
+          '';
+          installPhaseScript = ''
+            dest=$out/lib/node_modules/@adastracomputing
+            mkdir -p $dest
+            ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList
+              (attr: { dir, npmName }: ''
+                mkdir -p $dest/${baseNameOf npmName}
+                cp -r packages/${dir}/dist packages/${dir}/package.json $dest/${baseNameOf npmName}/
+              '') publishablePackages)}
+          '';
+        };
+
         # The Python SDK is deliberately never published to PyPI, so Nix is how
         # you consume it without a git URL. Same flake, same nixpkgs pin: a
         # second flake would drift from this one.
@@ -125,8 +161,14 @@
         };
 
         packages = pkgs.lib.mapAttrs mkPackageTarball publishablePackages // {
+          aer = aerCli;
+          node-modules = nodeModules;
           sdk-py = sdkPy;
+          default = aerCli;
         };
+
+        apps.default = { type = "app"; program = "${aerCli}/bin/aer"; };
+        apps.aer = { type = "app"; program = "${aerCli}/bin/aer"; };
 
         # Fallback per the project's own ADR-style rule for this flake: a
         # faithful `packages.<name>` output IS achievable here (pnpm workspace
