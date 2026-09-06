@@ -125,6 +125,30 @@ Then send a tiny instrumented run end to end and verify what comes out:
 npx @adastracomputing/aer smoke
 ```
 
+## Record a coding harness
+
+Claude Code, Codex CLI and opencode are recorded through hooks rather than the
+Node collector, since the agent is the harness rather than a script you launch:
+
+```sh
+npx @adastracomputing/aer-hooks install claude-code
+```
+
+`codex` and `opencode` work the same way. `status` shows what is wired and
+`uninstall` removes it. Every config write keeps a backup.
+
+On Nix, install the tools first so the hook binary is on `PATH`, then wire the
+harness:
+
+```sh
+nix profile install github:Ad-Astra-Computing/aer#tools
+aer-hooks install claude-code
+```
+
+`nix run` is not enough on its own here: it puts the binary on `PATH` only for
+the length of that one command, and the harness needs `aer-hook` later, every
+time it runs a tool.
+
 ## Configuration
 
 | Variable | Required | Purpose |
@@ -223,6 +247,14 @@ The root `flake.nix` provides:
   `nix build .#aer-verify`. Workspace dependencies are vendored once from
   `pnpm-lock.yaml`, so builds are offline and reproducible after the first
   fetch.
+- `apps.aer`, `apps.aer-hooks`, `apps.aer-hook`, `apps.aer-mcp-recorder`: every
+  binary the packages ship, runnable with `nix run .#<name>`. Libraries have no
+  app output because there is nothing to run.
+- `packages.tools`: all of those binaries in one output, for
+  `nix profile install github:Ad-Astra-Computing/aer#tools` or a devShell. Use
+  this rather than `nix run` when wiring a coding harness: the hook config
+  invokes a bare `aer-hook`, so that binary has to be on `PATH` at the moment
+  the harness runs a tool, which an ephemeral `nix run` cannot provide.
 - `packages.sdk-py`: the Python SDK as an installable Python package. Its test
   suite and an import check run as part of the build.
 - `checks`: `nix flake check` builds, typechecks and tests the whole workspace

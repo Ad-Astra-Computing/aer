@@ -135,6 +135,47 @@
           '';
         };
 
+        # Runnable wrappers for the package binaries, so Nix is not limited to
+        # the CLI. Each script runs in place inside the nodeModules tree, where
+        # its workspace siblings resolve; NODE_PATH would not work, since these
+        # packages are ESM and Node's ESM resolver ignores it.
+        mkNodeBin = { bin, pkgDir, entry }:
+          pkgs.runCommand "aer-bin-${bin}" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+            mkdir -p $out/bin
+            makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/${bin} \
+              --add-flags ${nodeModules}/lib/node_modules/@adastracomputing/${pkgDir}/${entry}
+          '';
+
+        # One entry per `bin` in a published package.json. Libraries are not
+        # listed: there is nothing to run.
+        nodeBins = {
+          aer-hooks = mkNodeBin { bin = "aer-hooks"; pkgDir = "aer-hooks"; entry = "dist/install-cli.js"; };
+          aer-hook = mkNodeBin { bin = "aer-hook"; pkgDir = "aer-hooks"; entry = "dist/cli.js"; };
+          aer-mcp-recorder = mkNodeBin { bin = "aer-mcp-recorder"; pkgDir = "aer-mcp-recorder"; entry = "dist/cli.js"; };
+        };
+
+        # `meta.description` is what `nix flake show` prints and what
+        # `nix flake check` warns about when it is missing.
+        appDescriptions = {
+          aer = "AER CLI: init, doctor, smoke, verify, import";
+          aer-hooks = "Wire AER recording into a coding harness";
+          aer-hook = "Per-event hook binary a wired harness invokes";
+          aer-mcp-recorder = "Recording MCP proxy for an MCP server command";
+        };
+        mkApp = bin: drv: {
+          type = "app";
+          program = "${drv}/bin/${bin}";
+          meta.description = appDescriptions.${bin};
+        };
+
+        # Every AER command in one installable output. A wired harness invokes
+        # a bare `aer-hook` on every tool call, so that binary must be on PATH
+        # for good; `nix run` only lends it for one command.
+        tools = pkgs.symlinkJoin {
+          name = "aer-tools";
+          paths = [ aerCli ] ++ pkgs.lib.attrValues nodeBins;
+        };
+
         # The Python SDK is deliberately never published to PyPI, so Nix is how
         # you consume it without a git URL. Same flake, same nixpkgs pin: a
         # second flake would drift from this one.
@@ -162,13 +203,16 @@
 
         packages = pkgs.lib.mapAttrs mkPackageTarball publishablePackages // {
           aer = aerCli;
+          tools = tools;
           node-modules = nodeModules;
           sdk-py = sdkPy;
           default = aerCli;
         };
 
-        apps.default = { type = "app"; program = "${aerCli}/bin/aer"; };
-        apps.aer = { type = "app"; program = "${aerCli}/bin/aer"; };
+        apps = {
+          default = mkApp "aer" aerCli;
+          aer = mkApp "aer" aerCli;
+        } // pkgs.lib.mapAttrs mkApp nodeBins;
 
         # Fallback per the project's own ADR-style rule for this flake: a
         # faithful `packages.<name>` output IS achievable here (pnpm workspace
