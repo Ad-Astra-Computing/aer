@@ -1,6 +1,6 @@
 # aer-sdk
 
-Python SDK for [AER](https://aer.run), the flight recorder for AI agents. Emit
+Python SDK for [AER](https://aer.run): the flight recorder for AI agents. Emit
 events from an agent run and seal them into a signed, independently verifiable
 execution record.
 
