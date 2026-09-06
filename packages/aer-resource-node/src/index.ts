@@ -116,6 +116,9 @@ export interface VerifyOptions {
  * AttestationError on any failure (fail-closed).
  */
 export async function verifyAttestation(token: string, opts: VerifyOptions): Promise<AttestationClaims> {
+  // A caller can hand over null from a missed header lookup. Deny with the same
+  // structured error as any other bad token so the reason stays mappable.
+  if (typeof token !== 'string') throw new AttestationError('malformed');
   const issuer = opts.issuer ?? DEFAULT_ISSUER;
   const jwksUrl = opts.jwksUrl ?? DEFAULT_JWKS_URL;
   const fetchImpl = opts.fetchImpl ?? fetch;
