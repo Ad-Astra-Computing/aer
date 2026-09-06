@@ -138,7 +138,7 @@ Non-secret identity (tenant, agent and environment) lives in
 
 ## Documentation
 
-- [Adding AER with a coding agent](./docs/agent-integration.md)
+- [Instructions for coding agents](./AGENTS.md)
 - [What is in a record](./docs/concepts/what-is-in-a-record.md)
 - [Bodies-off](./docs/concepts/bodies-off.md)
 - [Verifying a record](./docs/concepts/verifying-a-record.md)
