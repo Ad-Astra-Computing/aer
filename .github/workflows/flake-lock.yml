@@ -1,0 +1,55 @@
+name: Update flake.lock
+
+# Dependabot does not understand Nix, so the flake inputs would otherwise drift
+# indefinitely while every other ecosystem stays current.
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: flake-lock
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      - run: nix flake update
+
+      - id: diff
+        run: |
+          if git diff --quiet flake.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Prove the update before proposing it. An update that fails the checks is
+      # worse than no update, because it looks routine.
+      - if: steps.diff.outputs.changed == 'true'
+        run: nix flake check --print-build-logs
+
+      - if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="flake-lock/$(date -u +%Y-%m-%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add flake.lock
+          git commit -m "chore(nix): update flake.lock"
+          git push --force origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore(nix): update flake.lock" \
+            --body "Weekly flake input update. \`nix flake check\` passed on this lock before the pull request was opened." \
+            || gh pr edit "$branch" --body "Weekly flake input update. \`nix flake check\` passed on this lock before the pull request was opened."

@@ -15,6 +15,58 @@ concurrency:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every package declares engines.node >=20, but Node 20 is past end of
+        # life. Test the oldest runtime we stand behind and the one CI ships on.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -r build
+
+      - run: pnpm -r typecheck
+
+      - run: pnpm -r test
+
+  # The Python SDK ships from this repository and had no CI coverage at all, so
+  # its suite only ever ran on a developer's machine.
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@e348410e00f449ee7ee6bde4dbfcb7ce8d5b1a37 # v6.0.0
+        with:
+          python-version: '3.12'
+
+      - run: python -m pip install --upgrade pip pytest build
+
+      - run: python -m pytest -q
+        working-directory: packages/sdk-py
+        env:
+          PYTHONPATH: src
+
+      - name: The wheel must build and import
+        run: |
+          python -m build --wheel --outdir /tmp/wheel packages/sdk-py
+          python -m pip install /tmp/wheel/*.whl
+          python -c "from aer_sdk import AerClient, create_session; print('import ok')"
+
+  # Publishing ships tarballs, not the repository, so check what npm would
+  # actually send: docs present, nothing stray, no install-time scripts.
+  package-contents:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -29,6 +81,46 @@ jobs:
 
       - run: pnpm -r build
 
-      - run: pnpm -r typecheck
+      - run: node .github/scripts/check-package-contents.mjs
 
-      - run: pnpm -r test
+  # The flake is a supported way to consume this repo, so it has to keep
+  # working. `nix flake check` builds, typechecks and tests every workspace
+  # member offline in the sandbox, and builds the Python SDK.
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      - name: The lock file must be current
+        run: |
+          nix flake metadata --json > /dev/null
+          git diff --exit-code flake.lock
+
+      - run: nix flake check --print-build-logs
+
+      - name: The CLI must run from the flake
+        run: nix run .#aer -- --help > /dev/null
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - run: node .github/scripts/scan-secrets.mjs
+
+  # A change to a published package with no changeset never ships: the version
+  # pull request will not carry it, so the fix sits on main looking released.
+  changeset:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - run: node .github/scripts/check-changeset.mjs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
