@@ -103,8 +103,27 @@ jobs:
       # CI cannot build, which is exactly how the darwin breakage got in.
       - run: nix flake check --all-systems --print-build-logs
 
-      - name: The CLI must run from the flake
-        run: nix run .#aer -- --help > /dev/null
+      # Every app output, not just the CLI. `nix flake check` only evaluates
+      # these; it never runs them, so a wrapper that builds but cannot resolve
+      # its imports at runtime would pass the gate and fail the first user.
+      - name: Every binary must run from the flake
+        run: |
+          for app in aer aer-hooks aer-hook aer-mcp-recorder; do
+            echo "::group::nix run .#$app -- --help"
+            nix run ".#$app" -- --help > /dev/null
+            echo "::endgroup::"
+          done
+
+      # The wiring a coding harness gets told to use, end to end: install into
+      # a scratch directory, confirm it reports itself wired, then remove it.
+      - name: Harness wiring must work from the installed tools
+        run: |
+          nix profile install .#tools
+          workdir="$(mktemp -d)"
+          aer-hooks install claude-code --dir "$workdir"
+          aer-hooks status --dir "$workdir" | grep -q 'wired: '
+          command -v aer-hook > /dev/null
+          aer-hooks uninstall claude-code --dir "$workdir"
 
   secret-scan:
     runs-on: ubuntu-latest
