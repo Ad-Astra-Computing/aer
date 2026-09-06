@@ -1,8 +1,11 @@
 packages:
   - packages/*
   - apps/cli
-onlyBuiltDependencies:
-  - esbuild
+# esbuild needs its install script to place the platform binary. Nothing else
+# is allowed to run code at install time.
+allowBuilds:
+  esbuild: true
+  msw: false
 
 overrides:
   vite: ^7.2.0
