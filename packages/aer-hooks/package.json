@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer-hooks",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Fail-open, redaction-by-default hook adapters that record the tool events a coding harness fires (Claude Code, OpenAI Codex CLI) or its plugins load (opencode) into AER. Tool and argument-key names only by default, never values.",
   "type": "module",
   "private": false,

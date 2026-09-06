@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+### Patch Changes
+
+- [`8468e31`](https://github.com/Ad-Astra-Computing/aer/commit/8468e3131ed756c222551f9f11636302913c7647) Thanks [@jasonodoom](https://github.com/jasonodoom)! - Exit 0 when `aer-hooks` is asked for help. `--help`, `-h` and `help` printed
+  the usage text but exited 2, so a CI smoke step or a shell script that ran
+  `aer-hooks --help` read the binary as broken. An unrecognized command still
+  exits 2.
+
 ## 0.1.1
 
 ### Patch Changes
