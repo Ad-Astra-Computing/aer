@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- [`5e9231a`](https://github.com/Ad-Astra-Computing/aer/commit/5e9231ada1e4e704e3fb5720eb966acac8f5afec) Thanks [@jasonodoom](https://github.com/jasonodoom)! - The HTTP sink now waits for every in-flight flush before completing a
+- [`5e9231a`](https://github.com/Ad-Astra-Computing/aer/commit/5e9231ada1e4e704e3fb5720eb966acac8f5afec) - The HTTP sink now waits for every in-flight flush before completing a
   session, so a batch that was still posting when close() ran can no longer be
   lost to a race with the completion call. Large synchronous bursts are split
   into requests of at most 500 events instead of one oversized request the
@@ -20,7 +20,7 @@
   of hanging forever. A beforeExit handler flushes whatever is buffered on
   process exit, best effort; callers still need close() to complete a session.
 
-- [`5e9231a`](https://github.com/Ad-Astra-Computing/aer/commit/5e9231ada1e4e704e3fb5720eb966acac8f5afec) Thanks [@jasonodoom](https://github.com/jasonodoom)! - `resolveSinkOptionsFromEnv` now accepts `AER_TENANT_API_KEY` as a fallback
+- [`5e9231a`](https://github.com/Ad-Astra-Computing/aer/commit/5e9231ada1e4e704e3fb5720eb966acac8f5afec) - `resolveSinkOptionsFromEnv` now accepts `AER_TENANT_API_KEY` as a fallback
   for `AER_API_KEY`, matching the CLI and the documented behavior of the
   opencode plugin. Previously only `AER_API_KEY` was read, so a producer
   configured with `AER_TENANT_API_KEY` alone recorded nothing, silently.

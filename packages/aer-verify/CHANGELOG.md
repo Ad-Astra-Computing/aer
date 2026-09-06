@@ -4,13 +4,13 @@
 
 ### Patch Changes
 
-- [`fb6261b`](https://github.com/Ad-Astra-Computing/aer/commit/fb6261bbfea2374bbce6e982101180b094fb0adf) Thanks [@jasonodoom](https://github.com/jasonodoom)! - `verifyAerBundle` no longer throws on a pathological bundle (unbounded
+- [`fb6261b`](https://github.com/Ad-Astra-Computing/aer/commit/fb6261bbfea2374bbce6e982101180b094fb0adf) - `verifyAerBundle` no longer throws on a pathological bundle (unbounded
   nesting depth, a non-finite number, a bigint or a Date). Canonicalization now
   enforces a depth limit and the failure is reported as an ordinary `ok:false`
   result with a new `canonicalize_error` reason instead of an uncaught
   exception.
 
-- [`ac60049`](https://github.com/Ad-Astra-Computing/aer/commit/ac60049c238131c103e00a6e4f9ce4d693c10df3) Thanks [@jasonodoom](https://github.com/jasonodoom)! - Return a verdict instead of throwing when the bundle is null, undefined or a
+- [`ac60049`](https://github.com/Ad-Astra-Computing/aer/commit/ac60049c238131c103e00a6e4f9ce4d693c10df3) - Return a verdict instead of throwing when the bundle is null, undefined or a
   primitive. The never-throw contract did not cover a null bundle, so a caller
   passing the result of a failed parse crashed rather than getting ok:false.
 
