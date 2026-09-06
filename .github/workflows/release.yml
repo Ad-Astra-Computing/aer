@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     branches: [main]
+  # Publishing should be possible as a deliberate act, not only as a side
+  # effect of pushing something unrelated to main.
+  workflow_dispatch:
 
 concurrency: release-${{ github.ref }}
 
