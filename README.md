@@ -58,15 +58,15 @@ If you are a coding agent, or you are pointing one at this repository, read
 
 | Package | What it does | Version |
 | --- | --- | --- |
-| [`aer`](https://www.npmjs.com/package/@adastracomputing/aer) | Command line: wire up auto-instrumentation, import runs, verify records. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer?label=%20) |
-| [`aer-auto-node`](https://www.npmjs.com/package/@adastracomputing/aer-auto-node) | Drop-in auto-instrumentation for Node, with no manual emit calls. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-auto-node?label=%20) |
-| [`aer-verify`](https://www.npmjs.com/package/@adastracomputing/aer-verify) | Dependency-free verifier for signed bundles. Node, Workers and the browser. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-verify?label=%20) |
-| [`aer-resource-node`](https://www.npmjs.com/package/@adastracomputing/aer-resource-node) | Verify attestation tokens at a protected resource, offline, fail-closed. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-resource-node?label=%20) |
-| [`aer-mcp-guard`](https://www.npmjs.com/package/@adastracomputing/aer-mcp-guard) | Admission control for HTTP MCP servers. Only attested agents reach your tools. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-mcp-guard?label=%20) |
-| [`aer-mcp-recorder`](https://www.npmjs.com/package/@adastracomputing/aer-mcp-recorder) | Transparent MCP proxy that records tool activity with no harness integration. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-mcp-recorder?label=%20) |
-| [`aer-hooks`](https://www.npmjs.com/package/@adastracomputing/aer-hooks) | Hook adapters for coding harnesses (Claude Code, Codex CLI, opencode). | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-hooks?label=%20) |
-| [`aer-emit`](https://www.npmjs.com/package/@adastracomputing/aer-emit) | Shared best-effort emit core used by the recorder and hooks. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-emit?label=%20) |
-| [`aer-sdk-ts`](https://www.npmjs.com/package/@adastracomputing/aer-sdk-ts) | TypeScript SDK for emitting execution events directly. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-sdk-ts?label=%20) |
+| [`aer`](https://www.npmjs.com/package/@adastracomputing/aer) | Command line: set up, import runs, verify records. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer?label=%20) |
+| [`aer-auto-node`](https://www.npmjs.com/package/@adastracomputing/aer-auto-node) | Auto-instrumentation for Node, no code changes. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-auto-node?label=%20) |
+| [`aer-verify`](https://www.npmjs.com/package/@adastracomputing/aer-verify) | Dependency-free verifier for signed bundles. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-verify?label=%20) |
+| [`aer-resource-node`](https://www.npmjs.com/package/@adastracomputing/aer-resource-node) | Verify attestation tokens at your API, fail-closed. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-resource-node?label=%20) |
+| [`aer-mcp-guard`](https://www.npmjs.com/package/@adastracomputing/aer-mcp-guard) | Admission control for HTTP MCP servers. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-mcp-guard?label=%20) |
+| [`aer-mcp-recorder`](https://www.npmjs.com/package/@adastracomputing/aer-mcp-recorder) | Transparent MCP proxy that records tool activity. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-mcp-recorder?label=%20) |
+| [`aer-hooks`](https://www.npmjs.com/package/@adastracomputing/aer-hooks) | Hook adapters for coding harnesses. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-hooks?label=%20) |
+| [`aer-emit`](https://www.npmjs.com/package/@adastracomputing/aer-emit) | Shared emit core used by the recorder and hooks. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-emit?label=%20) |
+| [`aer-sdk-ts`](https://www.npmjs.com/package/@adastracomputing/aer-sdk-ts) | TypeScript SDK for emitting events directly. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-sdk-ts?label=%20) |
 
 Every library package is ESM and ships its own types. All target Node 20 or newer.
 
