@@ -110,7 +110,14 @@ jobs:
         run: |
           for app in aer aer-hooks aer-hook aer-mcp-recorder; do
             echo "::group::nix run .#$app -- --help"
-            nix run ".#$app" -- --help > /dev/null
+            # Both streams together. Discarding stdout hides a warning the
+            # reader is shown, and the exit code alone says nothing about it.
+            out="$(nix run ".#$app" -- --help 2>&1)"
+            printf '%s\n' "$out"
+            if printf '%s' "$out" | grep -Eiq 'warning|deprecated'; then
+              echo "::error::$app --help warns the reader"
+              exit 1
+            fi
             echo "::endgroup::"
           done
 
@@ -124,6 +131,26 @@ jobs:
           aer-hooks status --dir "$workdir" | grep -q 'wired: '
           command -v aer-hook > /dev/null
           aer-hooks uninstall claude-code --dir "$workdir"
+
+  # A command printed in the README is an artifact we publish. This runs each
+  # one as printed, from a scratch directory and a scratch HOME, so a command
+  # that only works inside this checkout fails here rather than for a reader.
+  readme-commands:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      - run: node scripts/check-readme-commands.mjs
 
   secret-scan:
     runs-on: ubuntu-latest
