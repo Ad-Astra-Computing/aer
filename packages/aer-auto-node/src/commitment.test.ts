@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
   CANON_VERSION,
@@ -315,12 +315,16 @@ describe('toolResultTag (slice 2)', () => {
 });
 
 describe('slice 2 hardening \u2014 bounded against adversarial JSON', () => {
-  it('an oversized JSON-string arg is hashed as a string (not parsed), returns a tag fast', () => {
+  it('an oversized JSON-string arg is hashed as a string, never parsed', () => {
     const huge = '[' + '0,'.repeat(200_000) + '0]'; // ~600 KB, over the parse cap
-    const t0 = Date.now();
+    // The guarantee is that the cap stops the parse, so assert the parse. A
+    // wall-clock budget stood in for this and would fail on a loaded machine
+    // that is merely slower, not wrong.
+    const parse = vi.spyOn(JSON, 'parse');
     const tag = toolArgsTag(KEY, 'x', huge);
     expect(tag).toMatch(/^[0-9a-f]{64}$/);
-    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(parse.mock.calls.some(([input]) => input === huge)).toBe(false);
+    parse.mockRestore();
     // Because it's hashed as a raw string (not parsed), a semantically-equal small
     // object does NOT match \u2014 the cap changed the domain, which is fine + safe.
     expect(tag).toBe(toolArgsTag(KEY, 'x', huge));
