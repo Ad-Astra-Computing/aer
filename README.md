@@ -243,13 +243,13 @@ anyone yet, and `latest` is what an unpinned `npm install` resolves to, so
 moving it is a claim about maturity rather than a side effect of merging a pull
 request. Install a fresh release explicitly:
 
-```
-npm install @adastracomputing/aer-auto-node@next
+```sh
+npm install @adastracomputing/aer@next
 ```
 
 Once a version has run somewhere real, promote it:
 
-```
+```sh
 pnpm promote                      # show what would move, change nothing
 pnpm promote @adastracomputing/aer --yes
 ```
