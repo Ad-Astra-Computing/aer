@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createReadStream, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { planInit, applyInit, runDoctor, type FsLike, type InitOptions } from './init.js';
@@ -66,7 +67,7 @@ const USAGE_TEXT = [
   '',
   'aer import claude-code - required env:',
   '  AER_BASE_URL          e.g. https://api.aer.run',
-  '  AER_TENANT_API_KEY    tenant key (write role; creates the session)',
+  '  AER_TENANT_API_KEY    tenant key, write role (or AER_API_KEY)',
   '  AER_TENANT_ID         tenant uuid',
   '  AER_AGENT_ID          agent uuid the imported session belongs to',
   '  AER_ENV_ID            environment uuid',
@@ -90,7 +91,7 @@ const USAGE_TEXT = [
   '',
   'aer webhooks - required env:',
   '  AER_BASE_URL          e.g. https://api.aer.run',
-  '  AER_TENANT_API_KEY    tenant API key',
+  '  AER_TENANT_API_KEY    tenant API key (or AER_API_KEY)',
   '',
   'Optional:',
   '  AER_BATCH_SIZE        (ingest) default 500',
@@ -139,7 +140,10 @@ function cmdInit(args: string[]): void {
   const entry = flag('--entry');
   const tenantId = flag('--tenant') ?? env['AER_TENANT_ID'];
   const agentId = flag('--agent') ?? env['AER_AGENT_ID'];
-  const envId = flag('--env') ?? env['AER_ENV_ID'];
+  // Nothing issues an environment id and nothing registers it: it is a name
+  // you give one place your agents run. Generate one rather than leaving a
+  // placeholder the reader has no way to resolve.
+  const envId = flag('--env') ?? env['AER_ENV_ID'] ?? randomUUID();
   const baseUrl = flag('--base-url') ?? env['AER_BASE_URL'];
 
   const opts: InitOptions = {
@@ -234,6 +238,13 @@ async function cmdSmoke(): Promise<void> {
 
 // argv is the command's own arguments (no node/script path), so tests can
 // drive `main` directly without touching the real process.argv.
+// The collector and `aer doctor` read AER_API_KEY, the rest of the CLI read
+// AER_TENANT_API_KEY, and both name the same tenant key. Accept either
+// everywhere, so setting the documented name never fails to authenticate.
+function tenantKey(): string | undefined {
+  return process.env['AER_TENANT_API_KEY'] ?? process.env['AER_API_KEY'];
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   // --help/-h anywhere in the invocation must print usage and exit before any
   // other command handling runs, so probing --help can never write a file or
@@ -295,7 +306,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (sub !== 'claude-code') usage();
     const file = rest[0];
     if (!file) usage();
-    const apiKey = process.env['AER_TENANT_API_KEY'];
+    const apiKey = tenantKey();
     const tenantId = process.env['AER_TENANT_ID'];
     const agentId = process.env['AER_AGENT_ID'];
     const environmentId = process.env['AER_ENV_ID'];
@@ -394,7 +405,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   if (command === 'agents' || command === 'sessions' || command === 'findings' || command === 'audit' || command === 'aers' || command === 'baseline') {
-    const apiKey = process.env['AER_TENANT_API_KEY'];
+    const apiKey = tenantKey();
     if (!baseUrl || !apiKey) usage();
     const opts = { baseUrl, apiKey };
 
@@ -520,7 +531,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   if (command === 'webhooks') {
-    const apiKey = process.env['AER_TENANT_API_KEY'];
+    const apiKey = tenantKey();
     if (!baseUrl || !apiKey) usage();
     const opts = { baseUrl, apiKey };
 
