@@ -169,15 +169,46 @@ describe('runDoctor', () => {
     expect(report.checks.every((c) => c.ok)).toBe(true);
   });
 
-  it('fails with actionable checks when nothing is set up', () => {
+  it('skips the Node-collector checks when it is not set up, and still fails a missing API key', () => {
+    // A user who never ran `aer init` (hooks-only, SDK, or nothing yet) has no
+    // aer-auto-node dep, no NODE_OPTIONS and no aer.config.json. Those are not
+    // failures (the collector is optional), so doctor reports them as one
+    // informational line, not three red crosses. A missing API key is still a
+    // real, actionable failure.
     const fs = memFs({ '/proj/package.json': JSON.stringify({ scripts: {} }) });
     const report = runDoctor(fs, { cwd: CWD, env: {} });
     expect(report.ok).toBe(false);
+    const names = report.checks.map((c) => c.name);
+    expect(names).not.toContain('package_installed');
+    expect(names).not.toContain('register_wired');
+    expect(names).not.toContain('config_present');
+    const nodeCheck = report.checks.find((c) => c.name === 'node_collector');
+    expect(nodeCheck?.ok).toBe(true);
     const failed = report.checks.filter((c) => !c.ok).map((c) => c.name);
-    expect(failed).toContain('package_installed');
-    expect(failed).toContain('register_wired');
-    expect(failed).toContain('config_present');
     expect(failed).toContain('api_key_present');
+  });
+
+  it('passes for a hooks-only user: no Node collector, but API key present', () => {
+    // The reported bug: `aer doctor` said FAILED for a hooks-only user because
+    // it always ran the Node-collector checks. With a key set and no Node
+    // collector on disk, doctor is green.
+    const fs = memFs({ '/proj/package.json': JSON.stringify({ scripts: {} }) });
+    const report = runDoctor(fs, { cwd: CWD, env: { AER_API_KEY: 'k' } });
+    expect(report.ok).toBe(true);
+    expect(report.checks.find((c) => c.name === 'node_collector')?.ok).toBe(true);
+  });
+
+  it('still fails a broken Node collector once it is in use (config present but placeholder)', () => {
+    // A present aer.config.json means the user chose the Node collector, so a
+    // placeholder identity is a real failure, not a skip.
+    const fs = memFs({
+      '/proj/package.json': JSON.stringify({ scripts: {}, devDependencies: { '@adastracomputing/aer-auto-node': 'workspace:*' } }),
+      '/proj/aer.config.json': JSON.stringify({ schema: 'aer.config.v1', tenant_id: 'REPLACE_ME', agent_id: 'a', env_id: 'e' }),
+    });
+    const report = runDoctor(fs, { cwd: CWD, env: { AER_API_KEY: 'k' } });
+    expect(report.ok).toBe(false);
+    const failed = report.checks.filter((c) => !c.ok).map((c) => c.name);
+    expect(failed).toContain('config_present');
   });
 
   it('accepts AER_TENANT_API_KEY as a fallback for api_key_present (matches the live tenant-auth check + help text)', () => {
