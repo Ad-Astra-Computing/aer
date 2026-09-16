@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+### Patch Changes
+
+- [`e1b4203`](https://github.com/Ad-Astra-Computing/aer/commit/e1b420391da787697228d48010ab6c87302a5551) - The bundle `correlation.sources` field parses a bounded string rather than a fixed enum, so a record sealed with a source type newer than a reader's schema still parses. Event ingest keeps the strict enum, where both ends are controlled. This matches the server and retires a rollout hazard when a new source type is added.
+
 ## 0.1.1
 
 ### Patch Changes
