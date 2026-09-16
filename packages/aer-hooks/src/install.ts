@@ -10,7 +10,7 @@
 //   - Paths resolve under the user home or an explicit --dir, never elsewhere.
 
 import { promises as fs } from 'node:fs';
-import { existsSync } from 'node:fs';
+import { existsSync, accessSync, statSync, constants as fsConstants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -40,31 +40,77 @@ interface HookMatcherGroup {
 
 type HooksMap = Record<string, HookMatcherGroup[]>;
 
-// The bare `aer-hook` name only works if the harness can find it on PATH. An
-// `npx ... install` run, the way the README used to show it, puts nothing on
-// PATH, so every wired event failed with a command not found. Prefer the bare
-// name when it resolves, since that survives a reinstall to a new version, and
-// otherwise pin the absolute path of the sibling built by the same install.
+// The command must resolve in the HARNESS's process, not the installer's.
+// Under npx and npm exec the installer's PATH carries an ephemeral
+// node_modules/.bin that the harness never sees, so a bare name found only
+// there is written and then not found. Prefer the bare name only when it
+// resolves on a persistent PATH dir, otherwise pin the absolute cli.js path.
 function hookInvocation(): string {
-  if (commandOnPath(AER_HOOK_MARKER)) return AER_HOOK_MARKER;
+  if (executableOnPersistentPath(AER_HOOK_MARKER)) return AER_HOOK_MARKER;
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sibling = path.join(here, 'cli.js');
-  if (existsSync(sibling)) return `node ${JSON.stringify(sibling)}`;
+  if (existsSync(sibling) && isSafeToPin(sibling)) return `node ${shellSingleQuote(sibling)}`;
   return AER_HOOK_MARKER;
 }
 
-function commandOnPath(cmd: string): boolean {
-  const dirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
-  return dirs.some((d) => existsSync(path.join(d, cmd)));
+// Directories that exist only while a package manager runs a bin, so a command
+// found only here will not resolve when the harness runs the hook.
+function isEphemeralDir(dir: string): boolean {
+  return dir.includes(`node_modules${path.sep}.bin`) || dir.includes(`${path.sep}_npx${path.sep}`);
 }
 
-/** True when the command a wired entry runs still resolves to something. */
+function executableOnPersistentPath(cmd: string): boolean {
+  const dirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
+  return dirs.some((d) => !isEphemeralDir(d) && isExecutableFile(path.join(d, cmd)));
+}
+
+function isExecutableFile(p: string): boolean {
+  try {
+    if (!statSync(p).isFile()) return false;
+    accessSync(p, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// POSIX single-quoting: everything inside '' is literal, and a literal quote is
+// written by closing, escaping one, and reopening. Both harnesses run the
+// command through sh, so this stops a path from being expanded or split.
+function shellSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+// Even single-quoted, refuse to pin a path that could still be dangerous or
+// unrunnable: a control character or newline breaks the config line, and a
+// path this hostile means something is already wrong. Fall back to the bare
+// name rather than write it.
+function isSafeToPin(p: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return !/[\x00-\x1f\n]/.test(p);
+}
+
+/**
+ * True when the command a wired entry runs still resolves to something the
+ * harness could execute. Commands come from the user's own config file, so
+ * this never throws on a hand-written or malformed one.
+ */
 export function hookCommandResolves(command: string): boolean {
-  const first = command.startsWith('node ')
-    ? JSON.parse(command.slice('node '.length).split(' --harness')[0] ?? '""') as string
-    : command.split(' ')[0] ?? '';
-  if (command.startsWith('node ')) return existsSync(first);
-  return commandOnPath(first);
+  const trimmed = command.trim();
+  if (trimmed.startsWith('node ')) {
+    const arg = trimmed.slice('node '.length).split(' --harness')[0]?.trim() ?? '';
+    // A quoted path, or a bare one a person typed by hand.
+    let file = arg;
+    if (arg.startsWith('"') || arg.startsWith("'")) {
+      try { file = JSON.parse(arg.startsWith("'") ? `"${arg.slice(1, -1)}"` : arg) as string; }
+      catch { file = arg.replace(/^['"]|['"]$/g, ''); }
+    }
+    return file.length > 0 && existsSync(file);
+  }
+  const first = trimmed.split(' ')[0] ?? '';
+  // An absolute or relative path, versus a bare name to look up on PATH.
+  if (first.includes(path.sep) || first.includes('/')) return isExecutableFile(first);
+  return executableOnPersistentPath(first);
 }
 
 function harnessCommand(harness: Harness): string {
@@ -105,15 +151,22 @@ async function readJsonOrAbort(file: string): Promise<Record<string, unknown>> {
   }
 }
 
-// Match any entry that runs OUR hook binary, by the marker plus a --harness
-// flag, so uninstall and idempotency still recognise entries written by an
-// older version (bare `aer-hook`) or a path-pinned one (`node .../cli.js`).
+// Match only entries that run OUR hook binary, recognising both an older bare
+// `aer-hook` and a path-pinned `node .../aer-hooks/dist/cli.js`, without
+// matching a user's unrelated `node /somewhere/else/cli.js --harness` (which
+// uninstall would otherwise delete and install would treat as already there).
 function isAerEntry(entry: unknown): boolean {
   if (typeof entry !== 'object' || entry === null) return false;
   const cmd = (entry as Record<string, unknown>)['command'];
   if (typeof cmd !== 'string') return false;
   const c = cmd.trim();
-  return (c.includes(AER_HOOK_MARKER) || c.includes('/cli.js')) && c.includes('--harness');
+  if (!c.includes('--harness')) return false;
+  const first = c.split(' ')[0] ?? '';
+  const base = first.split(/[\\/]/).pop() ?? '';
+  if (base === AER_HOOK_MARKER) return true;
+  // A pinned invocation: the node argument path ends at our built entry.
+  const m = c.match(/aer-hooks[\\/](?:dist[\\/])?cli\.js/);
+  return m !== null;
 }
 
 function groupHasAer(group: HookMatcherGroup): boolean {

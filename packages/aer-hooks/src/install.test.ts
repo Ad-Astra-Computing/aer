@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
+import { writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { install, uninstall, status, configPathFor, AER_HOOK_MARKER, hookCommandResolves } from './install.js';
@@ -137,6 +138,66 @@ describe('install resolves a runnable hook command', () => {
     const cc = st.find((e) => e.harness === 'claude-code')!;
     expect(cc.wiredEvents.length).toBeGreaterThan(0);
     expect(cc.resolves).toBe(false);
+  });
+});
+
+describe('hook command resolution details (Fable review)', () => {
+  const savedPath = process.env['PATH'];
+  afterEach(() => { process.env['PATH'] = savedPath; });
+
+  it('does not trust an aer-hook found only in an ephemeral node_modules/.bin', async () => {
+    // Under npx the installer's PATH carries node_modules/.bin, which the
+    // harness never has. A name found only there must not be written bare.
+    const binDir = path.join(dir, 'node_modules', '.bin');
+    mkdirSync(binDir, { recursive: true });
+    const fake = path.join(binDir, 'aer-hook');
+    writeFileSync(fake, '#!/bin/sh\n'); chmodSync(fake, 0o755);
+    process.env['PATH'] = binDir;
+    // The pinned form runs against the built dist, so build layout aside, the
+    // resolver must treat the ephemeral dir as not counting.
+    expect(hookCommandResolves('aer-hook --harness claude-code')).toBe(false);
+  });
+
+  it('counts an aer-hook on a persistent PATH dir', async () => {
+    const binDir = path.join(dir, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    const real = path.join(binDir, 'aer-hook');
+    writeFileSync(real, '#!/bin/sh\n'); chmodSync(real, 0o755);
+    process.env['PATH'] = binDir;
+    expect(hookCommandResolves('aer-hook --harness claude-code')).toBe(true);
+  });
+
+  it('does not count a name that is present but not executable', async () => {
+    const binDir = path.join(dir, 'bin2');
+    mkdirSync(binDir, { recursive: true });
+    const notExec = path.join(binDir, 'aer-hook');
+    writeFileSync(notExec, 'x'); chmodSync(notExec, 0o644);
+    process.env['PATH'] = binDir;
+    expect(hookCommandResolves('aer-hook --harness claude-code')).toBe(false);
+  });
+
+  it('does not misread a foreign cli.js hook as ours', async () => {
+    // A user's own hook running a different cli.js must survive uninstall and
+    // must not block install as already present.
+    const file = ccPath();
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify({
+      hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'node /opt/other/cli.js --harness codex' }] }] },
+    }));
+    const r = await install('claude-code', { dir });
+    expect(r.added).toContain('PreToolUse');
+    const after = JSON.parse(await fs.readFile(file, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const commands = after.hooks['PreToolUse']!.flatMap((g) => g.hooks.map((h) => h.command));
+    expect(commands).toContain('node /opt/other/cli.js --harness codex');
+    await uninstall('claude-code', { dir });
+    const final = JSON.parse(await fs.readFile(file, 'utf8')) as { hooks?: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const left = (final.hooks?.['PreToolUse'] ?? []).flatMap((g) => g.hooks.map((h) => h.command));
+    expect(left).toContain('node /opt/other/cli.js --harness codex');
+  });
+
+  it('does not throw on a hand-written unquoted node command', () => {
+    expect(() => hookCommandResolves('node /no/such/cli.js --harness codex')).not.toThrow();
+    expect(hookCommandResolves('node /no/such/cli.js --harness codex')).toBe(false);
   });
 });
 
