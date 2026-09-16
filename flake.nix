@@ -179,9 +179,23 @@
         # The Python SDK is deliberately never published to PyPI, so Nix is how
         # you consume it without a git URL. Same flake, same nixpkgs pin: a
         # second flake would drift from this one.
+        # The SDK version is single-sourced in _version.py (its own comment
+        # says bumping that file is the whole release bump). Read it here rather
+        # than hardcoding, so the Nix build can never drift from that source.
+        sdkPyVersion =
+          let
+            verLine = pkgs.lib.findFirst
+              (l: pkgs.lib.hasInfix "__version__" l) null
+              (pkgs.lib.splitString "\n"
+                (builtins.readFile ./packages/sdk-py/src/aer_sdk/_version.py));
+            m = if verLine == null then null else builtins.match ''.*"([^"]+)".*'' verLine;
+          in
+          if m == null then throw "aer-sdk version not found in _version.py"
+          else builtins.head m;
+
         sdkPy = pkgs.python3Packages.buildPythonPackage {
           pname = "aer-sdk";
-          version = "0.1.0";
+          version = sdkPyVersion;
           pyproject = true;
           src = ./packages/sdk-py;
           build-system = [ pkgs.python3Packages.hatchling ];
