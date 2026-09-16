@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { Uuid } from './id.js';
 import { IsoTimestampMs } from './timestamp.js';
-import { SOURCE_TYPES, SEVERITY_HINTS } from './event.js';
+import { SEVERITY_HINTS } from './event.js';
 import { canonicalHash } from './canonical.js';
 import { Principal } from './session.js';
 import { PolicyVerdict } from './policy.js';
@@ -64,7 +64,10 @@ export type Environment = z.infer<typeof Environment>;
 export const Correlation = z
   .object({
     session_confidence: z.number().min(0).max(1),
-    sources: z.array(z.enum(SOURCE_TYPES)),
+    // Bounded string, not the strict enum: a bundle sealed with a source value
+    // newer than a reader's schema must still parse. Event ingest keeps the
+    // enum (event.ts), where both ends are controlled.
+    sources: z.array(z.string().min(1).max(32)),
   })
   .strict();
 export type Correlation = z.infer<typeof Correlation>;
