@@ -43,7 +43,10 @@ export type EventType = (typeof EVENT_TYPES)[number];
 // 'import' = reconstructed post-hoc from a harness session file (H4 transcript
 // import), a materially weaker trust signal than live capture - kept distinct so
 // a verifier can tell observed-live events from imported ones.
-export const SOURCE_TYPES = ['sdk', 'wrapper', 'ebpf', 'gateway', 'user', 'import'] as const;
+// 'harness' = reported live by a coding harness (Claude Code, Codex) through its
+// own hooks: tool lifecycle only, never the wire, so a harness record cannot
+// speak to network, file or process activity.
+export const SOURCE_TYPES = ['sdk', 'wrapper', 'ebpf', 'gateway', 'user', 'import', 'harness'] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
 export const SEVERITY_HINTS = ['info', 'low', 'medium', 'high', 'critical'] as const;

@@ -63,7 +63,7 @@ export interface HttpSinkOptions {
    * enum (sdk|wrapper|ebpf|gateway|user|import). Default 'wrapper' (harness/hook
    * capture is auto-instrumentation, same category the auto-node collector uses).
    */
-  sourceType?: 'sdk' | 'wrapper' | 'ebpf' | 'gateway' | 'user' | 'import' | undefined;
+  sourceType?: 'sdk' | 'wrapper' | 'ebpf' | 'gateway' | 'user' | 'import' | 'harness' | undefined;
   /** Injectable event_id generator for tests. Defaults to crypto.randomUUID(). */
   newId?: (() => string) | undefined;
   /** Injectable clock for tests. Defaults to new Date(). */
