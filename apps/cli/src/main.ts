@@ -405,6 +405,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   if (command === 'agents' || command === 'sessions' || command === 'findings' || command === 'audit' || command === 'aers' || command === 'baseline') {
+    // A command without its subcommand used to fall through to the whole usage
+    // text, which reads as the tool ignoring you. Name what is missing.
+    if (sub === undefined || sub.startsWith('-')) {
+      console.error(`aer ${command} needs a subcommand, for example: aer ${command} list\n`);
+      usage();
+    }
     const apiKey = tenantKey();
     if (!baseUrl || !apiKey) usage();
     const opts = { baseUrl, apiKey };
