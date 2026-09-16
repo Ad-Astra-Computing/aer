@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, symlinkSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -47,6 +47,21 @@ const SUBCOMMANDS = [
   'verify', 'commitments', 'webhooks', 'agents', 'sessions', 'findings', 'audit',
 ];
 
+// Same as run(), but with explicit environment values, for the cases where
+// what is being tested is which variable the CLI reads.
+async function runWithEnv(bin: string, args: string[], extra: Record<string, string>): Promise<Run> {
+  try {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [bin, ...args], {
+      cwd: pkgRoot,
+      env: { ...process.env, ...extra },
+    });
+    return { code: 0, out: stdout + stderr };
+  } catch (err) {
+    const e = err as { code?: number | string; stdout?: string; stderr?: string };
+    return { code: e.code ?? 'unknown', out: (e.stdout ?? '') + (e.stderr ?? '') };
+  }
+}
+
 describe('CLI entry point', () => {
   let linked: string;
 
@@ -77,6 +92,27 @@ describe('CLI entry point', () => {
   it.each(SUBCOMMANDS)('recognises %s through a bin symlink', async (cmd) => {
     const { out } = await run(linked, [cmd]);
     expect(out, `${cmd} produced no output at all`).not.toBe('');
+  });
+
+  // Nothing issues an environment id, so a placeholder left the reader with a
+  // value they had no way to look up.
+  it('generates an environment id rather than a placeholder', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'aer-init-'));
+    writeFileSync(join(project, 'package.json'), '{"name":"p","version":"1.0.0","scripts":{"start":"node i.js"}}');
+    writeFileSync(join(project, 'i.js'), '');
+    await run(linked, ['init', '--yes'], project);
+    const config = JSON.parse(readFileSync(join(project, 'aer.config.json'), 'utf8')) as Record<string, string>;
+    expect(config['env_id']).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
+  // The collector documents AER_API_KEY and these commands used to read only
+  // AER_TENANT_API_KEY, so the documented name printed usage instead.
+  it('accepts AER_API_KEY for the tenant commands', async () => {
+    const { out } = await runWithEnv(linked, ['sessions', 'list'], {
+      AER_BASE_URL: 'http://127.0.0.1:9',
+      AER_API_KEY: 'aer_probe',
+    });
+    expect(out).not.toContain('Usage:');
   });
 });
 
