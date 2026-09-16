@@ -172,9 +172,13 @@ export async function runHook(
   try {
     const harness = parseHarnessFlag(argv);
     const overrides = deps.fetch ? { fetch: deps.fetch } : {};
-    const base = resolveSinkOptionsFromEnv(env, overrides);
+    const resolved = resolveSinkOptionsFromEnv(env, overrides);
     // Unconfigured: do nothing, touch no network.
-    if (!base) return;
+    if (!resolved) return;
+    // A harness records tool lifecycle through hooks and never watches the
+    // wire, so mark it as such rather than inherit the wrapper default, which
+    // means the auto-node collector did watch it.
+    const base = { ...resolved, sourceType: 'harness' as const };
 
     const input = await (deps.readInput ?? readStdin)();
     if (!input.trim()) return;
