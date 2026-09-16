@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.4
+
+### Patch Changes
+
+- [`d42d8c1`](https://github.com/Ad-Astra-Computing/aer/commit/d42d8c1ed5a348a1de3167e7efa511f3e4d1a9ae) - `aer sessions`, `aer agents` and the other grouped commands say which subcommand is missing instead of printing the whole usage text, and the entry-point tests now run multi-word commands through the real binary rather than only their first word.
+- [`6061958`](https://github.com/Ad-Astra-Computing/aer/commit/6061958ffba371ece17ea1c384299bab70a545a1) - Generate an environment id during `aer init` and accept either name for the tenant key.
+
+  Nothing issues an environment id and nothing registers it, so `REPLACE_WITH_ENV_ID` left the reader with a value they had no way to look up. `aer init` now writes one.
+
+  `sessions`, `agents`, `findings`, `audit`, `aers`, `baseline`, `webhooks` and `import` read only `AER_TENANT_API_KEY`, while the collector and `aer doctor` document `AER_API_KEY`. Setting the documented name printed usage instead of authenticating. Either name now works everywhere.
+
 ## 0.1.3
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.3
+
+### Patch Changes
+
+- [`aad7172`](https://github.com/Ad-Astra-Computing/aer/commit/aad7172d8bf2fe34410b9005081a3b55316f68fa) - Hooks now record with the `harness` source type instead of the `wrapper` default. A coding harness reports tool lifecycle through its hooks and never watches the network, files or processes, which `wrapper` (the auto-node collector, which does watch the wire) wrongly implied. A harness record is now shown as self-reported for those categories rather than claiming a zero it could not have observed.
+- [`d42d8c1`](https://github.com/Ad-Astra-Computing/aer/commit/d42d8c1ed5a348a1de3167e7efa511f3e4d1a9ae) - The installer now writes a hook command the harness can actually run. It resolves `aer-hook` only on a persistent PATH directory, skipping the ephemeral `node_modules/.bin` that npm and npx put in front of the installer's own PATH but never give the harness, and otherwise pins the single-quoted absolute path of the `cli.js` built by this same install. Paths are single-quoted for the shell the harness runs them through, and a path carrying a control character is refused rather than written.
+
+  `aer-hooks status` reports when a wired command no longer resolves. Uninstall and idempotency match only our own hook, so a user's unrelated `node other/cli.js --harness ...` entry is left alone, and `hookCommandResolves` never throws on a hand-written command.
+
+  A lifecycle test runs the built binary through SessionStart, PreToolUse, PostToolUse and Stop against a stand-in API and proves one AER session opens and completes, plus the fail-open promise (exit 0, empty stdout) against an unreachable API.
+- Updated dependencies
+  - @adastracomputing/aer-emit@0.1.2
+
 ## 0.1.2
 
 ### Patch Changes
