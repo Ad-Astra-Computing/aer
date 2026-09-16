@@ -48,7 +48,8 @@ const SUBCOMMANDS = [
 ];
 
 // Same as run(), but with explicit environment values, for the cases where
-// what is being tested is which variable the CLI reads.
+// what is being tested is which variable the CLI reads, or that a command
+// routes past usage into the network.
 async function runWithEnv(bin: string, args: string[], extra: Record<string, string>): Promise<Run> {
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, [bin, ...args], {
@@ -114,6 +115,26 @@ describe('CLI entry point', () => {
     });
     expect(out).not.toContain('Usage:');
   });
+
+  // Multi-word commands were never exercised here, only their first word, so
+  // a build that dropped the second word would have passed. A user reported
+  // exactly that. These run the real bin with the second word attached.
+  it('names the missing subcommand instead of only printing usage', async () => {
+    const { code, out } = await run(linked, ['sessions']);
+    expect(code).toBe(64);
+    expect(out).toContain('needs a subcommand');
+  });
+
+  it.each([['sessions', 'list'], ['agents', 'list'], ['aers', 'list']])(
+    'routes %s %s past usage when configured',
+    async (cmd, sub) => {
+      // A base URL nothing listens on: the command must try the network and
+      // fail there, not fall back to usage text.
+      const { out } = await runWithEnv(linked, [cmd, sub], { AER_BASE_URL: 'http://127.0.0.1:9', AER_TENANT_API_KEY: 'aer_probe' });
+      expect(out).not.toContain('Usage:');
+      expect(out).not.toContain('needs a subcommand');
+    },
+  );
 });
 
 // Packing is slower than the rest of the file, but it is the only test here
