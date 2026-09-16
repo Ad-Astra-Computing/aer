@@ -255,29 +255,42 @@ export function runDoctor(fs: FsLike, opts: DoctorOptions): DoctorReport {
   const scripts = (pkg['scripts'] as Record<string, string> | undefined) ?? {};
 
   const installed = '@adastracomputing/aer-auto-node' in deps;
-  checks.push({
-    name: 'package_installed',
-    ok: installed,
-    detail: installed ? 'found @adastracomputing/aer-auto-node' : 'add @adastracomputing/aer-auto-node (npm i -D @adastracomputing/aer-auto-node)',
-  });
-
   const wired = Object.values(scripts).some((s) => s.includes(REGISTER)) ||
     (opts.env['NODE_OPTIONS'] ?? '').includes(REGISTER);
-  checks.push({
-    name: 'register_wired',
-    ok: wired,
-    detail: wired ? 'register loaded via --import' : `add ${NODE_OPTS} to your start script (run \`aer init\`)`,
-  });
-
   const cfg = readJson(fs, join(opts.cwd, 'aer.config.json'));
-  const cfgOk = !!cfg && typeof cfg['tenant_id'] === 'string' && !String(cfg['tenant_id']).startsWith('REPLACE_') &&
-    typeof cfg['agent_id'] === 'string' && !String(cfg['agent_id']).startsWith('REPLACE_') &&
-    typeof cfg['env_id'] === 'string' && !String(cfg['env_id']).startsWith('REPLACE_');
-  checks.push({
-    name: 'config_present',
-    ok: cfgOk,
-    detail: cfgOk ? 'aer.config.json has tenant/agent/env identity' : 'aer.config.json missing or has placeholder identity',
-  });
+  const cfgFileExists = typeof fs.readFile(join(opts.cwd, 'aer.config.json')) === 'string';
+
+  // The Node auto-instrumentation collector is optional; hooks and the SDK are
+  // other ways to record. Run its checks only when a marker shows it is in use
+  // here, so a hooks-only user is not failed for a collector they never chose.
+  const nodeCollectorInUse = installed || wired || cfgFileExists;
+
+  if (nodeCollectorInUse) {
+    checks.push({
+      name: 'package_installed',
+      ok: installed,
+      detail: installed ? 'found @adastracomputing/aer-auto-node' : 'add @adastracomputing/aer-auto-node (npm i -D @adastracomputing/aer-auto-node)',
+    });
+    checks.push({
+      name: 'register_wired',
+      ok: wired,
+      detail: wired ? 'register loaded via --import' : `add ${NODE_OPTS} to your start script (run \`aer init\`)`,
+    });
+    const cfgOk = !!cfg && typeof cfg['tenant_id'] === 'string' && !String(cfg['tenant_id']).startsWith('REPLACE_') &&
+      typeof cfg['agent_id'] === 'string' && !String(cfg['agent_id']).startsWith('REPLACE_') &&
+      typeof cfg['env_id'] === 'string' && !String(cfg['env_id']).startsWith('REPLACE_');
+    checks.push({
+      name: 'config_present',
+      ok: cfgOk,
+      detail: cfgOk ? 'aer.config.json has tenant/agent/env identity' : 'aer.config.json missing or has placeholder identity',
+    });
+  } else {
+    checks.push({
+      name: 'node_collector',
+      ok: true,
+      detail: 'not set up here (optional): using hooks or the SDK. Run `aer init` to add Node auto-instrumentation.',
+    });
+  }
 
   // Accept AER_TENANT_API_KEY as a fallback: the live tenant-auth check
   // (runLiveChecks in doctor-live.ts) and the CLI help text both already
