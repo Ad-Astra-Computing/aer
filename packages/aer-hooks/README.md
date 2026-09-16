@@ -9,13 +9,29 @@ ESM only: use `import`, not `require`. Requires Node 20 or newer.
 
 ## Install
 
+The harness will run `aer-hook` on every event, so `aer-hook` has to be on the
+harness's `PATH` for as long as you want recording. Put it there first:
+
 ```
-npx @adastracomputing/aer-hooks install claude-code
-npx @adastracomputing/aer-hooks install codex
+npm install -g @adastracomputing/aer-hooks          # npm
+nix profile add github:Ad-Astra-Computing/aer#tools  # Nix, also installs the aer CLI
 ```
 
-That wires `aer-hook --harness <name>` into the harness config for PreToolUse,
-PostToolUse, SessionStart and Stop. Check what is wired with:
+Then wire it into the harness:
+
+```
+aer-hooks install claude-code
+aer-hooks install codex
+```
+
+That writes `aer-hook --harness <name>` into the harness config for PreToolUse,
+PostToolUse, SessionStart and Stop. If `aer-hook` is not on `PATH` at install
+time, the installer writes the absolute path of the copy it is running from and
+says so, which keeps recording working but ties the config to that install
+location. `npx @adastracomputing/aer-hooks install ...` works the same way, and
+is the case that needs the absolute path, since `npx` puts nothing on `PATH`.
+
+Check what is wired, and whether each wired command still resolves, with:
 
 ```
 npx @adastracomputing/aer-hooks status

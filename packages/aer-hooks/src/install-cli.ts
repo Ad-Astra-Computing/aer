@@ -95,9 +95,11 @@ export async function run(
       for (const e of entries) {
         const state = !e.exists
           ? 'no config'
-          : e.wiredEvents.length > 0
-            ? `wired: ${e.wiredEvents.join(', ')}`
-            : 'config present, no AER hooks';
+          : e.wiredEvents.length === 0
+            ? 'config present, no AER hooks'
+            : e.resolves
+              ? `wired: ${e.wiredEvents.join(', ')}`
+              : `wired: ${e.wiredEvents.join(', ')} - but the hook command is not on PATH, so nothing is recorded; re-run install`;
         out(`${e.harness.padEnd(12)} ${e.path}  (${state})`);
       }
       return 0;

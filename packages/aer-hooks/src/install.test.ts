@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { install, uninstall, status, configPathFor, AER_HOOK_MARKER } from './install.js';
+import { install, uninstall, status, configPathFor, AER_HOOK_MARKER, hookCommandResolves } from './install.js';
 
 let dir: string;
 
@@ -104,6 +104,39 @@ describe('install (claude-code)', () => {
     // original file untouched, no backup or overwrite happened
     expect(await fs.readFile(ccPath(), 'utf8')).toBe(garbage);
     await expect(fs.access(`${ccPath()}.bak`)).rejects.toBeTruthy();
+  });
+});
+
+describe('install resolves a runnable hook command', () => {
+  const savedPath = process.env['PATH'];
+  afterEach(() => { process.env['PATH'] = savedPath; });
+
+  it('classifies a bare command by PATH and a node-path command by the file', () => {
+    // A bare `aer-hook` resolves only if it is on PATH; a `node <abs>` command
+    // resolves if that file exists. The installer prefers whichever will run.
+    process.env['PATH'] = '/nonexistent-path-dir';
+    expect(hookCommandResolves('aer-hook --harness claude-code')).toBe(false);
+    const here = new URL('.', import.meta.url).pathname;
+    expect(hookCommandResolves(`node ${JSON.stringify(here + 'install.ts')} --harness claude-code`)).toBe(true);
+    expect(hookCommandResolves(`node ${JSON.stringify(here + 'no-such.js')} --harness claude-code`)).toBe(false);
+  });
+
+  it('status reports a wired command that cannot be found', async () => {
+    process.env['PATH'] = '/nonexistent-path-dir';
+    await install('claude-code', { dir });
+    // Rewrite the wired command to a binary that is not there, as a stale
+    // install to a removed location would leave it.
+    const file = ccPath();
+    const raw = JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, unknown>;
+    const hooks = raw['hooks'] as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    for (const ev of Object.keys(hooks)) {
+      for (const g of hooks[ev]!) for (const h of g.hooks) h.command = 'aer-hook --harness claude-code';
+    }
+    await fs.writeFile(file, JSON.stringify(raw));
+    const st = await status({ dir });
+    const cc = st.find((e) => e.harness === 'claude-code')!;
+    expect(cc.wiredEvents.length).toBeGreaterThan(0);
+    expect(cc.resolves).toBe(false);
   });
 });
 

@@ -10,6 +10,8 @@
 //   - Paths resolve under the user home or an explicit --dir, never elsewhere.
 
 import { promises as fs } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
@@ -38,8 +40,35 @@ interface HookMatcherGroup {
 
 type HooksMap = Record<string, HookMatcherGroup[]>;
 
+// The bare `aer-hook` name only works if the harness can find it on PATH. An
+// `npx ... install` run, the way the README used to show it, puts nothing on
+// PATH, so every wired event failed with a command not found. Prefer the bare
+// name when it resolves, since that survives a reinstall to a new version, and
+// otherwise pin the absolute path of the sibling built by the same install.
+function hookInvocation(): string {
+  if (commandOnPath(AER_HOOK_MARKER)) return AER_HOOK_MARKER;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sibling = path.join(here, 'cli.js');
+  if (existsSync(sibling)) return `node ${JSON.stringify(sibling)}`;
+  return AER_HOOK_MARKER;
+}
+
+function commandOnPath(cmd: string): boolean {
+  const dirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
+  return dirs.some((d) => existsSync(path.join(d, cmd)));
+}
+
+/** True when the command a wired entry runs still resolves to something. */
+export function hookCommandResolves(command: string): boolean {
+  const first = command.startsWith('node ')
+    ? JSON.parse(command.slice('node '.length).split(' --harness')[0] ?? '""') as string
+    : command.split(' ')[0] ?? '';
+  if (command.startsWith('node ')) return existsSync(first);
+  return commandOnPath(first);
+}
+
 function harnessCommand(harness: Harness): string {
-  return `${AER_HOOK_MARKER} --harness ${harness}`;
+  return `${hookInvocation()} --harness ${harness}`;
 }
 
 /** Resolve the config file path for a harness under `base` (home or --dir). */
@@ -76,14 +105,15 @@ async function readJsonOrAbort(file: string): Promise<Record<string, unknown>> {
   }
 }
 
-// Match ONLY the exact commands we install, so an unrelated user hook that
-// merely mentions "aer-hook" is never touched by idempotency or uninstall.
-const AER_COMMANDS = new Set<string>([harnessCommand('claude-code'), harnessCommand('codex')]);
-
+// Match any entry that runs OUR hook binary, by the marker plus a --harness
+// flag, so uninstall and idempotency still recognise entries written by an
+// older version (bare `aer-hook`) or a path-pinned one (`node .../cli.js`).
 function isAerEntry(entry: unknown): boolean {
   if (typeof entry !== 'object' || entry === null) return false;
   const cmd = (entry as Record<string, unknown>)['command'];
-  return typeof cmd === 'string' && AER_COMMANDS.has(cmd.trim());
+  if (typeof cmd !== 'string') return false;
+  const c = cmd.trim();
+  return (c.includes(AER_HOOK_MARKER) || c.includes('/cli.js')) && c.includes('--harness');
 }
 
 function groupHasAer(group: HookMatcherGroup): boolean {
@@ -241,6 +271,10 @@ export interface StatusEntry {
   path: string;
   exists: boolean;
   wiredEvents: string[];
+  // Whether the command every wired entry runs still resolves to a binary. A
+  // wired hook whose command cannot be found records nothing and reads to the
+  // user as AER silently not working, which is the failure worth surfacing.
+  resolves: boolean;
 }
 
 /** Report which events currently carry an AER hook entry, per harness. */
@@ -251,26 +285,35 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
     const file = configPathFor(harness, base);
     let exists = false;
     let wiredEvents: string[] = [];
+    let resolves = true;
     try {
       await fs.access(file);
       exists = true;
     } catch {
-      out.push({ harness, path: file, exists: false, wiredEvents });
+      out.push({ harness, path: file, exists: false, wiredEvents, resolves: true });
       continue;
     }
     try {
       const config = await readJsonOrAbort(file);
       const hooks = config['hooks'];
       if (typeof hooks === 'object' && hooks !== null && !Array.isArray(hooks)) {
-        wiredEvents = Object.entries(hooks as HooksMap)
-          .filter(([, groups]) => Array.isArray(groups) && groups.some(groupHasAer))
-          .map(([ev]) => ev);
+        const commands: string[] = [];
+        for (const [ev, groups] of Object.entries(hooks as HooksMap)) {
+          if (!Array.isArray(groups) || !groups.some(groupHasAer)) continue;
+          wiredEvents.push(ev);
+          for (const g of groups) {
+            for (const h of g.hooks ?? []) {
+              if (isAerEntry(h)) commands.push((h as HookCommandEntry).command.trim());
+            }
+          }
+        }
+        resolves = commands.length === 0 || commands.every(hookCommandResolves);
       }
     } catch {
       // Malformed config: the file exists but yields no readable AER wiring.
       wiredEvents = [];
     }
-    out.push({ harness, path: file, exists, wiredEvents });
+    out.push({ harness, path: file, exists, wiredEvents, resolves });
   }
   return out;
 }
