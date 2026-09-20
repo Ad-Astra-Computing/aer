@@ -132,3 +132,45 @@ describe('claudeCodeTranscriptToEvents', () => {
     expect(truncated).toBe(true);
   });
 });
+
+describe('an imported Bash command reduces to the program, never the line', () => {
+  function bashEvents(command: string) {
+    const line = {
+      type: 'assistant',
+      uuid: 'a1',
+      timestamp: '2026-09-20T12:00:00.000Z',
+      message: {
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [{ type: 'tool_use', id: 'toolu_x', name: 'Bash', input: { command } }],
+      },
+    };
+    return claudeCodeTranscriptToEvents([line], CTX).events;
+  }
+
+  const cases: [label: string, command: string, program: string | null, forbidden: string][] = [
+    ['a semicolon', 'ls;cat /etc/shadow-example', 'ls', 'shadow'],
+    ['a pipe', 'ls|grep secret-value', 'ls', 'secret'],
+    ['an and-list', 'ls&&curl evil.example', 'ls', 'evil'],
+    ['a redirect target', 'ls>/tmp/secret-file-name', 'ls', 'secret'],
+    ['an env value with a space', 'MSG="hello world" notify', 'notify', 'world'],
+    ['a command substitution', 'TOKEN=$(cat /tmp/nope) deploy', null, 'nope'],
+    ['a bare URL', 'https://example.com/secret-path', null, 'secret'],
+  ];
+
+  for (const [label, command, program, forbidden] of cases) {
+    it(`handles ${label}`, () => {
+      const events = bashEvents(command);
+      const json = JSON.stringify(events);
+      expect(json).not.toContain(forbidden);
+      const proc = events.find((e) => e.event_type === 'process.exec');
+      if (program === null) {
+        // Not understood, so it never claims a program ran.
+        expect(proc).toBeUndefined();
+        expect(events.find((e) => e.event_type === 'tool.selected')).toBeDefined();
+      } else {
+        expect(proc?.payload['command']).toBe(program);
+      }
+    });
+  }
+});

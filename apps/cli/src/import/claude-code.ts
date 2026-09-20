@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { reduceShellCommand, UNKNOWN_COMMAND } from '../shared/shell-reduce.js';
 
 // Mirror of @aer/schemas event.ts MAX_FIELD_LEN (host/path/tool/model field cap).
 // Inlined rather than imported so the published CLI bundle stays free of the
@@ -85,21 +86,12 @@ function tokenCount(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : undefined;
 }
 
-// Reduce a shell command to its executable name - NEVER argv. Skips leading
-// VAR=val env assignments and shell operators, strips any directory, and returns
-// only the first safe identifier run. Anything unparseable yields '' (caller then
-// falls back to a generic tool event), so a command line never leaks.
+// The executable name, never argv. '' when the line was not understood, and
+// the caller then records a generic tool event rather than naming a program
+// that may not have run.
 function execName(command: unknown): string {
-  if (typeof command !== 'string') return '';
-  const tokens = command.trim().split(/\s+/);
-  let i = 0;
-  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++;
-  let t = tokens[i] ?? '';
-  t = t.replace(/^[(){}!;&|<>]+/, '');
-  const slash = t.lastIndexOf('/');
-  if (slash >= 0) t = t.slice(slash + 1);
-  const m = t.match(/^[A-Za-z0-9._-]+/);
-  return m ? m[0] : '';
+  const name = reduceShellCommand(command);
+  return name === UNKNOWN_COMMAND ? '' : name;
 }
 
 // Bare host from a URL: reuse the URL parser, then keep hostname only.
