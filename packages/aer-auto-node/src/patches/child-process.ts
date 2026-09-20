@@ -6,6 +6,7 @@
 
 import cp from 'node:child_process';
 import { basename } from 'node:path';
+import { reduceShellCommand, UNKNOWN_COMMAND } from '../shared/shell-reduce.js';
 import type { ChildProcess } from 'node:child_process';
 import type { CollectorEvent } from '../session.js';
 import { redactArgs } from '../redaction.js';
@@ -17,11 +18,6 @@ interface PatchSlot { [PATCHED]?: { restore: () => void } }
 const noop = (): void => undefined;
 
 type CmdKind = 'spawn' | 'exec' | 'execFile' | 'fork';
-
-// A leading `VAR=value` shell env assignment. Skipped when picking the exec
-// command token so an inline secret (e.g. `API_KEY=sk-… mybin`) is never
-// captured as the command.
-const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 // Reentrancy guard: Node's own `exec()` internally invokes
 // `module.exports.execFile` under the hood. Once execFile is patched, that
@@ -115,16 +111,30 @@ export function installChildProcessPatch(capture: Capture): () => void {
 
 interface ExecMeta { command: string; argsRedacted: string }
 
-// Extract from a shell command string: the leading token is the command,
-// everything after it is redacted. Skips a leading `VAR=value` env
-// assignment first so its (possibly secret) value never lands in `command`.
+// Whether argv[0] is a whole shell line rather than a program. Whitespace
+// alone missed `ls>/tmp/secret`, which the shell splits and we did not.
+const SHELL_META_RE = /[\s;&|<>()$`'"\\*?]/;
+
+function isShellLine(first: string, args: unknown[]): boolean {
+  for (const arg of args) {
+    if (typeof arg === 'object' && arg !== null && !Array.isArray(arg)
+        && (arg as Record<string, unknown>)['shell']) {
+      return true;
+    }
+  }
+  return SHELL_META_RE.test(first);
+}
+
+/** A program name from an argv[0], or `unknown` when it is not one. */
+function safeProgramName(name: string): string {
+  return /^[A-Za-z0-9._+-]{1,64}$/.test(name) ? name : UNKNOWN_COMMAND;
+}
+
+// A whole shell line: only the program name survives, and only when the
+// parser understood the line. Everything else is a count.
 function extractShellString(first: string): ExecMeta {
   const tokens = first.trim().split(/\s+/).filter(Boolean);
-  let i = 0;
-  while (i < tokens.length && ENV_ASSIGN_RE.test(tokens[i]!)) i += 1;
-  const leading = tokens[i];
-  const rest = tokens.slice(i + 1);
-  return { command: leading ? basename(leading) : 'env', argsRedacted: redactArgs(rest) };
+  return { command: reduceShellCommand(first), argsRedacted: redactArgs(tokens.slice(1)) };
 }
 
 function safeExtract(kind: CmdKind, args: unknown[]): ExecMeta {
@@ -140,9 +150,11 @@ function safeExtract(kind: CmdKind, args: unknown[]): ExecMeta {
     // array) as args[1]. Treat that shape the same way `exec` is treated,
     // otherwise the raw command - flags, secrets and all - ends up in
     // `command` unredacted.
-    if (!Array.isArray(args[1]) && /\s/.test(first)) return extractShellString(first);
+    if (!Array.isArray(args[1]) && isShellLine(first, args)) return extractShellString(first);
     const list = Array.isArray(args[1]) ? (args[1] as string[]) : [];
-    return { command: basename(first), argsRedacted: redactArgs(list) };
+    // An argv[0] is a path or a program name, never a line, so basename is
+    // right here. It is still validated: a name that is not one is unknown.
+    return { command: safeProgramName(basename(first)), argsRedacted: redactArgs(list) };
   } catch {
     return { command: 'unknown', argsRedacted: redactArgs([]) };
   }
