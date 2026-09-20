@@ -16,6 +16,11 @@
 //     Same hook_event_name set plus SubagentStart/Stop, PreCompact/PostCompact,
 //     PermissionRequest. Distinguishing fields: turn_id (turn-scoped events),
 //     tool_use_id (tool events), and model is always present.
+//   Antigravity: https://antigravity.google/docs/hooks
+//     PreToolUse/PostToolUse: { toolCall:{name,args}, stepIdx, error?, conversationId, ... }
+//     PreInvocation/PostInvocation: { invocationNum, initialNumSteps, conversationId, ... }
+//     Stop: { executionNum, terminationReason, fullyIdle, error?, conversationId, ... }
+//     No hook_event_name field, so the event arrives on argv instead.
 //
 // REDACTION BY DEFAULT: we only ever surface tool names and argument KEY names
 // (Object.keys of tool_input/arguments), never argument values, unless
@@ -38,7 +43,7 @@ export interface HookEvent {
   sessionRef?: string | undefined;
 }
 
-export type Harness = 'claude-code' | 'codex';
+export type Harness = 'claude-code' | 'codex' | 'antigravity';
 
 export function asRecord(v: unknown): Record<string, unknown> | undefined {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -179,12 +184,85 @@ function keysOfWithValues(v: unknown): string[] | undefined {
 }
 
 /**
+ * Map an Antigravity hook payload to a HookEvent.
+ *
+ * The event name is a parameter because Antigravity does not put it in the
+ * payload, unlike the other two harnesses; each registration passes it on argv.
+ * Fields are camelCase and the tool call is nested, so none of the Claude Code
+ * mapping is reusable.
+ */
+export function normalizeAntigravity(
+  payload: unknown,
+  eventName: string,
+  env: NodeJS.ProcessEnv = process.env,
+): HookEvent {
+  const p = asRecord(payload) ?? {};
+  const kind = antigravityKind(eventName, p);
+  const event: HookEvent = { kind };
+
+  // conversationId is the only stable identifier across a run; there is no
+  // session_id.
+  const sessionRef = asString(p['conversationId']);
+  if (sessionRef !== undefined) event.sessionRef = sessionRef;
+
+  if (kind === 'tool_start' || kind === 'tool_end') {
+    const call = asRecord(p['toolCall']) ?? {};
+    const tool = asString(call['name']);
+    if (tool !== undefined) event.tool = tool;
+    const argKeys = recordArgsEnabled(env) ? keysOfWithValues(call['args']) : keysOf(call['args']);
+    if (argKeys !== undefined) event.argKeys = argKeys;
+  }
+
+  if (kind === 'tool_end') {
+    // PostToolUse reports failure as a top-level error STRING. Its text can
+    // quote command output, so only its presence is recorded.
+    const isError = asString(p['error']) !== undefined;
+    event.isError = isError;
+    event.ok = !isError;
+  }
+
+  return event;
+}
+
+/**
+ * Antigravity has no SessionStart and its Stop is not always terminal, so the
+ * session boundaries are derived rather than named.
+ */
+function antigravityKind(eventName: string, p: Record<string, unknown>): HookKind {
+  switch (eventName) {
+    case 'PreToolUse':
+      return 'tool_start';
+    case 'PostToolUse':
+      return 'tool_end';
+    case 'PreInvocation': {
+      // Fires every turn. Only the first opens the session, or every turn
+      // would reopen it. A missing count is treated as the first: opening a
+      // session twice is recoverable, never opening it loses the run.
+      const n = p['invocationNum'];
+      return typeof n !== 'number' || n <= 1 ? 'session_start' : 'other';
+    }
+    case 'Stop': {
+      // Also fires on non-final terminations. A session left open never
+      // produces an AER, so an absent flag closes.
+      return p['fullyIdle'] === false ? 'other' : 'session_end';
+    }
+    default:
+      return 'other';
+  }
+}
+
+/**
  * Pick the harness from the payload shape. Codex tool/turn events carry `turn_id`
  * or `tool_use_id`, which Claude Code does not; a bare `hook_event_name` without
  * those is Claude Code. Callers may override with an explicit harness.
  */
 export function detectHarness(payload: unknown): Harness {
   const p = asRecord(payload) ?? {};
+  // Antigravity is the only one of the three that omits hook_event_name, and
+  // conversationId is on every one of its payloads.
+  if (p['hook_event_name'] === undefined && asString(p['conversationId']) !== undefined) {
+    return 'antigravity';
+  }
   if (asString(p['turn_id']) !== undefined || asString(p['tool_use_id']) !== undefined) {
     return 'codex';
   }
@@ -196,7 +274,9 @@ export function normalize(
   payload: unknown,
   harness?: Harness,
   env: NodeJS.ProcessEnv = process.env,
+  eventName?: string,
 ): HookEvent {
   const h = harness ?? detectHarness(payload);
+  if (h === 'antigravity') return normalizeAntigravity(payload, eventName ?? '', env);
   return h === 'codex' ? normalizeCodex(payload, env) : normalizeClaudeCode(payload, env);
 }

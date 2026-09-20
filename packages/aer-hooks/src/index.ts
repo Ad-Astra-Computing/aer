@@ -1,9 +1,9 @@
 // @adastracomputing/aer-hooks - fail-open, redaction-by-default hook adapters.
 //
-// Claude Code and OpenAI Codex CLI fire shell hooks that pass a JSON event on
-// stdin. This package normalizes both harnesses' payloads to one shape, emits the
-// tool events into AER (best-effort, never blocking the harness) and ships a safe
-// installer that wires the hooks into each harness config.
+// Claude Code, OpenAI Codex CLI and Antigravity fire shell hooks that pass a JSON
+// event on stdin. This package normalizes each harness's payload to one shape,
+// emits the tool events into AER (best-effort, never blocking the harness) and
+// ships a safe installer that wires the hooks into each harness config.
 //
 // opencode is supported natively via its JS plugin API (see the opencode exports
 // below) - this catches bash/read/write/edit tools the MCP recorder never sees.
@@ -13,6 +13,7 @@ export {
   normalize,
   normalizeClaudeCode,
   normalizeCodex,
+  normalizeAntigravity,
   detectHarness,
   recordArgsEnabled,
 } from './normalize.js';
