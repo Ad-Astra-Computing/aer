@@ -21,6 +21,7 @@ import { buildDependencySnapshot } from './dependencies/snapshot.js';
 import { createAttestor, type Attestor } from './attestor.js';
 import { PolicyEnforcer } from './policy.js';
 import { fetchUsagePolicy } from './policy-fetch.js';
+import { startFrameworkObserver } from './frameworks/observe.js';
 
 export const COLLECTOR_NAME = '@adastracomputing/aer-auto-node';
 export const COLLECTOR_VERSION = '0.3.0'; // keep in sync with package.json
@@ -337,6 +338,11 @@ function dependencySnapshotEvent(): CollectorEvent {
   };
 }
 
+// Started at module load, not lazily: --import runs this before user code, and
+// the require.cache baseline is only honest if nothing of the agent's has
+// loaded yet.
+const frameworkObserver = startFrameworkObserver();
+
 function buildCollectorReport(
   config: AerAutoConfig,
   phase: 'open' | 'final',
@@ -345,6 +351,8 @@ function buildCollectorReport(
   attestor?: Attestor,
   adapterStats?: AdapterStats,
 ): CollectorEvent {
+  const frameworks = frameworkObserver.observed();
+  const providers = adapterStats ? Object.keys(adapterStats.snapshot()).sort() : [];
   return {
     event_type: 'collector.report',
     payload: {
@@ -357,6 +365,13 @@ function buildCollectorReport(
       enabled_patches: [...enabledPatches],
       // Adapters actually detected + patched (not just configured).
       enabled_adapters: [...enabledAdapters],
+      // Frameworks actually observed loading, most specific first. Absent when
+      // none was seen, which means "did not observe", never "none used": the
+      // open report usually predates the agent's own imports.
+      ...(frameworks.length > 0 ? { frameworks } : {}),
+      // Providers that actually made a call, not merely those installed and
+      // patched. enabled_adapters above already says which were patched.
+      ...(providers.length > 0 ? { providers } : {}),
       capture_policy: {
         headers: config.capture.headers ? 'on' : 'off',
         bodies: config.capture.bodies ? 'on' : 'off',
