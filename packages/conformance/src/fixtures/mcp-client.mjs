@@ -1,0 +1,10 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+const [cmd, ...args] = process.argv.slice(2);
+const client = new Client({ name: 'conformance-client', version: '1.0.0' });
+await client.connect(new StdioClientTransport({ command: cmd, args, env: process.env }));
+const tools = await client.listTools();
+console.log('TOOLS:' + JSON.stringify(tools.tools.map((t) => t.name)));
+const r = await client.callTool({ name: 'lookup_customer', arguments: { customer_id: 'CUST-42' } });
+console.log('CALL-OK:' + JSON.stringify(r.content?.[0]?.text ?? null));
+await client.close();

@@ -5,6 +5,9 @@ packages:
 # is allowed to run code at install time.
 allowBuilds:
   esbuild: true
+  # A native accelerator the Vercel SDK pulls in transitively. The JS
+  # fallback is fine; a test suite is not worth a compiler at install time.
+  msgpackr-extract: false
   msw: false
 
 overrides:

@@ -1,0 +1,29 @@
+{
+  "name": "@aer/conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Proves each capability the site claims, against the real library rather than a stand-in",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pretest": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@adastracomputing/aer-auto-node": "workspace:*",
+    "@adastracomputing/aer-hooks": "workspace:*",
+    "@adastracomputing/aer-mcp-recorder": "workspace:*",
+    "@anthropic-ai/sdk": "^0.127.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opencode-ai/plugin": "^1.18.31",
+    "@types/node": "^26.1.2",
+    "ai": "^7.0.107",
+    "openai": "^7.20.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "@ai-sdk/anthropic": "^4.0.58",
+    "zod": "^3.25.76",
+    "@adastracomputing/aer-emit": "workspace:*"
+  }
+}
