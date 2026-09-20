@@ -475,19 +475,30 @@ export function patchMethod(
   key: string,
   makeWrapper: (original: AnyFn) => AnyFn,
   symbolName: string,
-): () => void {
+): (() => void) | null {
   const noop = (): void => undefined;
-  if (!target || typeof target[key] !== 'function') return noop;
+  if (!target || typeof target[key] !== 'function') return null;
+  // An ESM module namespace is frozen. Writing to one throws, and an
+  // uncaught throw here runs inside the customer's startup.
+  if (!Object.isExtensible(target)) return null;
 
   const PATCHED = Symbol.for(`adastra.aer.adapter.${symbolName}`);
   const ORIGINAL = Symbol.for(`adastra.aer.adapter.original.${symbolName}`);
   const slot = target as unknown as Record<symbol, unknown>;
+  // Already patched by another collector instance: nothing to do, and the
+  // caller is still instrumented.
   if (slot[PATCHED]) return noop;
 
   const original = target[key] as AnyFn;
-  slot[PATCHED] = true;
-  slot[ORIGINAL] = original;
-  target[key] = makeWrapper(original);
+  try {
+    slot[PATCHED] = true;
+    slot[ORIGINAL] = original;
+    target[key] = makeWrapper(original);
+  } catch {
+    // Sealed, a read-only accessor, a Proxy that refuses: not instrumentable,
+    // and never a reason to fail.
+    return null;
+  }
 
   return function uninstall(): void {
     if (slot[ORIGINAL]) target[key] = slot[ORIGINAL] as AnyFn;
