@@ -15,13 +15,19 @@ import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
-export type Harness = 'claude-code' | 'codex';
+export type Harness = 'claude-code' | 'codex' | 'antigravity';
 
 /** The command each AER hook entry runs. Marked so we can find + remove only ours. */
 export const AER_HOOK_MARKER = 'aer-hook';
 
 const CLAUDE_EVENTS = ['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop'] as const;
 const CODEX_EVENTS = ['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop'] as const;
+// Antigravity has no SessionStart; PreInvocation stands in for it. Only the two
+// tool events accept a matcher. PostInvocation is a turn boundary we ignore.
+const ANTIGRAVITY_EVENTS = ['PreToolUse', 'PostToolUse', 'PreInvocation', 'Stop'] as const;
+const ANTIGRAVITY_MATCHED = new Set<string>(['PreToolUse', 'PostToolUse']);
+/** Our key in Antigravity's named-group root. We own it outright. */
+const AER_GROUP_NAME = 'aer';
 
 export interface InstallOptions {
   /** Base directory that stands in for the user home. Defaults to os.homedir(). */
@@ -113,13 +119,28 @@ export function hookCommandResolves(command: string): boolean {
   return executableOnPersistentPath(first);
 }
 
-function harnessCommand(harness: Harness): string {
-  return `${hookInvocation()} --harness ${harness}`;
+function harnessCommand(harness: Harness, event?: string): string {
+  const base = `${hookInvocation()} --harness ${harness}`;
+  // Antigravity omits the event name from the payload, so each registration
+  // has to carry it.
+  return event === undefined ? base : `${base} --event ${event}`;
+}
+
+/** The hook group AER installs into an Antigravity config. */
+function antigravityGroup(): HooksMap {
+  const group: HooksMap = {};
+  for (const ev of ANTIGRAVITY_EVENTS) {
+    const entry: HookMatcherGroup = { hooks: [{ type: 'command', command: harnessCommand('antigravity', ev) }] };
+    if (ANTIGRAVITY_MATCHED.has(ev)) entry.matcher = '*';
+    group[ev] = [entry];
+  }
+  return group;
 }
 
 /** Resolve the config file path for a harness under `base` (home or --dir). */
 export function configPathFor(harness: Harness, base: string): string {
   if (harness === 'claude-code') return path.join(base, '.claude', 'settings.json');
+  if (harness === 'antigravity') return path.join(base, '.gemini', 'config', 'hooks.json');
   return path.join(base, '.codex', 'hooks.json');
 }
 
@@ -197,6 +218,7 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
   const base = baseDir(opts);
   const file = configPathFor(harness, base);
   const config = await readJsonOrAbort(file);
+  if (harness === 'antigravity') return installAntigravity(file, config);
 
   const existingHooks =
     typeof config['hooks'] === 'object' && config['hooks'] !== null && !Array.isArray(config['hooks'])
@@ -277,11 +299,51 @@ export interface UninstallResult {
   removed: string[];
 }
 
+/**
+ * Antigravity's root is a map of named hook groups with no `hooks` wrapper, so
+ * AER owns one key and leaves every other group alone. Replacing our own group
+ * wholesale is safe precisely because it is ours.
+ */
+async function installAntigravity(
+  file: string,
+  config: Record<string, unknown>,
+): Promise<InstallResult> {
+  const want = antigravityGroup();
+  if (JSON.stringify(config[AER_GROUP_NAME]) === JSON.stringify(want)) {
+    return {
+      harness: 'antigravity',
+      path: file,
+      backupPath: null,
+      added: [],
+      alreadyPresent: [...ANTIGRAVITY_EVENTS],
+    };
+  }
+
+  const backupPath = await writeWithBackup(file, { ...config, [AER_GROUP_NAME]: want });
+  return {
+    harness: 'antigravity',
+    path: file,
+    backupPath,
+    added: [...ANTIGRAVITY_EVENTS],
+    alreadyPresent: [],
+  };
+}
+
 /** Remove only AER's hook entries. Leaves every other hook intact. */
 export async function uninstall(harness: Harness, opts: InstallOptions = {}): Promise<UninstallResult> {
   const base = baseDir(opts);
   const file = configPathFor(harness, base);
   const config = await readJsonOrAbort(file);
+
+  if (harness === 'antigravity') {
+    if (config[AER_GROUP_NAME] === undefined) {
+      return { harness, path: file, backupPath: null, removed: [] };
+    }
+    const next = { ...config };
+    delete next[AER_GROUP_NAME];
+    const backupPath = await writeWithBackup(file, next);
+    return { harness, path: file, backupPath, removed: [...ANTIGRAVITY_EVENTS] };
+  }
 
   const hooks =
     typeof config['hooks'] === 'object' && config['hooks'] !== null && !Array.isArray(config['hooks'])
@@ -334,7 +396,7 @@ export interface StatusEntry {
 export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> {
   const base = baseDir(opts);
   const out: StatusEntry[] = [];
-  for (const harness of ['claude-code', 'codex'] as const) {
+  for (const harness of ['claude-code', 'codex', 'antigravity'] as const) {
     const file = configPathFor(harness, base);
     let exists = false;
     let wiredEvents: string[] = [];
@@ -348,7 +410,8 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
     }
     try {
       const config = await readJsonOrAbort(file);
-      const hooks = config['hooks'];
+      // Antigravity's groups sit at the root under our own key, with no wrapper.
+      const hooks = harness === 'antigravity' ? config[AER_GROUP_NAME] : config['hooks'];
       if (typeof hooks === 'object' && hooks !== null && !Array.isArray(hooks)) {
         const commands: string[] = [];
         for (const [ev, groups] of Object.entries(hooks as HooksMap)) {

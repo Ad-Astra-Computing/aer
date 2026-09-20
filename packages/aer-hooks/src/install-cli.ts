@@ -35,7 +35,11 @@ function parseArgs(argv: string[]): Parsed {
   const cmd = positional[0];
   const rawHarness = positional[1];
   const harness =
-    rawHarness === 'claude-code' || rawHarness === 'codex' ? rawHarness : undefined;
+    rawHarness === 'claude-code' || rawHarness === 'codex' || rawHarness === 'antigravity'
+      ? rawHarness
+      : rawHarness === 'agy'
+        ? 'antigravity'
+        : undefined;
   return { cmd, harness, dir };
 }
 
@@ -44,8 +48,8 @@ const HELP_FLAGS = new Set(['--help', '-h', 'help']);
 const USAGE = `aer-hooks: wire AER recording into a coding harness
 
 Usage:
-  aer-hooks install <claude-code|codex> [--dir <path>]
-  aer-hooks uninstall <claude-code|codex> [--dir <path>]
+  aer-hooks install <claude-code|codex|antigravity> [--dir <path>]
+  aer-hooks uninstall <claude-code|codex|antigravity> [--dir <path>]
   aer-hooks status [--dir <path>]
 `;
 
@@ -60,7 +64,7 @@ export async function run(
   try {
     if (cmd === 'install') {
       if (!harness) {
-        err('install requires a harness: claude-code | codex');
+        err('install requires a harness: claude-code | codex | antigravity');
         return 2;
       }
       const r = await install(harness, opts);
@@ -76,7 +80,7 @@ export async function run(
 
     if (cmd === 'uninstall') {
       if (!harness) {
-        err('uninstall requires a harness: claude-code | codex');
+        err('uninstall requires a harness: claude-code | codex | antigravity | antigravity');
         return 2;
       }
       const r = await uninstall(harness, opts);

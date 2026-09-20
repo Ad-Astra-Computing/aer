@@ -42,17 +42,34 @@ export function parseHardTimeoutMs(env: NodeJS.ProcessEnv, warn: (message: strin
   return n;
 }
 
-function parseHarnessFlag(argv: string[]): Harness | undefined {
+export function parseHarnessFlag(argv: string[]): Harness | undefined {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--harness') {
       const v = argv[i + 1];
-      if (v === 'claude-code' || v === 'codex') return v;
+      if (v === 'claude-code' || v === 'codex' || v === 'antigravity') return v;
+      // `agy` is what people type for Antigravity, so both spellings work.
+      if (v === 'agy') return 'antigravity';
     } else if (a === '--harness=claude-code') {
       return 'claude-code';
     } else if (a === '--harness=codex') {
       return 'codex';
+    } else if (a === '--harness=antigravity' || a === '--harness=agy') {
+      return 'antigravity';
     }
+  }
+  return undefined;
+}
+
+/**
+ * Antigravity is the one harness that does not name the event in its payload,
+ * so its registrations pass it on argv instead.
+ */
+export function parseEventFlag(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--event') return argv[i + 1];
+    if (a !== undefined && a.startsWith('--event=')) return a.slice('--event='.length);
   }
   return undefined;
 }
@@ -190,7 +207,7 @@ export async function runHook(
       return;
     }
     const now = (deps.now ?? Date.now)();
-    const event = normalize(payload, harness, env);
+    const event = normalize(payload, harness, env, parseEventFlag(argv));
     await orchestrateAndEmit(event, base, payload, env, now);
   } catch {
     /* fail open: never surface an error to the harness */

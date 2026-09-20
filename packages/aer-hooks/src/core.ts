@@ -18,7 +18,13 @@ export interface EmitOptions {
 function rawToolInput(raw: unknown): Record<string, unknown> | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const rec = raw as Record<string, unknown>;
-  const ti = rec['tool_input'] ?? rec['arguments'];
+  // Antigravity nests the call, so its args are at toolCall.args.
+  const call = rec['toolCall'];
+  const nested =
+    typeof call === 'object' && call !== null && !Array.isArray(call)
+      ? (call as Record<string, unknown>)['args']
+      : undefined;
+  const ti = rec['tool_input'] ?? rec['arguments'] ?? nested;
   if (typeof ti === 'object' && ti !== null && !Array.isArray(ti)) {
     return ti as Record<string, unknown>;
   }
