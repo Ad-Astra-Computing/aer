@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"],
+    "noEmit": true
+  },
+  // Tests are INCLUDED here, unlike every other package. Some conformance
+  // claims are type-level: that the object we hand opencode is one opencode's
+  // own published types accept. Excluding the tests would leave that
+  // unchecked.
+  "include": ["src/**/*"]
+}
