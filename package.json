@@ -8,11 +8,12 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "node scripts/check-vendored.mjs && pnpm -r typecheck",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm -r build && changeset publish --tag next",
-    "promote": "node scripts/promote-latest.mjs"
+    "promote": "node scripts/promote-latest.mjs",
+    "check:vendored": "node scripts/check-vendored.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
