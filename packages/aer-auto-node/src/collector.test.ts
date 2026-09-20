@@ -234,3 +234,32 @@ describe('createCollector', () => {
     }
   });
 });
+
+describe('framework and provider evidence on the report', () => {
+  it('omits both keys when nothing was observed', async () => {
+    // Absent means "did not observe". An empty array would read as "none
+    // used", which the collector is not in a position to claim.
+    const { transport, emitted } = recordingTransport();
+    const collector = createCollector(resolveConfig({ env: {} }), { transport, patchInstaller: false, adapterInstaller: false });
+    collector.capture({ event_type: 'http.requested', payload: { host: 'x', method: 'GET' } });
+    await collector.session.flush();
+
+    const report = emitted().find((e) => e.event_type === 'collector.report');
+    expect(report?.payload).not.toHaveProperty('frameworks');
+    expect(report?.payload).not.toHaveProperty('providers');
+  });
+
+  it('never reports the provider SDKs the collector itself loaded', async () => {
+    // resolve.ts requires openai, @anthropic-ai/sdk and ai at bootstrap to see
+    // whether they are present. Reporting those would claim every agent uses
+    // every provider.
+    const { transport, emitted } = recordingTransport();
+    const collector = createCollector(resolveConfig({ env: {} }), { transport, patchInstaller: false, adapterInstaller: false });
+    collector.capture({ event_type: 'http.requested', payload: { host: 'x', method: 'GET' } });
+    await collector.session.flush();
+
+    const report = emitted().find((e) => e.event_type === 'collector.report');
+    const json = JSON.stringify(report?.payload);
+    for (const claim of ['"frameworks"', '"providers"']) expect(json).not.toContain(claim);
+  });
+});
