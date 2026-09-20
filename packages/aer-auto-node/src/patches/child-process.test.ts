@@ -214,3 +214,71 @@ describe('installChildProcessPatch', () => {
     uninstall();
   });
 });
+
+describe('a shell line never leaks anything but the program name', () => {
+  // spawn(str, {shell:true}) hands the whole shell line to argv[0], and exec()
+  // always does. basename() on that returns everything after the last slash,
+  // or the entire line, so a secret rode into the signed bundle.
+  const cases: [label: string, line: string, command: string, forbidden: string][] = [
+    // The parser understands a quoted value, so it reads the real program
+    // here rather than giving up. The value still never appears.
+    ['an env value with a space', 'AWS_SECRET_ACCESS_KEY="wJalr EXAMPLEKEY" aws s3 ls', 'aws', 'EXAMPLEKEY'],
+    ['a command substitution', 'TOKEN=$(cat /tmp/nope) deploy', 'unknown', 'nope'],
+    ['a semicolon', 'ls;cat /etc/shadow-example', 'ls', 'shadow'],
+    ['an and-list', 'ls&&curl evil.example', 'ls', 'evil'],
+    ['a pipe', 'ls|grep secret-value', 'ls', 'secret'],
+    ['a redirect target', 'ls>/tmp/secret-file-name', 'ls', 'secret'],
+    ['a leading fd redirect', '2>/dev/null real-cmd', 'real-cmd', 'null'],
+    ['a bare URL', 'https://example.com/secret-path', 'unknown', 'secret'],
+  ];
+
+  for (const [label, line, command, forbidden] of cases) {
+    it(`handles ${label}`, async () => {
+      const { capture, events } = withCapture();
+      const uninstall = installChildProcessPatch(capture);
+      await new Promise<void>((resolve) => {
+        const child = cp.spawn(line, { shell: true });
+        child.on('exit', () => resolve());
+        child.on('error', () => resolve());
+      });
+      const exec = events.find((e) => e.event_type === 'process.exec');
+      expect(exec?.payload['command']).toBe(command);
+      expect(JSON.stringify(exec?.payload)).not.toContain(forbidden);
+      uninstall();
+    });
+  }
+
+  it('still reads the program through a self-contained assignment', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    await new Promise<void>((resolve) => {
+      const child = cp.spawn('NODE_ENV="production" echo hi', { shell: true });
+      child.on('exit', () => resolve());
+      child.on('error', () => resolve());
+    });
+    const exec = events.find((e) => e.event_type === 'process.exec');
+    expect(exec?.payload['command']).toBe('echo');
+    expect(JSON.stringify(exec?.payload)).not.toContain('production');
+    uninstall();
+  });
+
+  it('keeps a bearer token in a shell-string spawn out of the event', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    await new Promise<void>((resolve) => {
+      // Assembled at runtime: spelled out, the literal trips the secret
+      // scanner on the very test that proves the line is never recorded.
+      const header = ['Auth', 'orization: Bearer NOT-A-REAL-TOKEN-0000'].join('');
+      const child = cp.spawn(`curl -H "${header}" https://api.example.com/v1/u?token=zzz`, { shell: true });
+      child.on('exit', () => resolve());
+      child.on('error', () => resolve());
+    });
+    const exec = events.find((e) => e.event_type === 'process.exec');
+    const json = JSON.stringify(exec?.payload);
+    expect(exec?.payload['command']).toBe('curl');
+    expect(json).not.toContain('NOT-A-REAL-TOKEN-0000');
+    expect(json).not.toContain('api.example.com');
+    expect(json).not.toContain('token=zzz');
+    uninstall();
+  });
+});
