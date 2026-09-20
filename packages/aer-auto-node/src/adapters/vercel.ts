@@ -138,8 +138,13 @@ export function installVercelAdapter(capture: Capture, deps: AdapterDeps = {}, s
   let any = false;
   for (const [fn, streaming] of FUNCTIONS) {
     if (typeof mod[fn] === 'function') {
-      uninstalls.push(patchMethod(mod, fn, (orig) => wrapCreate(orig, vercelConfig(streaming), capture, stats, policy), `vercel.${fn}`));
-      any = true;
+      const uninstall = patchMethod(mod, fn, (orig) => wrapCreate(orig, vercelConfig(streaming), capture, stats, policy), `vercel.${fn}`);
+      // The function existing is not the same as it being patched: an ESM
+      // namespace is frozen, and `ai` ships as ESM.
+      if (uninstall) {
+        uninstalls.push(uninstall);
+        any = true;
+      }
     }
   }
   return {

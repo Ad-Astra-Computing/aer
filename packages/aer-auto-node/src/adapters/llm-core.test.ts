@@ -213,11 +213,17 @@ describe('patchMethod', () => {
     expect(obj.create).toBe(original);
   });
 
-  it('returns a no-op when the target method is missing', () => {
+  it('reports failure when the target method is missing', () => {
+    // null, not a no-op function: the caller has to be able to tell that
+    // nothing was patched, or it reports an adapter that records nothing.
     const obj = {} as { create?: () => void };
-    const uninstall = patchMethod(obj as { create: () => void }, 'create', (o) => o, 'k');
-    expect(typeof uninstall).toBe('function');
-    expect(() => uninstall()).not.toThrow();
+    expect(patchMethod(obj as { create: () => void }, 'create', (o) => o, 'k')).toBeNull();
+  });
+
+  it('reports failure on a frozen target instead of throwing', () => {
+    const frozen = Object.freeze({ create: () => 'real' });
+    expect(patchMethod(frozen, 'create', (o) => o, 'frozen-k')).toBeNull();
+    expect(frozen.create()).toBe('real');
   });
 });
 

@@ -123,6 +123,7 @@ export function installAnthropicAdapter(capture: Capture, deps: AdapterDeps = {}
   const proto = (deps.resolveProto ?? defaultResolveProto)();
   if (!proto) return { enabled: false, uninstall: () => undefined };
   const uninstall = patchMethod(proto, 'create', (orig) => wrapCreate(orig, anthropicConfig, capture, stats, policy, commit), 'anthropic');
+  if (!uninstall) return { enabled: false, uninstall: () => undefined };
   return { enabled: true, uninstall };
 }
 

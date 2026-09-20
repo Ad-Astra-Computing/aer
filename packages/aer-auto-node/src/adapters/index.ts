@@ -45,10 +45,17 @@ export function installAdapters(
   for (const name of adapterNames) {
     const install = REGISTRY[name];
     if (!install) continue;
-    const result = install(capture, perAdapterDeps[name] ?? {}, stats, policy, commit);
-    if (result.enabled) {
-      enabled.push(name);
-      uninstalls.push(result.uninstall);
+    // One SDK the collector cannot instrument disables that adapter and
+    // nothing else. This runs during the customer's startup, so a throw here
+    // would stop their program before it began.
+    try {
+      const result = install(capture, perAdapterDeps[name] ?? {}, stats, policy, commit);
+      if (result.enabled) {
+        enabled.push(name);
+        uninstalls.push(result.uninstall);
+      }
+    } catch {
+      // Not instrumentable. The record will say so by omission.
     }
   }
 

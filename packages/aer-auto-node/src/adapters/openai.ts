@@ -147,6 +147,10 @@ export function installOpenAIAdapter(capture: Capture, deps: AdapterDeps = {}, s
   const proto = (deps.resolveProto ?? defaultResolveProto)();
   if (!proto) return { enabled: false, uninstall: () => undefined };
   const uninstall = patchMethod(proto, 'create', (orig) => wrapCreate(orig, openaiConfig, capture, stats, policy, commit), 'openai');
+  // enabled means patched, not merely present: collector.report says which
+  // adapters are recording, and an adapter that patched nothing records
+  // nothing.
+  if (!uninstall) return { enabled: false, uninstall: () => undefined };
   return { enabled: true, uninstall };
 }
 
