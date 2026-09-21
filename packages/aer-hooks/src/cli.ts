@@ -318,6 +318,18 @@ export async function main(
   env: NodeJS.ProcessEnv = process.env,
   deps: RunHookDeps = {},
 ): Promise<void> {
+  // Answered before anything else: this must not wait on stdin, reach the
+  // network, or sit behind the hook timeout. A support conversation starts
+  // with which version wrote the record.
+  if (argv.some((a) => a === '--version' || a === '-V')) {
+    try {
+      process.stdout.write(HOOKS_VERSION + '\n');
+    } catch {
+      /* stdout may already be gone; never throw from a diagnostic */
+    }
+    return;
+  }
+
   const hardTimeoutMs = parseHardTimeoutMs(env, (message) => {
     try {
       process.stderr.write(message + '\n');

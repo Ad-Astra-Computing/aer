@@ -9,6 +9,7 @@
 // it prints to stdout and exits non-zero on a usage error or an aborted write.
 
 import { install, uninstall, status, duplicateLayerWarning, type Harness } from './install.js';
+import { HOOKS_VERSION } from './evidence.js';
 import { homedir } from 'node:os';
 import { isInvokedDirectly } from './invoked-directly.js';
 
@@ -54,6 +55,9 @@ const CODEX_TRUST_NOTE = [
 ].join('\n');
 
 const HELP_FLAGS = new Set(['--help', '-h', 'help']);
+// The first question asked when a recording looks wrong is which version wrote
+// it. Both spellings, because both get reached for.
+const VERSION_FLAGS = new Set(['--version', '-V', 'version']);
 
 const USAGE = `aer-hooks: wire AER recording into a coding harness
 
@@ -61,6 +65,7 @@ Usage:
   aer-hooks install <claude-code|codex|antigravity> [--dir <path>]
   aer-hooks uninstall <claude-code|codex|antigravity> [--dir <path>]
   aer-hooks status [--dir <path>]
+  aer-hooks --version
 `;
 
 export async function run(
@@ -70,6 +75,11 @@ export async function run(
 ): Promise<number> {
   const { cmd, harness, dir } = parseArgs(argv);
   const opts = dir !== undefined ? { dir } : {};
+
+  if (cmd !== undefined && VERSION_FLAGS.has(cmd)) {
+    out(HOOKS_VERSION);
+    return 0;
+  }
 
   try {
     if (cmd === 'install') {
