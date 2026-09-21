@@ -25,6 +25,7 @@
     "@ai-sdk/anthropic": "^4.0.58",
     "zod": "^3.25.76",
     "@adastracomputing/aer-emit": "workspace:*",
-    "@ai-sdk/openai": "^4.0.71"
+    "@ai-sdk/openai": "^4.0.71",
+    "ajv": "^8.17.1"
   }
 }
