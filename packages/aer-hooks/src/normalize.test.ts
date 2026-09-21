@@ -97,15 +97,20 @@ describe('normalizeClaudeCode', () => {
 
   it('maps SessionStart / Stop / UserPromptSubmit', () => {
     expect(normalizeClaudeCode(ccSessionStart).kind).toBe('session_start');
-    expect(normalizeClaudeCode(ccStop).kind).toBe('session_end');
-    expect(normalizeClaudeCode(ccPrompt).kind).toBe('prompt');
+    expect(normalizeClaudeCode(ccPrompt).kind).toBe('turn_start');
+    // Stop is per TURN. It only means the run ended for a registration that
+    // predates SessionEnd, which is exactly what lifecycle 1 is.
+    expect(normalizeClaudeCode(ccStop, 1).kind).toBe('session_end');
+    expect(normalizeClaudeCode(ccStop, 2).kind).toBe('turn_end');
+    expect(normalizeClaudeCode({ hook_event_name: 'SessionEnd', reason: 'clear' }, 2).kind)
+      .toBe('session_end');
   });
 
   it('yields kind=other for an unknown event and tolerates garbage', () => {
-    expect(normalizeClaudeCode({ hook_event_name: 'Weird' }, {}).kind).toBe('other');
+    expect(normalizeClaudeCode({ hook_event_name: 'Weird' }).kind).toBe('other');
     expect(normalizeClaudeCode(null).kind).toBe('other');
-    expect(normalizeClaudeCode(42, {}).kind).toBe('other');
-    expect(normalizeClaudeCode({}, {}).kind).toBe('other');
+    expect(normalizeClaudeCode(42).kind).toBe('other');
+    expect(normalizeClaudeCode({}).kind).toBe('other');
   });
 });
 

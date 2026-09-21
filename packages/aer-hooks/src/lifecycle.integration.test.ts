@@ -81,9 +81,14 @@ describe('the built aer-hook binary, fail-open', () => {
 // spawnSync blocks the event loop, so an in-process server cannot answer a
 // hook that spawnSync is waiting on. Drive the hook with async spawn instead,
 // so the same-process server keeps serving while the hook runs.
-function runHookAsync(cache: string, baseUrl: string, ev: Record<string, unknown>): Promise<number> {
+function runHookAsync(
+  cache: string,
+  baseUrl: string,
+  ev: Record<string, unknown>,
+  extraArgs: string[] = [],
+): Promise<number> {
   return new Promise((resolvePromise) => {
-    const child = spawn(process.execPath, [hookBin, '--harness', 'claude-code'], { env: baseEnv(cache, baseUrl) });
+    const child = spawn(process.execPath, [hookBin, '--harness', 'claude-code', ...extraArgs], { env: baseEnv(cache, baseUrl) });
     child.stdin.end(JSON.stringify(ev));
     child.on('close', (code) => resolvePromise(code ?? -1));
   });
@@ -119,6 +124,88 @@ describe('one AER session across a harness session', () => {
       await new Promise<void>((r) => server.close(() => r()));
     }
     expect(seen.filter((u) => u === 'POST /v1/sessions')).toHaveLength(1);
+    expect(seen.filter((u) => /\/complete$/.test(u))).toHaveLength(1);
+  }, 40_000);
+});
+
+/** A server that records every request line and every posted body. */
+function recordingServer(seen: string[], bodies: string[]): Server {
+  return createServer((req, res) => {
+    seen.push(`${req.method} ${req.url}`);
+    let body = '';
+    req.on('data', (c: Buffer) => { body += c.toString(); });
+    req.on('end', () => {
+      bodies.push(body);
+      const json = (code: number, obj: unknown): void => {
+        res.writeHead(code, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      if (req.method === 'POST' && req.url === '/v1/sessions') return json(201, { agent_session_id: '01950000-0000-7000-8000-0000000000ee', ingest_token: 'tok' });
+      if (req.method === 'POST' && /\/events$/.test(req.url ?? '')) return json(200, { accepted: 1, rejected: 0 });
+      if (req.method === 'POST' && /\/complete$/.test(req.url ?? '')) return json(200, { aer_id: '01950000-0000-7000-8000-0000000000af' });
+      return json(404, { error: 'not_found' });
+    });
+  });
+}
+
+// The bug this covers was measured against the real CLI: one `claude -p` run
+// continued with `--continue` produced TWO signed records for one
+// conversation, because Stop fires per turn and we completed on it. A record
+// that splits a conversation misrepresents what the agent did in it.
+describe('a multi-turn harness session is one record', () => {
+  it('does not complete on Stop, and completes once on SessionEnd', async () => {
+    const seen: string[] = [];
+    const bodies: string[] = [];
+    const server = recordingServer(seen, bodies);
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const cache = freshCache();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      // Two full turns, then the session actually ending.
+      const names = [
+        'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
+        'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
+        'SessionEnd',
+      ];
+      for (const name of names) {
+        const code = await runHookAsync(cache, baseUrl, event(name), ['--lifecycle', 'v2']);
+        expect(code, `${name} exit`).toBe(0);
+      }
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+
+    expect(seen.filter((u) => u === 'POST /v1/sessions')).toHaveLength(1);
+    expect(seen.filter((u) => /\/complete$/.test(u))).toHaveLength(1);
+
+    const all = bodies.join('\n');
+    expect(all).toContain('"phase":"turn_end"');
+    expect(all).toContain('"phase":"session_end"');
+
+    // Every event carries its position, and the positions run 1..10 with no
+    // gap and no repeat, which is what makes a missing event detectable.
+    const seqs = [...all.matchAll(/"seq":(\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
+    expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  }, 90_000);
+
+  it('still completes on Stop for a registration written before SessionEnd', async () => {
+    // An installed hook from an earlier release never registers SessionEnd,
+    // so if Stop stopped completing, that user would silently stop getting
+    // records at all. The absent flag keeps the old meaning.
+    const seen: string[] = [];
+    const bodies: string[] = [];
+    const server = recordingServer(seen, bodies);
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const cache = freshCache();
+    try {
+      for (const name of ['SessionStart', 'Stop']) {
+        await runHookAsync(cache, `http://127.0.0.1:${port}`, event(name));
+      }
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
     expect(seen.filter((u) => /\/complete$/.test(u))).toHaveLength(1);
   }, 40_000);
 });

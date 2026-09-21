@@ -17,7 +17,9 @@ describe('session-store', () => {
 
   it('round-trips save then load', () => {
     saveSession('hs-1', entry, env);
-    expect(loadSession('hs-1', env, 1000)).toEqual(entry);
+    // An entry written before seq existed loads with the count restarted
+    // rather than being discarded, so a live session survives the upgrade.
+    expect(loadSession('hs-1', env, 1000)).toEqual({ ...entry, seq: 0 });
   });
 
   it('returns null for an unknown id', () => {

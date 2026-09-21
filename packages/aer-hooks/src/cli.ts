@@ -16,7 +16,7 @@ import {
   type EventSink,
   type HttpSinkOptions,
 } from '@adastracomputing/aer-emit';
-import { normalize, type Harness, type HookEvent } from './normalize.js';
+import { normalize, type Harness, type HookEvent, type Lifecycle } from './normalize.js';
 import { emitHookEvent } from './core.js';
 import { loadSession, saveSession, deleteSession, acquireSessionLock } from './session-store.js';
 import { isInvokedDirectly } from './invoked-directly.js';
@@ -72,6 +72,21 @@ export function parseEventFlag(argv: string[]): string | undefined {
     if (a !== undefined && a.startsWith('--event=')) return a.slice('--event='.length);
   }
   return undefined;
+}
+
+/**
+ * Which lifecycle registration invoked us. The installer stamps
+ * `--lifecycle v2` on every command it writes; an entry written by an earlier
+ * release has no flag, and must keep completing its record on `Stop` because
+ * it never registered `SessionEnd` at all.
+ */
+export function parseLifecycleFlag(argv: string[]): Lifecycle {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--lifecycle=v2') return 2;
+    if (a === '--lifecycle' && argv[i + 1] === 'v2') return 2;
+  }
+  return 1;
 }
 
 async function readStdin(): Promise<string> {
@@ -150,13 +165,20 @@ async function orchestrateAndEmit(
       const sink = stored
         ? createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: true })
         : createHttpSink(base); // never saw a start; single-shot
-      if (stored) deleteSession(ref, env);
+      if (stored) {
+        event.seq = (stored.seq ?? 0) + 1;
+        deleteSession(ref, env);
+      }
       await emitThrough(event, sink, env);
       return;
     }
 
     if (stored) {
-      // Attach to the running AER session; do not complete it here.
+      // Attach to the running AER session; do not complete it here. A turn
+      // ending is not the run ending: `Stop` fires once per assistant turn,
+      // and completing here is what split one conversation across records.
+      event.seq = (stored.seq ?? 0) + 1;
+      saveSession(ref, { ...stored, seq: event.seq }, env);
       const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
       await emitThrough(event, sink, env);
       return;
@@ -166,8 +188,9 @@ async function orchestrateAndEmit(
     // that arrived before any start): open one, persist it as soon as it is
     // known, then emit, all while still holding the lock so a concurrent
     // caller waiting on it sees the saved session once we release.
+    event.seq = 1;
     const persist = (info: { id: string; ingestToken: string }): void => {
-      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now }, env);
+      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: 1 }, env);
     };
     const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
     await emitThrough(event, sink, env);
@@ -206,7 +229,7 @@ export async function runHook(
       return;
     }
     const now = (deps.now ?? Date.now)();
-    const event = normalize(payload, harness, parseEventFlag(argv));
+    const event = normalize(payload, harness, parseEventFlag(argv), parseLifecycleFlag(argv));
     await orchestrateAndEmit(event, base, env, now);
   } catch {
     /* fail open: never surface an error to the harness */

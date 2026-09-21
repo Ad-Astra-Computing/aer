@@ -21,6 +21,12 @@ export interface StoredSession {
   ingestToken: string;
   baseUrl: string;
   createdAt: number;
+  /**
+   * How many events this harness session has emitted so far. Assigned under
+   * the same lock that decides whether a session already exists, so two hooks
+   * racing for one harness session cannot take the same position.
+   */
+  seq?: number;
 }
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h; a stale entry means a crashed harness
@@ -62,6 +68,12 @@ export function loadSession(
         /* best-effort */
       }
       return null;
+    }
+    // seq was added after the first release; an entry written by the older
+    // build has none, and restarting the count is better than discarding a
+    // live session over a missing counter.
+    if (typeof parsed.seq !== 'number' || !Number.isInteger(parsed.seq) || parsed.seq < 0) {
+      parsed.seq = 0;
     }
     return parsed as StoredSession;
   } catch {
