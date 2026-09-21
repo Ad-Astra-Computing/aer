@@ -17,6 +17,14 @@ interface Word {
   text: string;
   /** The word contained an expansion, so its value is not knowable here. */
   unsafe: boolean;
+  /**
+   * Index in `text` where quoting first began, or Infinity when the word is
+   * bare. `KEY="a b"` is still an assignment because the `=` precedes it,
+   * while `'KEY'=v` is not: the shell reads that as a program name.
+   */
+  quotedFrom: number;
+  /** An operator followed with no whitespace between. */
+  glued: boolean;
 }
 
 type Token = { kind: 'word'; word: Word } | { kind: 'op'; op: string };
@@ -33,12 +41,16 @@ function tokenize(line: string): Token[] {
   const tokens: Token[] = [];
   let text = '';
   let unsafe = false;
+  let quotedFrom = Infinity;
   let started = false;
 
-  const flush = (): void => {
-    if (started) tokens.push({ kind: 'word', word: { text, unsafe } });
+  const quoteHere = (): void => { quotedFrom = Math.min(quotedFrom, text.length); };
+
+  const flush = (glued = false): void => {
+    if (started) tokens.push({ kind: 'word', word: { text, unsafe, quotedFrom, glued } });
     text = '';
     unsafe = false;
+    quotedFrom = Infinity;
     started = false;
   };
 
@@ -50,6 +62,7 @@ function tokenize(line: string): Token[] {
       const next = line[i + 1];
       if (next !== undefined) {
         started = true;
+        quoteHere();
         text += next;
         i += 1;
       }
@@ -59,6 +72,7 @@ function tokenize(line: string): Token[] {
     if (ch === "'") {
       // Single quotes are literal all the way through: no expansion possible.
       started = true;
+      quoteHere();
       const end = line.indexOf("'", i + 1);
       if (end === -1) {
         text += line.slice(i + 1);
@@ -72,6 +86,7 @@ function tokenize(line: string): Token[] {
 
     if (ch === '"') {
       started = true;
+      quoteHere();
       let j = i + 1;
       for (; j < line.length; j += 1) {
         const c = line[j]!;
@@ -103,7 +118,7 @@ function tokenize(line: string): Token[] {
     }
 
     if (ch === '\n' || ch === ';' || ch === '&' || ch === '|' || ch === '<' || ch === '>') {
-      flush();
+      flush(true);
       // Greedily take a two-character operator so `&&` is not two `&`.
       const pair = ch + (line[i + 1] ?? '');
       if (CONTROL_OPS.has(pair) || REDIRECT_OPS.has(pair)) {
@@ -117,7 +132,7 @@ function tokenize(line: string): Token[] {
 
     if (ch === '(' || ch === ')') {
       // A subshell is its own command line; refuse rather than read into it.
-      flush();
+      flush(true);
       tokens.push({ kind: 'op', op: ch });
       continue;
     }
@@ -157,19 +172,30 @@ export function reduceShellCommand(line: unknown): string {
 
     const word = token.word;
 
-    // `2>file`: the leading digits are a file descriptor, not a program.
-    if (/^\d+$/.test(word.text) && tokens[i + 1]?.kind === 'op'
+    // `2>file`: the leading digits are a file descriptor, not a program. Only
+    // when unquoted and glued to the operator: `'2' >x` and `1 >x` both run a
+    // program called 2 or 1.
+    if (word.quotedFrom === Infinity && word.glued && /^\d+$/.test(word.text)
+        && tokens[i + 1]?.kind === 'op'
         && REDIRECT_OPS.has((tokens[i + 1] as { op: string }).op)) {
       continue;
     }
 
-    if (ASSIGNMENT_RE.test(word.text)) {
+    // A quoted or escaped `=` is not an assignment to the shell, so the word
+    // is the program and skipping it would report the next word instead.
+    const eq = word.text.indexOf('=');
+    if (ASSIGNMENT_RE.test(word.text) && eq < word.quotedFrom) {
       // An expansion in the value means the words after it may not be where
       // the shell would have found the program.
       if (word.unsafe) return UNKNOWN_COMMAND;
       sawAssignment = true;
       continue;
     }
+
+    // `name() { ...; }` defines a function. Nothing ran, and the name is the
+    // customer's to keep.
+    const next = tokens[i + 1];
+    if (next?.kind === 'op' && next.op === '(' && word.glued) return UNKNOWN_COMMAND;
 
     return programName(word);
   }
