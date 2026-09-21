@@ -27,6 +27,12 @@ export interface StoredSession {
    * racing for one harness session cannot take the same position.
    */
   seq?: number;
+  /**
+   * Tool starts that have not yet been matched by a completion. A tool that
+   * never completes is the difference between an agent that stopped and a
+   * recorder that missed the end of the call.
+   */
+  toolsOpen?: number;
 }
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h; a stale entry means a crashed harness

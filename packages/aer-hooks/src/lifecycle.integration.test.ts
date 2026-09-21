@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { install } from './install.js';
 
 // The README promises the built hook never breaks a harness: it exits 0 on
 // every path and never writes to stdout. And the changeset promises one AER
@@ -86,9 +87,12 @@ function runHookAsync(
   baseUrl: string,
   ev: Record<string, unknown>,
   extraArgs: string[] = [],
+  envExtra: NodeJS.ProcessEnv = {},
 ): Promise<number> {
   return new Promise((resolvePromise) => {
-    const child = spawn(process.execPath, [hookBin, '--harness', 'claude-code', ...extraArgs], { env: baseEnv(cache, baseUrl) });
+    const child = spawn(process.execPath, [hookBin, '--harness', 'claude-code', ...extraArgs], {
+      env: { ...baseEnv(cache, baseUrl), ...envExtra },
+    });
     child.stdin.end(JSON.stringify(ev));
     child.on('close', (code) => resolvePromise(code ?? -1));
   });
@@ -208,4 +212,38 @@ describe('a multi-turn harness session is one record', () => {
     }
     expect(seen.filter((u) => /\/complete$/.test(u))).toHaveLength(1);
   }, 40_000);
+});
+
+// A reader of the record has to be able to tell "the agent used two tools"
+// from "the recorder saw two of the tools the agent used".
+describe('the record says how complete it is', () => {
+  it('declares what was registered at the start and what arrived at the end', async () => {
+    const seen: string[] = [];
+    const bodies: string[] = [];
+    const server = recordingServer(seen, bodies);
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    const cache = freshCache();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      // Read the registration out of a home we control, so the assertion is
+      // about the code and not about the machine running the test.
+      const home = freshCache();
+      await install('claude-code', { dir: home });
+      // A tool that starts and never finishes: the harness was interrupted.
+      for (const name of ['SessionStart', 'PreToolUse', 'PostToolUse', 'PreToolUse', 'SessionEnd']) {
+        await runHookAsync(cache, baseUrl, { ...event(name), cwd: home }, ['--lifecycle', 'v2'], { HOME: home });
+      }
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+    const all = bodies.join('\n');
+    // The opening marker names the collector and the events the harness will
+    // call it for, read from the harness's own config rather than asserted.
+    expect(all).toContain('"collector":"aer-hooks"');
+    expect(all).toContain('"events_registered":["PostToolUse","PreToolUse","SessionEnd","SessionStart","Stop","SubagentStart","SubagentStop","UserPromptSubmit"]');
+    // The closing marker counts what arrived and what never resolved.
+    expect(all).toContain('"events_emitted":5');
+    expect(all).toContain('"tools_unresolved":1');
+  }, 60_000);
 });

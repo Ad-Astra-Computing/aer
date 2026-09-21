@@ -20,6 +20,7 @@ import { normalize, type Harness, type HookEvent, type Lifecycle } from './norma
 import { emitHookEvent } from './core.js';
 import { loadSession, saveSession, deleteSession, acquireSessionLock } from './session-store.js';
 import { isInvokedDirectly } from './invoked-directly.js';
+import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
 
 // Production POST /v1/sessions has been measured at 3-4s (see aer-hooks README
 // and the tenant-key Argon2id verification cost noted in the project docs), so
@@ -116,6 +117,33 @@ export interface RunHookDeps {
   now?: () => number;
 }
 
+/**
+ * What the collector was set up to see, attached to the opening marker. A
+ * reader comparing this with the events that arrived can tell a quiet session
+ * from one where the recorder was never called.
+ */
+async function openingEvidence(event: HookEvent): Promise<void> {
+  const meta = event.meta ?? (event.meta = {});
+  meta['collector'] = 'aer-hooks';
+  meta['version'] = HOOKS_VERSION;
+  const harness = meta['harness'];
+  if (harness === 'claude-code' || harness === 'codex' || harness === 'antigravity') {
+    const registered = await registeredEvents(harness);
+    if (registered.length > 0) meta['events_registered'] = registered;
+  }
+  const head = repoHead(event.cwd);
+  if (head !== undefined) meta['repo_head'] = head;
+}
+
+/** What actually arrived, attached to the closing marker. */
+function closingEvidence(event: HookEvent, toolsOpen: number): void {
+  const meta = event.meta ?? (event.meta = {});
+  meta['collector'] = 'aer-hooks';
+  meta['version'] = HOOKS_VERSION;
+  if (event.seq !== undefined) meta['events_emitted'] = event.seq;
+  meta['tools_unresolved'] = toolsOpen;
+}
+
 /** Build the sink for one already-decided branch, emit the event, and close it. */
 async function emitThrough(event: HookEvent, sink: EventSink, env: NodeJS.ProcessEnv): Promise<void> {
   emitHookEvent(event, sink, { env });
@@ -138,6 +166,13 @@ async function emitThrough(event: HookEvent, sink: EventSink, env: NodeJS.Proces
  * new upstream session. Lock contention (or an unwritable store) degrades to a
  * single-shot session for this event, never to a thrown error.
  */
+/** A tool start opens a call and a tool end closes one. Never below zero. */
+function nextToolsOpen(open: number, kind: HookEvent['kind']): number {
+  if (kind === 'tool_start') return open + 1;
+  if (kind === 'tool_end') return Math.max(0, open - 1);
+  return open;
+}
+
 async function orchestrateAndEmit(
   event: HookEvent,
   base: HttpSinkOptions,
@@ -169,6 +204,7 @@ async function orchestrateAndEmit(
         event.seq = (stored.seq ?? 0) + 1;
         deleteSession(ref, env);
       }
+      closingEvidence(event, stored?.toolsOpen ?? 0);
       await emitThrough(event, sink, env);
       return;
     }
@@ -178,7 +214,8 @@ async function orchestrateAndEmit(
       // ending is not the run ending: `Stop` fires once per assistant turn,
       // and completing here is what split one conversation across records.
       event.seq = (stored.seq ?? 0) + 1;
-      saveSession(ref, { ...stored, seq: event.seq }, env);
+      const toolsOpen = nextToolsOpen(stored.toolsOpen ?? 0, event.kind);
+      saveSession(ref, { ...stored, seq: event.seq, toolsOpen }, env);
       const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
       await emitThrough(event, sink, env);
       return;
@@ -189,8 +226,9 @@ async function orchestrateAndEmit(
     // known, then emit, all while still holding the lock so a concurrent
     // caller waiting on it sees the saved session once we release.
     event.seq = 1;
+    if (event.kind === 'session_start') await openingEvidence(event);
     const persist = (info: { id: string; ingestToken: string }): void => {
-      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: 1 }, env);
+      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: 1, toolsOpen: nextToolsOpen(0, event.kind) }, env);
     };
     const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
     await emitThrough(event, sink, env);
