@@ -168,6 +168,16 @@ async function emitThrough(event: HookEvent, sink: EventSink): Promise<number> {
  * new upstream session. Lock contention (or an unwritable store) degrades to a
  * single-shot session for this event, never to a thrown error.
  */
+/**
+ * How many events this invocation will emit. The position has to be reserved
+ * before the network call, so it cannot be counted after one.
+ */
+export function plannedEventCount(event: HookEvent): number {
+  if (event.kind === 'other') return 0;
+  if (event.kind === 'tool_start') return event.shape === undefined ? 1 : 2;
+  return 1;
+}
+
 /** A tool start opens a call and a tool end closes one. Never below zero. */
 function nextToolsOpen(open: number, kind: HookEvent['kind']): number {
   if (kind === 'tool_start') return open + 1;
@@ -201,15 +211,24 @@ async function orchestrateAndEmit(
     const stored = loadSession(ref, env, now);
 
     if (event.kind === 'session_end') {
+      // Drop the stored session only once the record is actually closed.
+      // Dropping it first meant a failed or killed completion took the
+      // ingest token with it, leaving the session open forever with nothing
+      // pointing back to it. Codex kills SessionEnd at three seconds, so
+      // this is a routine case rather than a rare one.
+      let completed = false;
       const sink = stored
-        ? createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: true })
+        ? createHttpSink({
+            ...base,
+            session: { id: stored.aerSessionId, ingestToken: stored.ingestToken },
+            completeOnClose: true,
+            onComplete: (ok) => { completed = ok; },
+          })
         : createHttpSink(base); // never saw a start; single-shot
-      if (stored) {
-        event.seq = (stored.seq ?? 0) + 1;
-        deleteSession(ref, env);
-      }
+      if (stored) event.seq = (stored.seq ?? 0) + 1;
       closingEvidence(event, stored?.toolsOpen ?? 0);
       await emitThrough(event, sink);
+      if (stored && completed) deleteSession(ref, env);
       return;
     }
 
@@ -217,11 +236,15 @@ async function orchestrateAndEmit(
       // Attach to the running AER session; do not complete it here. A turn
       // ending is not the run ending: `Stop` fires once per assistant turn,
       // and completing here is what split one conversation across records.
+      // Reserve the positions BEFORE emitting. The lock is stolen after a
+      // few seconds and a network call can outlast it, so saving afterwards
+      // let two invocations take the same number. A gap left by a failed
+      // send is honest; a repeat is not.
       event.seq = (stored.seq ?? 0) + 1;
       const toolsOpen = nextToolsOpen(stored.toolsOpen ?? 0, event.kind);
+      saveSession(ref, { ...stored, seq: (stored.seq ?? 0) + plannedEventCount(event), toolsOpen }, env);
       const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
-      const count = await emitThrough(event, sink);
-      saveSession(ref, { ...stored, seq: (stored.seq ?? 0) + count, toolsOpen }, env);
+      await emitThrough(event, sink);
       return;
     }
 
@@ -232,13 +255,10 @@ async function orchestrateAndEmit(
     event.seq = 1;
     if (event.kind === 'session_start') await openingEvidence(event);
     const persist = (info: { id: string; ingestToken: string }): void => {
-      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: 1, toolsOpen: nextToolsOpen(0, event.kind) }, env);
+      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: plannedEventCount(event), toolsOpen: nextToolsOpen(0, event.kind) }, env);
     };
     const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
-    const count = await emitThrough(event, sink);
-    // The open persisted position 1; advance it to what actually went out.
-    const saved = loadSession(ref, env, now);
-    if (saved) saveSession(ref, { ...saved, seq: count }, env);
+    await emitThrough(event, sink);
   } finally {
     lock.release();
   }

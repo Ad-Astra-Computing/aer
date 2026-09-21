@@ -25,6 +25,14 @@ split the run across records.
 The session markers now declare what the collector was registered for and how
 much of it arrived, so a reader can tell a quiet session from a broken one.
 
-Codex skips a hook it has not been told to trust, and skips it silently. The
-installer, `aer-hooks status` and the README now say to run `/hooks` in Codex
-and approve the entry.
+**Codex users upgrading must re-approve the hook.** Codex records trust
+against the exact command and this release changes it. An untrusted hook is
+skipped silently, with nothing to show that recording stopped. Run `/hooks` in
+Codex and approve the AER entry. The installer, `aer-hooks status` and the
+README all say so.
+
+The stored session is now dropped only once the record is actually closed. It
+used to be dropped first, so a completion that failed or was killed took the
+ingest token with it and left the session open forever. Event positions are
+reserved before the events are sent rather than after, so two hook processes
+racing for one harness session can no longer take the same number.

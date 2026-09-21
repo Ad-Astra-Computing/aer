@@ -60,8 +60,9 @@ export interface HookEvent {
    */
   shape?: ToolShape | undefined;
   /**
-   * The harness's working directory. Used to locate the repository and never
-   * emitted: a path names the project and the user, and ingest drops it.
+   * The harness's working directory. Used to locate the repository and the
+   * project's own config layer, and never emitted: ingest drops it, and it
+   * would repeat on every event what a recorded file path already carries.
    */
   cwd?: string | undefined;
   /**

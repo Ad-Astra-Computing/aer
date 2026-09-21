@@ -620,3 +620,59 @@ describe('createHttpSink: request timeout', () => {
     }
   });
 });
+
+describe('onComplete', () => {
+  // A caller holding recovery state (the hook keeps the ingest token so a
+  // session can be finished later) has to know whether /complete landed.
+  // Otherwise the failure is a line on stderr and the caller discards the
+  // token believing the record is closed.
+  const open = (input: RequestInfo | URL) =>
+    String(input).endsWith('/v1/sessions')
+      ? jsonResponse({ agent_session_id: 's', ingest_token: 't', status: 'running' }, 201)
+      : jsonResponse({ ok: true });
+
+  it('reports success when the session completes', async () => {
+    const seen: boolean[] = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => open(input)) as unknown as typeof fetch;
+    const sink = createHttpSink({ baseUrl: 'https://api.test', apiKey: 'k', fetch: fakeFetch, batchSize: 1, onComplete: (ok) => seen.push(ok) });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(seen).toEqual([true]);
+  });
+
+  it('reports failure when the complete call is refused', async () => {
+    const seen: boolean[] = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith('/complete') ? jsonResponse({ error: 'no' }, 500) : open(input),
+    ) as unknown as typeof fetch;
+    const sink = createHttpSink({ baseUrl: 'https://api.test', apiKey: 'k', fetch: fakeFetch, batchSize: 1, onComplete: (ok) => seen.push(ok) });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(seen).toEqual([false]);
+  });
+
+  it('reports failure when the complete call throws', async () => {
+    const seen: boolean[] = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/complete')) throw new Error('refused');
+      return open(input);
+    }) as unknown as typeof fetch;
+    const sink = createHttpSink({ baseUrl: 'https://api.test', apiKey: 'k', fetch: fakeFetch, batchSize: 1, onComplete: (ok) => seen.push(ok) });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(seen).toEqual([false]);
+  });
+
+  it('does not fire when this sink does not own the completion', async () => {
+    const seen: boolean[] = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => open(input)) as unknown as typeof fetch;
+    const sink = createHttpSink({ baseUrl: 'https://api.test', apiKey: 'k', fetch: fakeFetch, batchSize: 1, completeOnClose: false, onComplete: (ok) => seen.push(ok) });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(seen).toEqual([]);
+  });
+});

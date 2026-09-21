@@ -11,7 +11,7 @@
 // Every operation is best-effort: any failure degrades (returns null / does
 // nothing) and never throws, so a broken cache can never break the harness.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -199,15 +199,19 @@ export async function acquireSessionLock(
 
   for (;;) {
     try {
+      // A holder that overran its lease finds the lock stolen. Stamp who we
+      // are, so releasing late unlinks nothing and the new holder keeps it.
+      const owner = `${process.pid}.${randomBytes(8).toString('hex')}`;
       const fd = fs.openSync(lockFile, 'wx', 0o600);
       try {
-        fs.writeSync(fd, String(process.pid));
+        fs.writeSync(fd, owner);
       } finally {
         fs.closeSync(fd);
       }
       return {
         release: () => {
           try {
+            if (fs.readFileSync(lockFile, 'utf8') !== owner) return;
             fs.unlinkSync(lockFile);
           } catch {
             /* best-effort */
