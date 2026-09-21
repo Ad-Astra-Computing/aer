@@ -49,8 +49,24 @@ function layerDirs(base: string | undefined, projectDir: string | undefined): st
   return dirs;
 }
 
-/** This package's version, reported so a record names the code that made it. */
-export const HOOKS_VERSION = '0.1.3'; // pinned to package.json by evidence.test.ts
+/**
+ * This package's version, reported so a record names the code that made it.
+ * Read from package.json rather than restated here: a release bumps the
+ * manifest, and a second copy would quietly name the previous release.
+ */
+export const HOOKS_VERSION: string = readOwnVersion();
+
+function readOwnVersion(): string {
+  try {
+    const pkg = new URL('../package.json', import.meta.url);
+    const raw = readFileSync(pkg, 'utf8');
+    const version = (JSON.parse(raw) as { version?: unknown }).version;
+    if (typeof version === 'string' && version.length > 0) return version;
+  } catch {
+    /* a record naming no version beats one naming the wrong version */
+  }
+  return 'unknown';
+}
 
 const SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 

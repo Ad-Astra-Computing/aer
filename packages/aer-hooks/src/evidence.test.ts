@@ -102,11 +102,18 @@ describe('repoHead', () => {
 
 describe('HOOKS_VERSION', () => {
   it('is the version this package actually publishes', () => {
-    // A record that names the wrong collector version sends a reader to the
-    // wrong source when they come to check what it did.
+    // Read from the manifest, not restated in the source: a release bumps
+    // package.json, and a hand-written copy would name the release before.
     const pkgPath = fileURLToPath(new URL('../package.json', import.meta.url));
     const pkg = JSON.parse(readPkg(pkgPath, 'utf8')) as { version: string };
     expect(HOOKS_VERSION).toBe(pkg.version);
+  });
+
+  it('survives a bump without a code change', () => {
+    // The whole point of reading the manifest: a release changes the version
+    // and nothing in src has to be touched for the record to stay truthful.
+    expect(HOOKS_VERSION).not.toBe('unknown');
+    expect(HOOKS_VERSION).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
 
