@@ -20,11 +20,25 @@ export type Harness = 'claude-code' | 'codex' | 'antigravity';
 /** The command each AER hook entry runs. Marked so we can find + remove only ours. */
 export const AER_HOOK_MARKER = 'aer-hook';
 
-const CLAUDE_EVENTS = ['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop'] as const;
-const CODEX_EVENTS = ['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop'] as const;
+// Stop is a TURN boundary on both harnesses; SessionEnd is the run ending.
+// Registering only Stop is what split one conversation across several records.
+const LIFECYCLE_EVENTS = [
+  'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
+  'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd',
+] as const;
+const CLAUDE_EVENTS = LIFECYCLE_EVENTS;
+const CODEX_EVENTS = LIFECYCLE_EVENTS;
 // Antigravity has no SessionStart; PreInvocation stands in for it. Only the two
-// tool events accept a matcher. PostInvocation is a turn boundary we ignore.
-const ANTIGRAVITY_EVENTS = ['PreToolUse', 'PostToolUse', 'PreInvocation', 'Stop'] as const;
+// tool events accept a matcher.
+const ANTIGRAVITY_EVENTS = ['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop'] as const;
+
+// Claude Code gives ALL SessionEnd hooks 1.5s between them, and opening a
+// session against the API takes 3-4s, so the entry that completes the record
+// needs its own budget or it is killed before it finishes. Seconds, per the
+// harness config. Codex caps its own SessionEnd at 3s whatever we ask, so it
+// gets no key: an unrecognised one in its config buys nothing and risks the
+// whole file.
+const CLAUDE_SESSION_END_TIMEOUT_S = 15;
 const ANTIGRAVITY_MATCHED = new Set<string>(['PreToolUse', 'PostToolUse']);
 /** Our key in Antigravity's named-group root. We own it outright. */
 const AER_GROUP_NAME = 'aer';
@@ -37,6 +51,8 @@ export interface InstallOptions {
 interface HookCommandEntry {
   type: 'command';
   command: string;
+  /** Per-hook budget in seconds, where the harness honours one. */
+  timeout?: number;
 }
 
 interface HookMatcherGroup {
@@ -119,8 +135,15 @@ export function hookCommandResolves(command: string): boolean {
   return executableOnPersistentPath(first);
 }
 
+/**
+ * The lifecycle the command was written for. The binary reads this to tell a
+ * registration that knows SessionEnd from one written before it existed,
+ * which still has to complete its record on Stop.
+ */
+const LIFECYCLE_FLAG = '--lifecycle v2';
+
 function harnessCommand(harness: Harness, event?: string): string {
-  const base = `${hookInvocation()} --harness ${harness}`;
+  const base = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
   // Antigravity omits the event name from the payload, so each registration
   // has to carry it.
   return event === undefined ? base : `${base} --event ${event}`;
@@ -195,13 +218,15 @@ function groupHasAer(group: HookMatcherGroup): boolean {
 }
 
 /** Merge AER's command into one event array without clobbering existing entries. */
-function mergeEvent(existing: unknown, command: string): { groups: HookMatcherGroup[]; added: boolean } {
+function mergeEvent(existing: unknown, command: string, timeout?: number): { groups: HookMatcherGroup[]; added: boolean } {
   const groups: HookMatcherGroup[] = Array.isArray(existing)
     ? (existing as HookMatcherGroup[]).map((g) => ({ ...g }))
     : [];
   // Idempotent: if any group already carries an AER entry, do nothing.
   if (groups.some(groupHasAer)) return { groups, added: false };
-  groups.push({ matcher: '*', hooks: [{ type: 'command', command }] });
+  const entry: HookCommandEntry = { type: 'command', command };
+  if (timeout !== undefined) entry.timeout = timeout;
+  groups.push({ matcher: '*', hooks: [entry] });
   return { groups, added: true };
 }
 
@@ -231,7 +256,8 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
   const alreadyPresent: string[] = [];
 
   for (const ev of events) {
-    const { groups, added: didAdd } = mergeEvent(existingHooks[ev], command);
+    const timeout = harness === 'claude-code' && ev === 'SessionEnd' ? CLAUDE_SESSION_END_TIMEOUT_S : undefined;
+    const { groups, added: didAdd } = mergeEvent(existingHooks[ev], command, timeout);
     existingHooks[ev] = groups;
     if (didAdd) added.push(ev);
     else alreadyPresent.push(ev);

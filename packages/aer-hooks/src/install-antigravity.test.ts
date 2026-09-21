@@ -36,13 +36,13 @@ describe('install for antigravity', () => {
   it('registers every event under one named group, each passing its own event name', async () => {
     const r = await install('antigravity', { dir });
 
-    expect(r.added).toEqual(['PreToolUse', 'PostToolUse', 'PreInvocation', 'Stop']);
+    expect(r.added).toEqual(['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop']);
     const config = await readConfig();
     const group = config['aer'] as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-    expect(Object.keys(group).sort()).toEqual(['PostToolUse', 'PreInvocation', 'PreToolUse', 'Stop']);
+    expect(Object.keys(group).sort()).toEqual(['PostInvocation', 'PostToolUse', 'PreInvocation', 'PreToolUse', 'Stop']);
     for (const ev of Object.keys(group)) {
       const cmd = group[ev]![0]!.hooks[0]!.command;
-      expect(cmd).toBe(`aer-hook --harness antigravity --event ${ev}`);
+      expect(cmd).toBe(`aer-hook --harness antigravity --lifecycle v2 --event ${ev}`);
     }
   });
 
@@ -126,6 +126,6 @@ describe('status reports antigravity alongside the other harnesses', () => {
 
     const after = (await status({ dir })).find((e) => e.harness === 'antigravity')!;
     expect(after.exists).toBe(true);
-    expect(after.wiredEvents.sort()).toEqual(['PostToolUse', 'PreInvocation', 'PreToolUse', 'Stop']);
+    expect(after.wiredEvents.sort()).toEqual(['PostInvocation', 'PostToolUse', 'PreInvocation', 'PreToolUse', 'Stop']);
   });
 });

@@ -26,13 +26,13 @@ function codexPath() {
 }
 
 describe('install (claude-code)', () => {
-  it('creates a fresh settings file with all four events wired', async () => {
+  it('creates a fresh settings file with the whole lifecycle wired', async () => {
     const r = await install('claude-code', { dir });
-    expect(r.added.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop']);
+    expect(r.added.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
     expect(r.backupPath).toBeNull(); // no prior file to back up
     const cfg = await readJson(ccPath());
     const hooks = cfg['hooks'] as Record<string, unknown[]>;
-    for (const ev of ['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop']) {
+    for (const ev of ['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd']) {
       const groups = hooks[ev] as Array<{ hooks: Array<{ command: string }> }>;
       expect(groups[0]!.hooks[0]!.command).toContain(AER_HOOK_MARKER);
       expect(groups[0]!.hooks[0]!.command).toContain('claude-code');
@@ -74,8 +74,12 @@ describe('install (claude-code)', () => {
     expect(r2.alreadyPresent.sort()).toEqual([
       'PostToolUse',
       'PreToolUse',
+      'SessionEnd',
       'SessionStart',
       'Stop',
+      'SubagentStart',
+      'SubagentStop',
+      'UserPromptSubmit',
     ]);
     const second = await readJson(ccPath());
     expect(second).toEqual(first);
@@ -225,7 +229,7 @@ describe('uninstall', () => {
     );
     await install('claude-code', { dir });
     const r = await uninstall('claude-code', { dir });
-    expect(r.removed.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop']);
+    expect(r.removed.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
     const cfg = await readJson(ccPath());
     const hooks = cfg['hooks'] as Record<string, unknown[]>;
     // the user's guard survives; AER-only events are gone
@@ -263,7 +267,7 @@ describe('status', () => {
     const after = await status({ dir });
     const cc2 = after.find((e) => e.harness === 'claude-code')!;
     expect(cc2.exists).toBe(true);
-    expect(cc2.wiredEvents.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop']);
+    expect(cc2.wiredEvents.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
   });
 
   it('reports config present but no AER hooks for an unrelated config', async () => {
