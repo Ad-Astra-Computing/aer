@@ -19,10 +19,9 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'result_size', 'kind', 'protocol_version', 'client_name', 'client_version',
   'count', 'tools', 'recorder', 'server', 'tools_seen', 'calls', 'errors', 'error_code',
   'session_ref', 'frameworks', 'providers', 'adapters', 'calls_recorded', 'provider_requests',
-  'coverage', 'harness', 'harness_version', 'permission_mode', 'effort', 'repo_head',
-  'seq', 'turn_id', 'tool_use_id', 'agent_type', 'events_registered', 'events_emitted',
-  'emit_failures', 'tools_unresolved', 'run_id', 'thread_id', 'main_thread',
-  'worker_threads_spawned'
+  'coverage', 'harness', 'permission_mode', 'effort', 'repo_head', 'seq', 'turn_id',
+  'tool_use_id', 'agent_type', 'events_registered', 'events_emitted', 'tools_unresolved',
+  'run_id', 'thread_id', 'main_thread'
 ]);
 
 export interface StripResult {
