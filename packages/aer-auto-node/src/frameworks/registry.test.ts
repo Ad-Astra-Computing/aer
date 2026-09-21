@@ -80,3 +80,17 @@ describe('KNOWN_FRAMEWORKS', () => {
     }
   });
 });
+
+describe('a native Windows path is still a path', () => {
+  // require.cache keys are native, so on Windows they use backslashes and the
+  // forward-slash marker matched nothing: CJS detection was dead there.
+  it('names a framework from a backslash path', () => {
+    expect(frameworkFromSpecifier('C:\\app\\node_modules\\langchain\\index.js')).toBe('langchain');
+    expect(frameworkFromSpecifier('C:\\app\\node_modules\\@langchain\\langgraph\\dist\\index.js'))
+      .toBe('langgraph');
+  });
+
+  it('is still not fooled by a lookalike directory', () => {
+    expect(frameworkFromSpecifier('C:\\app\\node_modules\\not-langchain\\index.js')).toBeUndefined();
+  });
+});

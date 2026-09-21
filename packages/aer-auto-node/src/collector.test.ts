@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createCollector } from './collector.js';
 import { resolveConfig } from './config.js';
-import { AdapterStats } from './adapters/index.js';
+import { AdapterStats, installAdapters } from './adapters/index.js';
 import { installFetchPatch } from './patches/fetch.js';
 import type { CollectorEvent, SessionTransport } from './session.js';
 
@@ -350,5 +350,49 @@ describe('tearing the collector down stops the record claiming coverage', () => 
       status: 'uninstalled',
       coverage: 'unverifiable',
     });
+  });
+});
+
+describe('a wrapper replaced after we installed it is reported', () => {
+  it('contradicts even with no traffic evidence to fall back on', async () => {
+    // Every handle sits in the global Symbol.for registry, so restoring the
+    // original is one line from inside the process. With a custom base URL,
+    // or the transport patches off, the host check cannot see it, and the
+    // record would otherwise say `unverifiable` rather than naming the
+    // contradiction.
+    const { transport, emitted } = recordingTransport();
+    const proto = { create: async () => ({ model: 'm', usage: { prompt_tokens: 1, completion_tokens: 1 } }) };
+    const collector = createCollector(resolveConfig({ env: {} }), {
+      transport,
+      patchInstaller: false,
+      adapterInstaller: (capture) => installAdapters(capture, ['openai'], { openai: { resolveProto: () => proto } }),
+    });
+    expect(collector.enabledAdapters).toContain('openai');
+
+    // Somebody puts the original back.
+    proto.create = proto[Symbol.for('adastra.aer.adapter.original.openai') as unknown as 'create'];
+
+    collector.capture({ event_type: 'tool.started', payload: { tool: 'x' } });
+    await collector.complete();
+
+    const reports = emitted().filter((e) => e.event_type === 'collector.report');
+    const rows = (reports[reports.length - 1]?.payload['adapters'] ?? []) as Array<Record<string, unknown>>;
+    expect(rows.find((r) => r['name'] === 'openai')).toMatchObject({ coverage: 'contradicted' });
+  });
+
+  it('says nothing of the sort while the wrapper is still ours', async () => {
+    const { transport, emitted } = recordingTransport();
+    const proto = { create: async () => ({ model: 'm', usage: { prompt_tokens: 1, completion_tokens: 1 } }) };
+    const collector = createCollector(resolveConfig({ env: {} }), {
+      transport,
+      patchInstaller: false,
+      adapterInstaller: (capture) => installAdapters(capture, ['openai'], { openai: { resolveProto: () => proto } }),
+    });
+    collector.capture({ event_type: 'tool.started', payload: { tool: 'x' } });
+    await collector.complete();
+
+    const reports = emitted().filter((e) => e.event_type === 'collector.report');
+    const rows = (reports[reports.length - 1]?.payload['adapters'] ?? []) as Array<Record<string, unknown>>;
+    expect(rows.find((r) => r['name'] === 'openai')).toMatchObject({ coverage: 'unverifiable' });
   });
 });
