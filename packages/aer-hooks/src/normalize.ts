@@ -47,6 +47,11 @@ export interface HookEvent {
    */
   seq?: number | undefined;
   /**
+   * The harness's working directory. Used to locate the repository and never
+   * emitted: a path names the project and the user, and ingest drops it.
+   */
+  cwd?: string | undefined;
+  /**
    * Harness metadata for the emitted payload. Only identifier-shaped values
    * that the ingest allowlist stores ever land here; see `identifier`.
    */
@@ -197,6 +202,8 @@ export function normalizeClaudeCode(payload: unknown, lifecycle: Lifecycle = 1):
   const sessionRef = asString(p['session_id']);
   if (sessionRef !== undefined) event.sessionRef = sessionRef;
 
+  const cwd = asString(p['cwd']);
+  if (cwd !== undefined) event.cwd = cwd;
   const meta = commonMeta(p, 'claude-code', kind);
   // Reasoning effort is a Claude Code field and rides in a nested object. It
   // is recorded wherever it appears rather than held back because the other
@@ -235,6 +242,8 @@ export function normalizeCodex(payload: unknown, lifecycle: Lifecycle = 1): Hook
 
   const sessionRef = asString(p['session_id']);
   if (sessionRef !== undefined) event.sessionRef = sessionRef;
+  const cwd = asString(p['cwd']);
+  if (cwd !== undefined) event.cwd = cwd;
   event.meta = commonMeta(p, 'codex', kind);
 
   if (kind === 'tool_start' || kind === 'tool_end') {
@@ -269,6 +278,10 @@ export function normalizeAntigravity(payload: unknown, eventName: string): HookE
   const sessionRef = asString(p['conversationId']);
   if (sessionRef !== undefined) event.sessionRef = sessionRef;
 
+  // Antigravity gives a list of workspace roots rather than one directory.
+  const roots = p['workspacePaths'];
+  const cwd = Array.isArray(roots) ? asString(roots[0]) : undefined;
+  if (cwd !== undefined) event.cwd = cwd;
   const meta: Record<string, unknown> = { harness: 'antigravity' };
   put(meta, 'model', identifier(p['modelName']));
   if (kind === 'session_end' || kind === 'turn_end') {
