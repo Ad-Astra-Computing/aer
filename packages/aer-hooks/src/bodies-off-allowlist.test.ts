@@ -15,7 +15,7 @@ import type { EventSink } from '@adastracomputing/aer-emit';
 // Pinned against BODIES_OFF_PAYLOAD_KEYS in the API repo (packages/schemas/
 // src/event.ts), which carries the same digest in its own test. A change on
 // either side turns both red, so the two copies cannot drift in silence.
-const ALLOWLIST_SHA256 = '980561bac82cec6bde7b0c43745e3cd71db7b03a4b2dacc1460a39d87390b0bc';
+const ALLOWLIST_SHA256 = '946a3adea6eb3b26f16b55bc9bd2c09bc2861fe2e63fca073456a3dba3098ce4';
 
 function collectingSink(): { sink: EventSink; seen: Array<{ type: string; payload: Record<string, unknown> }> } {
   const seen: Array<{ type: string; payload: Record<string, unknown> }> = [];
