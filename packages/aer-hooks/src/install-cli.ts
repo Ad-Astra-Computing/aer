@@ -43,6 +43,15 @@ function parseArgs(argv: string[]): Parsed {
   return { cmd, harness, dir };
 }
 
+// Codex skips a hook it has not been told to trust, and skips it silently.
+// Writing the config is therefore only half an install, and a user who is not
+// told the other half believes they are recording when they are not.
+const CODEX_TRUST_NOTE = [
+  '  Codex will not run this hook until you trust it: run /hooks in Codex and',
+  '  approve the AER entry. Trust is recorded against the command, so an AER',
+  '  upgrade that changes it needs approving again.',
+].join('\n');
+
 const HELP_FLAGS = new Set(['--help', '-h', 'help']);
 
 const USAGE = `aer-hooks: wire AER recording into a coding harness
@@ -75,6 +84,7 @@ export async function run(
       } else {
         out(`AER hooks already present for ${harness} in ${r.path}; nothing to do.`);
       }
+      if (harness === 'codex') out(CODEX_TRUST_NOTE);
       return 0;
     }
 
@@ -105,6 +115,7 @@ export async function run(
               ? `wired: ${e.wiredEvents.join(', ')}`
               : `wired: ${e.wiredEvents.join(', ')} - but the hook command is not on PATH, so nothing is recorded; re-run install`;
         out(`${e.harness.padEnd(12)} ${e.path}  (${state})`);
+        if (e.harness === 'codex' && e.wiredEvents.length > 0) out(CODEX_TRUST_NOTE);
       }
       return 0;
     }
