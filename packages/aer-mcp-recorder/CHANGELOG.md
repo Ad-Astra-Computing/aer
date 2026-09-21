@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- [`bb2e4dd`](https://github.com/Ad-Astra-Computing/aer/commit/bb2e4dd974f34fbbdb5d6e991c2f5dd31c118430) - remove the value opt-ins that ingest discarded
+
+  `AER_HOOK_RECORD_ARGS`, `AER_MCP_RECORD_ARGS` and `AER_MCP_RECORD_RESULTS` put
+  tool argument values and result content on the wire, and AER ingest stored none
+  of it: the keys were never on the payload allowlist. Anyone who set one paid the
+  privacy cost and got nothing in the record, so all three are gone.
+
+  Both packages now filter every payload against a vendored copy of that
+  allowlist before handing it to the sink, so a key the server would discard never
+  leaves the machine.
+
+### Patch Changes
+
+- Updated dependencies
+  - @adastracomputing/aer-emit@0.2.0
+
 ## 0.1.2
 
 ### Patch Changes

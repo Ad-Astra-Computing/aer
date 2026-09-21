@@ -1,6 +1,6 @@
 {
   "name": "@adastracomputing/aer-emit",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Shared best-effort AER emit core: an EventSink that lazily opens an AER session, batches events and completes on close. Fail-open, never throws. Used by aer-mcp-recorder and aer-hooks for consistent behavior.",
   "type": "module",
   "private": false,
