@@ -51,9 +51,9 @@ const captured: string[] = [];
 
 interface Ev { event_type: string; payload: Record<string, unknown> }
 
-async function runAgent(): Promise<{ adapters: string[]; events: Ev[]; raw: string }> {
+async function runAgent(app = 'llm-app.mjs'): Promise<{ adapters: string[]; events: Ev[]; raw: string }> {
   captured.length = 0;
-  const child = spawn(process.execPath, ['--import', register, join(fixtures, 'llm-app.mjs')], {
+  const child = spawn(process.execPath, ['--import', register, join(fixtures, app)], {
     cwd: fixtures,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
@@ -124,6 +124,29 @@ describe('a real agent using the real SDKs', () => {
 
   it('records no prompt, no reply and no key', async () => {
     const { raw } = await runAgent();
+    expect(raw).not.toContain('THE-PROMPT-TEXT');
+    expect(raw).not.toContain('THE-REPLY-TEXT');
+    expect(raw).not.toContain(FAKE_KEY);
+  });
+});
+
+describe('a real agent using the real Vercel AI SDK', () => {
+  it('records a generateText call with the model and the vendor tokens', async () => {
+    // `ai`'s own namespace is sealed, so the facade cannot be wrapped. The
+    // provider model classes underneath it are ordinary classes, and one step
+    // of generateText is one real model call, which is the unit a record
+    // wants anyway.
+    const { adapters, events } = await runAgent('vercel-app.mjs');
+    expect(adapters).toContain('vercel-provider');
+
+    const completed = events.find((e) => e.event_type === 'llm.completed');
+    expect(completed?.payload['model']).toBe('claude-sonnet-4-5');
+    expect(completed?.payload['input_tokens']).toBe(5);
+    expect(completed?.payload['output_tokens']).toBe(4);
+  });
+
+  it('records no prompt, no reply and no key', async () => {
+    const { raw } = await runAgent('vercel-app.mjs');
     expect(raw).not.toContain('THE-PROMPT-TEXT');
     expect(raw).not.toContain('THE-REPLY-TEXT');
     expect(raw).not.toContain(FAKE_KEY);

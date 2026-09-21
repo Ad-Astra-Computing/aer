@@ -9,6 +9,7 @@ import { AdapterStats } from './stats.js';
 import { installOpenAIAdapter, openaiConfig, OPENAI_PACKAGE, openaiProtoOf } from './openai.js';
 import { installAnthropicAdapter, anthropicConfig, ANTHROPIC_PACKAGE, anthropicProtoOf } from './anthropic.js';
 import { installVercelAdapter } from './vercel.js';
+import { installVercelProviderAdapter } from './vercel-provider.js';
 import { loadModuleCopies, type ProtoTarget } from './resolve.js';
 import { patchMethod, wrapCreate, type ProviderConfig } from './llm-core.js';
 
@@ -55,6 +56,18 @@ export async function patchRemainingCopies(
 ): Promise<{ enabled: string[]; uninstall: () => void }> {
   const enabled: string[] = [];
   const uninstalls: Array<() => void> = [];
+
+  // The Vercel facade cannot be patched at all (its namespace is sealed), so
+  // it is instrumented one layer down, at the provider model classes.
+  if (adapterNames.includes('vercel')) {
+    try {
+      const installed = await installVercelProviderAdapter(capture, stats);
+      if (installed.enabled) {
+        enabled.push('vercel-provider');
+        uninstalls.push(installed.uninstall);
+      }
+    } catch { /* never a reason to fail the host */ }
+  }
 
   for (const name of adapterNames) {
     const target = COPY_TARGETS[name];
@@ -125,5 +138,6 @@ export function installAdapters(
 export { installOpenAIAdapter, openaiConfig } from './openai.js';
 export { installAnthropicAdapter, anthropicConfig } from './anthropic.js';
 export { installVercelAdapter, vercelConfig } from './vercel.js';
+export { installVercelProviderAdapter } from './vercel-provider.js';
 export { AdapterStats, type AdapterCallCounts } from './stats.js';
 export type { PolicyOption, PolicyOptionSource, CommitOption } from './llm-core.js';
