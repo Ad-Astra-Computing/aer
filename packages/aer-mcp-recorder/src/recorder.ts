@@ -6,11 +6,12 @@
 // AER events. Both observe methods are wrapped so they NEVER throw to the caller:
 // a bug here must not affect byte forwarding.
 //
-// REDACTION BY DEFAULT: only tool names, argument KEY names, result is_error and
-// result size, and timing are captured. Argument values and result content are
-// captured only when explicitly opted in (recordArgumentValues / recordResultContent).
+// REDACTION ALWAYS: only tool names, argument KEY names, result is_error and
+// result size, and timing are captured, and every payload is filtered against
+// the keys ingest stores before it is sent.
 
 import type { EventSink } from './sink.js';
+import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 
 export const COLLECTOR_NAME = '@adastracomputing/aer-mcp-recorder';
 export const COLLECTOR_VERSION = '0.1.0';
@@ -19,10 +20,6 @@ const MAX_PENDING = 4096;
 
 export interface RecorderOptions {
   sink: EventSink;
-  /** Capture full argument objects (values), not just key names. Default false. */
-  recordArgumentValues?: boolean;
-  /** Capture full result content. Default false. */
-  recordResultContent?: boolean;
   /** Clock injection (ms since epoch). Default Date.now. */
   now?: () => number;
 }
@@ -74,8 +71,6 @@ function classifyTool(name: string): string | undefined {
 
 export class McpRecorder {
   private readonly sink: EventSink;
-  private readonly recordArgs: boolean;
-  private readonly recordResults: boolean;
   private readonly now: () => number;
 
   private readonly pending = new Map<IdKey, PendingCall>();
@@ -87,8 +82,6 @@ export class McpRecorder {
 
   constructor(opts: RecorderOptions) {
     this.sink = opts.sink;
-    this.recordArgs = opts.recordArgumentValues ?? false;
-    this.recordResults = opts.recordResultContent ?? false;
     this.now = opts.now ?? Date.now;
   }
 
@@ -112,7 +105,8 @@ export class McpRecorder {
 
   private safeEmit(eventType: string, payload: Record<string, unknown>): void {
     try {
-      const r = this.sink.emit(eventType, payload);
+      const { payload: safe } = stripToIngestPayload(payload);
+      const r = this.sink.emit(eventType, safe);
       if (r && typeof (r as Promise<void>).catch === 'function') {
         (r as Promise<void>).catch(() => undefined);
       }
@@ -147,7 +141,6 @@ export class McpRecorder {
       const payload: Record<string, unknown> = { tool: name };
       if (kind !== undefined) payload['kind'] = kind;
       if (args) payload['arg_keys'] = Object.keys(args);
-      if (this.recordArgs && args) payload['arguments'] = args;
       this.safeEmit('tool.started', payload);
       return;
     }
@@ -216,7 +209,6 @@ export class McpRecorder {
         if (call.kind !== undefined) payload['kind'] = call.kind;
         if (result !== undefined) {
           payload['result_size'] = resultSize(result);
-          if (this.recordResults) payload['result'] = result;
         } else if (hasError && isObject(msg['error'])) {
           const err = msg['error'] as Record<string, unknown>;
           if (typeof err['code'] === 'number') payload['error_code'] = err['code'];

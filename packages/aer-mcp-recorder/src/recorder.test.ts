@@ -72,27 +72,32 @@ describe('McpRecorder redaction defaults', () => {
   });
 });
 
-describe('McpRecorder opt-ins', () => {
-  it('recordArgumentValues includes full arguments', () => {
+describe('there is no way to record values', () => {
+  // recordArgumentValues and recordResultContent used to emit `arguments` and
+  // `result`. Ingest stores neither, so both crossed the wire and landed
+  // nowhere. They are gone; the old option names must stay inert.
+  it('ignores the removed options and keeps values off the event', () => {
     const { sink, events } = capturingSink();
-    const r = new McpRecorder({ sink, recordArgumentValues: true });
-    r.observeClientMessage({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: { name: 'search', arguments: { query: 'hello' } },
+    const r = new McpRecorder({
+      sink,
+      ...({ recordArgumentValues: true, recordResultContent: true } as object),
     });
-    const started = events.find((e) => e.eventType === 'tool.started')!;
-    expect(started.payload['arguments']).toEqual({ query: 'hello' });
-  });
+    r.observeClientMessage({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'search', arguments: { query: 'SENSITIVE-QUERY' } },
+    });
+    r.observeServerMessage({
+      jsonrpc: '2.0', id: 1, result: { isError: false, content: ['SENSITIVE-BODY'] },
+    });
 
-  it('recordResultContent includes full result', () => {
-    const { sink, events } = capturingSink();
-    const r = new McpRecorder({ sink, recordResultContent: true });
-    r.observeClientMessage({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 't', arguments: {} } });
-    r.observeServerMessage({ jsonrpc: '2.0', id: 2, result: { isError: false, content: ['body'] } });
+    const started = events.find((e) => e.eventType === 'tool.started')!;
     const done = events.find((e) => e.eventType === 'tool.completed')!;
-    expect(done.payload['result']).toEqual({ isError: false, content: ['body'] });
+    expect(started.payload).not.toHaveProperty('arguments');
+    expect(started.payload['arg_keys']).toEqual(['query']);
+    expect(done.payload).not.toHaveProperty('result');
+    expect(typeof done.payload['result_size']).toBe('number');
+    expect(JSON.stringify(events)).not.toContain('SENSITIVE-QUERY');
+    expect(JSON.stringify(events)).not.toContain('SENSITIVE-BODY');
   });
 });
 
