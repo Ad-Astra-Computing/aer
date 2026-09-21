@@ -244,6 +244,9 @@
           buildPhaseScript = ''
             # append-only: the default TUI rewrites lines, and a failure inside
             # a sandbox is then unreadable in the build log.
+            # Copies of shared logic must be byte-identical. This is cheap
+            # and runs first, so a drifted copy fails before the long part.
+            node scripts/check-vendored.mjs
             pnpm --reporter=append-only -r build
             pnpm --reporter=append-only -r typecheck
             pnpm --reporter=append-only -r test
