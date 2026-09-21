@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # The vendored-schema canary needs to run without a push to notice that a
+    # harness changed its config format underneath us.
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
@@ -42,6 +46,43 @@ jobs:
       - run: pnpm -r typecheck
 
       - run: pnpm -r test
+
+  # Runs on its own so a broken CLAIM is distinguishable from a broken unit.
+  # These tests install the real OpenAI, Anthropic, Vercel and MCP packages and
+  # drive real subprocesses, so a vendor changing shape fails here.
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -r build
+
+      - run: pnpm --filter @aer/conformance typecheck
+
+      - run: pnpm --filter @aer/conformance test
+
+  # A vendored schema is only as good as the day it was fetched. Scheduled, so
+  # a harness changing its config format is noticed without a push.
+  schema-drift:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - run: node scripts/check-vendored-schemas.mjs
 
   # The Python SDK ships from this repository and had no CI coverage at all, so
   # its suite only ever ran on a developer's machine.
