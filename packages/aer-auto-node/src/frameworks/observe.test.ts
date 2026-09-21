@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { rank } from './observe.js';
@@ -9,23 +9,34 @@ import { rank } from './observe.js';
 // loader hook only behaves like a loader hook in a process that is actually
 // loading modules, and the artifact under test is the one we publish.
 const here = dirname(fileURLToPath(import.meta.url));
-const fixtures = join(here, 'fixtures');
-const harness = join(fixtures, 'harness.mjs');
+const dist = join(here, '..', '..', 'dist');
+// Materialised per run: a committed node_modules tree is gitignored, so these
+// tests would only have worked on the machine that created it.
+let fixtures: string;
+let harness: string;
+const childEnv = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  AER_OBSERVE_MODULE: pathToFileURL(join(dist, 'frameworks', 'observe.js')).href,
+  AER_COLLECTOR_MODULE: pathToFileURL(join(dist, 'collector.js')).href,
+  AER_CONFIG_MODULE: pathToFileURL(join(dist, 'config.js')).href,
+});
 
 function run(app: string): { observed: string[]; stderr: string } {
   const res = spawnSync(process.execPath, [harness, `./app-${app}.mjs`], {
-    cwd: fixtures,
-    encoding: 'utf8',
+    cwd: fixtures, encoding: 'utf8', env: childEnv(),
   });
   if (res.status !== 0) throw new Error(`harness exited ${res.status}: ${res.stderr}`);
   const line = res.stdout.split('\n').find((l) => l.startsWith('OBSERVED:'));
   return { observed: JSON.parse(line?.slice('OBSERVED:'.length) ?? '[]'), stderr: res.stderr };
 }
 
-beforeAll(() => {
-  if (!existsSync(join(here, '..', '..', 'dist', 'frameworks', 'observe.js'))) {
+beforeAll(async () => {
+  if (!existsSync(join(dist, 'frameworks', 'observe.js'))) {
     throw new Error('build the package before running this suite (pretest does)');
   }
+  const { makeFixtureTree } = await import('./fixtures/tree.mjs');
+  fixtures = makeFixtureTree(join(here, 'fixtures'));
+  harness = join(fixtures, 'harness.mjs');
 });
 
 describe('what the observer actually sees in a real process', () => {
@@ -58,7 +69,7 @@ describe('what the observer actually sees in a real process', () => {
 describe('it degrades to nothing, never to a broken agent', () => {
   it('still runs the agent when the recorder throws on every resolve', () => {
     const out = execFileSync(process.execPath, [join(fixtures, 'harness-throwing.mjs'), './app-both.mjs'], {
-      cwd: fixtures, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: fixtures, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(),
     });
     // The app ran to completion, which is the only thing that matters here.
     expect(out).toContain('APP-COMPLETED');
@@ -66,7 +77,7 @@ describe('it degrades to nothing, never to a broken agent', () => {
 
   const withHarness = (name: string, app: string): string =>
     execFileSync(process.execPath, [join(fixtures, name), `./app-${app}.mjs`], {
-      cwd: fixtures, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: fixtures, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(),
     });
 
   it('falls back to the require cache when the hooks API is missing', () => {
@@ -86,7 +97,7 @@ describe('it degrades to nothing, never to a broken agent', () => {
 describe('the whole path, into the collector report', () => {
   function reported(app: string): string[] | null {
     const res = spawnSync(process.execPath, [join(fixtures, 'harness-collector.mjs'), `./app-${app}.mjs`], {
-      cwd: fixtures, encoding: 'utf8',
+      cwd: fixtures, encoding: 'utf8', env: childEnv(),
     });
     if (res.status !== 0) throw new Error(`harness exited ${res.status}: ${res.stderr}`);
     const line = res.stdout.split('\n').find((l) => l.startsWith('REPORT:'));

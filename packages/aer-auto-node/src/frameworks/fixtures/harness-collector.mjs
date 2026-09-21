@@ -1,7 +1,7 @@
 // The whole path: collector loads first (as --import does), the agent imports
 // a framework, and the collector.report carries it.
-const { createCollector } = await import('../../../dist/collector.js');
-const { resolveConfig } = await import('../../../dist/config.js');
+const { createCollector } = await import(process.env.AER_COLLECTOR_MODULE);
+const { resolveConfig } = await import(process.env.AER_CONFIG_MODULE);
 const events = [];
 const transport = {
   async open() {},
