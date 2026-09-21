@@ -159,7 +159,13 @@ describe('Antigravity metadata', () => {
 
 describe('metadata values are identifiers, never prose', () => {
   it('accepts the shapes harnesses actually send', () => {
-    for (const s of ['claude-opus-5', 'gpt-5.1-codex', 'anthropic/claude-opus-5', 'turn-4', 'toolu_01ABC', 'xhigh', 'acceptEdits']) {
+    for (const s of [
+      'claude-opus-5', 'gpt-5.1-codex', 'anthropic/claude-opus-5', 'turn-4',
+      'toolu_01ABC', 'xhigh', 'acceptEdits', 'gemini-3.8-flash-high',
+      // A real model id carries a bracketed variant, and dropping the model
+      // because of a bracket loses the field the record is there to carry.
+      'claude-opus-5[1m]',
+    ]) {
       expect(identifier(s)).toBe(s);
     }
   });

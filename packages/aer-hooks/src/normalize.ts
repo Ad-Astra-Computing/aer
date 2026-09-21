@@ -106,7 +106,7 @@ export function asString(v: unknown): string | undefined {
 export function identifier(v: unknown): string | undefined {
   const s = asString(v);
   if (s === undefined || s.length > 128) return undefined;
-  return /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(s) ? s : undefined;
+  return /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]*$/.test(s) ? s : undefined;
 }
 
 /** Redaction-safe: the sorted key names of a tool-input/arguments object, never values. */
