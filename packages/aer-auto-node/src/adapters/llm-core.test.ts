@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { wrapCreate, patchMethod, type ProviderConfig } from './llm-core.js';
+import { wrapCreate, patchMethod, patchIntact, type ProviderConfig } from './llm-core.js';
 import { openaiConfig } from './openai.js';
 import { commitmentKeyFromString, deriveKid, canonicalizeRequest, promptCanonTag, responseTag, wireBodyTag, toolArgsTag, toolResultTag, CANON_VERSION } from '../commitment.js';
 import type { CollectorEvent } from '../session.js';
@@ -412,5 +412,26 @@ describe('wrapCreate: content commitment slice 2 (ADR-011)', () => {
     const completed = events.find((e) => e.event_type === 'llm.completed')!.payload;
     expect(completed['response_tag']).toBeUndefined();
     expect(JSON.stringify(events)).not.toContain('secret');
+  });
+});
+
+describe('patchIntact', () => {
+  it('is true right after patching', () => {
+    const obj = { create: () => 'real' };
+    patchMethod(obj, 'create', (o) => o, 'intact-a');
+    expect(patchIntact(obj, 'create', 'intact-a')).toBe(true);
+  });
+
+  it('is false once someone else replaces the method', () => {
+    // Another APM agent installing after us, or the app reassigning it. Every
+    // call from that point was invisible, so the record must not claim it.
+    const obj = { create: () => 'real' };
+    patchMethod(obj, 'create', (o) => o, 'intact-b');
+    obj.create = () => 'theirs';
+    expect(patchIntact(obj, 'create', 'intact-b')).toBe(false);
+  });
+
+  it('is false for something never patched', () => {
+    expect(patchIntact({ create: () => 'real' }, 'create', 'intact-c')).toBe(false);
   });
 });

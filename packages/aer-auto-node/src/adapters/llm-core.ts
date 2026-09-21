@@ -491,9 +491,12 @@ export function patchMethod(
 
   const original = target[key] as AnyFn;
   try {
-    slot[PATCHED] = true;
+    const wrapper = makeWrapper(original);
+    // The wrapper itself, not a boolean: at session close we compare it with
+    // the installed method to tell whether anyone replaced us afterwards.
+    slot[PATCHED] = wrapper;
     slot[ORIGINAL] = original;
-    target[key] = makeWrapper(original);
+    target[key] = wrapper;
   } catch {
     // Sealed, a read-only accessor, a Proxy that refuses: not instrumentable,
     // and never a reason to fail.
@@ -505,4 +508,24 @@ export function patchMethod(
     delete slot[PATCHED];
     delete slot[ORIGINAL];
   };
+}
+
+/**
+ * Whether our wrapper is still the installed method. Another agent, or the
+ * app, can replace it after we patched, and every call after that was
+ * invisible to us.
+ */
+export function patchIntact(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  target: Record<string, any>,
+  key: string,
+  symbolName: string,
+): boolean {
+  try {
+    const slot = target as unknown as Record<symbol, unknown>;
+    const wrapper = slot[Symbol.for(`adastra.aer.adapter.${symbolName}`)];
+    return typeof wrapper === 'function' && target[key] === wrapper;
+  } catch {
+    return false;
+  }
 }
