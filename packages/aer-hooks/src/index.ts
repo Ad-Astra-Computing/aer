@@ -19,7 +19,6 @@ export {
 export type { HookEvent, HookKind, Harness } from './normalize.js';
 
 export { emitHookEvent } from './core.js';
-export type { EmitOptions } from './core.js';
 
 // opencode is a JS-PLUGIN harness (not a stdin shell hook), so it gets its own
 // in-process adapter: normalizers + a plugin factory that manages one AER session

@@ -146,8 +146,8 @@ function closingEvidence(event: HookEvent, toolsOpen: number): void {
 }
 
 /** Build the sink for one already-decided branch, emit the event, and close it. */
-async function emitThrough(event: HookEvent, sink: EventSink, env: NodeJS.ProcessEnv): Promise<number> {
-  const count = emitHookEvent(event, sink, { env });
+async function emitThrough(event: HookEvent, sink: EventSink): Promise<number> {
+  const count = emitHookEvent(event, sink);
   await sink.close();
   return count;
 }
@@ -184,7 +184,7 @@ async function orchestrateAndEmit(
   const ref = event.sessionRef;
   if (!ref) {
     // No correlation id: single-shot session (open + emit + complete on close).
-    await emitThrough(event, createHttpSink(base), env);
+    await emitThrough(event, createHttpSink(base));
     return;
   }
 
@@ -193,7 +193,7 @@ async function orchestrateAndEmit(
     // Could not converge with a concurrent hook for this harness session in
     // time (or the store is unwritable): degrade to single-shot rather than
     // risk reading a half-written entry or waiting indefinitely.
-    await emitThrough(event, createHttpSink(base), env);
+    await emitThrough(event, createHttpSink(base));
     return;
   }
 
@@ -209,7 +209,7 @@ async function orchestrateAndEmit(
         deleteSession(ref, env);
       }
       closingEvidence(event, stored?.toolsOpen ?? 0);
-      await emitThrough(event, sink, env);
+      await emitThrough(event, sink);
       return;
     }
 
@@ -220,7 +220,7 @@ async function orchestrateAndEmit(
       event.seq = (stored.seq ?? 0) + 1;
       const toolsOpen = nextToolsOpen(stored.toolsOpen ?? 0, event.kind);
       const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
-      const count = await emitThrough(event, sink, env);
+      const count = await emitThrough(event, sink);
       saveSession(ref, { ...stored, seq: (stored.seq ?? 0) + count, toolsOpen }, env);
       return;
     }
@@ -235,7 +235,7 @@ async function orchestrateAndEmit(
       saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: 1, toolsOpen: nextToolsOpen(0, event.kind) }, env);
     };
     const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
-    const count = await emitThrough(event, sink, env);
+    const count = await emitThrough(event, sink);
     // The open persisted position 1; advance it to what actually went out.
     const saved = loadSession(ref, env, now);
     if (saved) saveSession(ref, { ...saved, seq: count }, env);

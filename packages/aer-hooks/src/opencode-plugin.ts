@@ -59,7 +59,6 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
   // same message.updated fires many times as the response streams.
   const msgState = new Map<string, { req: Set<string>; done: Set<string> }>();
   // exactOptionalPropertyTypes: only carry env when it was actually provided.
-  const envOpt = deps.env !== undefined ? { env: deps.env } : {};
 
   const ensure = (ref?: string): EventSink => {
     const key = ref ?? SINGLE;
@@ -110,13 +109,13 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
     'tool.execute.before': async (input, output) => {
       try {
         const ev = normalizeOpencodeToolBefore(input, output);
-        emitHookEvent(ev, ensure(ev.sessionRef), { ...envOpt });
+        emitHookEvent(ev, ensure(ev.sessionRef));
       } catch { /* fail open */ }
     },
     'tool.execute.after': async (input, output) => {
       try {
         const ev = normalizeOpencodeToolAfter(input, output);
-        emitHookEvent(ev, ensure(ev.sessionRef), { ...envOpt });
+        emitHookEvent(ev, ensure(ev.sessionRef));
       } catch { /* fail open */ }
     },
     event: async ({ event }) => {
@@ -126,7 +125,7 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
         if (llm) { emitLlm(llm); return; }
         const ev = normalizeOpencodeEvent(event);
         if (ev.kind === 'other') return;
-        emitHookEvent(ev, ensure(ev.sessionRef), { ...envOpt });
+        emitHookEvent(ev, ensure(ev.sessionRef));
         if (ev.kind === 'session_end') await closeOne(ev.sessionRef);
       } catch { /* fail open */ }
     },
