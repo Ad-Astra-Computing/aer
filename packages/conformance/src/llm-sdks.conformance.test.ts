@@ -91,7 +91,9 @@ async function runAgent(app = 'llm-app.mjs'): Promise<{ adapters: string[]; even
   let stderr = '';
   child.stdout.on('data', (d) => (stdout += String(d)));
   child.stderr.on('data', (d) => (stderr += String(d)));
-  const code = await new Promise<number>((r) => child.on('exit', (c) => r(c ?? -1)));
+  // 'close' rather than 'exit': exit fires before the child's stdio has been
+  // drained, so output written just before it can be missing.
+  const code = await new Promise<number>((r) => child.on('close', (c) => r(c ?? -1)));
   if (code !== 0) throw new Error(`agent exited ${code}: ${stderr}`);
   await waitForDelivery();
 

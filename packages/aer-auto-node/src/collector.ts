@@ -16,7 +16,7 @@ import {
 } from './session.js';
 import { installTransportPatches, type InstalledPatches } from './patches/index.js';
 import { adapterRows } from './adapters/coverage.js';
-import { replacedAdapters, patchRegistryMark } from './adapters/llm-core.js';
+import { replacedAdapters, patchRegistryMark, pendingObservations } from './adapters/llm-core.js';
 import { installAdapters, patchRemainingCopies, type InstalledAdapters, type AdapterStats, type PolicyOption, type CommitOption } from './adapters/index.js';
 import { commitmentKeyFromString, deriveKid } from './commitment.js';
 import { buildDependencySnapshot } from './dependencies/snapshot.js';
@@ -274,6 +274,10 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     return als.run(session, async () => {
       try {
         const result = await fn();
+        // A model call observed a few ticks ago may still be recording. Let
+        // it land before the flush, or the record shows a request that never
+        // finished and loses the model and token counts with it.
+        await pendingObservations();
         await session.complete();
         return result;
       } catch (err) {
@@ -364,7 +368,10 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     withSession,
     // Lifecycle hooks call these on process exit - only the default session
     // needs closing (per-task sessions complete/abort inside withSession).
-    complete: () => defaultSession ? defaultSession.complete() : Promise.resolve(),
+    complete: async () => {
+      await pendingObservations();
+      if (defaultSession) await defaultSession.complete();
+    },
     abort: () => defaultSession ? defaultSession.abort() : Promise.resolve(),
     uninstall: () => {
       // Recorded, because a record whose patches were torn down mid-run must
