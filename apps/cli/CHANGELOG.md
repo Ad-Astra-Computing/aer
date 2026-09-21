@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.5
+
+### Patch Changes
+
+- [`b4ae8ef`](https://github.com/Ad-Astra-Computing/aer/commit/b4ae8efe0fa502cf5ad5e0529966af3cf262fa9f) - doctor: do not fail for hooks-only setups
+
+  `aer doctor` always ran the Node auto-instrumentation checks (aer-auto-node
+  installed, NODE_OPTIONS wired, aer.config.json identity), so a user who
+  records through the coding-harness hooks or the SDK saw an overall FAILED for
+  a collector they never chose. Those checks now run only when the Node
+  collector is actually set up here; otherwise doctor reports it as an optional,
+  not-configured line and passes on the live API and auth checks. A present but
+  broken Node-collector setup still fails.
+- [`7f9d050`](https://github.com/Ad-Astra-Computing/aer/commit/7f9d050e186fc7faf57e8b403ecda79c37df119a) - Stop recording part of a shell command line as the program that ran
+
+  The reducer that turns a shell command into a program name split the line on
+  whitespace and took the first token. That is not how a shell reads a line, and
+  in several ordinary cases the token it picked was not the program:
+
+  - `MSG="hello world" notify` recorded `world`, because the skip over the
+    leading assignment stepped one whitespace token at a time and landed inside
+    the quoted value. An inline credential recorded the credential.
+  - `ls;cat /etc/shadow`, `ls&&curl example.com` and `ls|grep secret` recorded
+    `shadow`, `example.com` and `secret`: an operator glued to a token hid the
+    command boundary entirely.
+  - `ls>/tmp/private-name` recorded the redirect target, and `2>/dev/null cmd`
+    recorded `null`.
+  - A bare URL or an scp-style target recorded its last path segment.
+
+  The collector had a second route to the same outcome. It decided whether
+  argv[0] was a whole shell line by testing it for whitespace, so
+  `spawn('ls>/tmp/private-name', { shell: true })` was treated as a program path
+  and reduced with `basename`.
+
+  Both now use one quote-aware parser that honours quoting, escapes, operators
+  and redirections, and answers `unknown` whenever it did not fully understand
+  the line. A partial parse states something false about what ran, which is
+  worse than saying nothing. The collector also reads the `shell` option rather
+  than guessing from whitespace.
+
+  These values reach a signed record, so anyone who imported a transcript or ran
+  the collector over a shell command in one of these shapes has records naming
+  something other than the program that ran. New records are correct; existing
+  ones are not rewritten, because a signed record is not editable.
+
 ## 0.1.4
 
 ### Patch Changes

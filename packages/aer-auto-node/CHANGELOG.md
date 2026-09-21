@@ -1,5 +1,116 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- [`bb2e4dd`](https://github.com/Ad-Astra-Computing/aer/commit/bb2e4dd974f34fbbdb5d6e991c2f5dd31c118430) - collector: join the records one run produces
+
+  A process that spawns worker threads gets a collector per thread and a signed
+  record per thread. Every `collector.report` now carries a run id, shared across
+  the threads and child processes of one run, plus the pid and thread it was
+  written on, so the records can be put back together.
+
+  A quiet adapter is no longer reported as `idle` when the session made
+  model-shaped requests to hosts no adapter claims. It reads `unverifiable`,
+  because `idle` would be a signed claim that no model traffic happened.
+- [`a5c0f98`](https://github.com/Ad-Astra-Computing/aer/commit/a5c0f98e8c0ef06784bca0be61557e6a2d4fbdbf) - collector: do not lose a completion to the close that raced it
+
+  The adapter observes the SDK's promise rather than replacing it, to keep the
+  SDK's own promise type. Adopting a foreign thenable costs extra microtask
+  ticks, so the caller's `await` could run first, complete the session, and
+  flush before `llm.completed` was emitted. The record then showed a model call
+  that was requested and never finished, losing the model and the token counts
+  with it. Anthropic's `APIPromise` lost this race most often.
+
+  Completing a session now waits for the observations already in flight.
+
+  A second cause sat underneath it. `drain` returned early when a send was
+  already in flight, and the close path called that same `drain`, so an event
+  captured mid-send stayed in the queue and the session closed without it. A
+  drain now joins the send already running and keeps going until the queue is
+  empty, so a completion that arrives during a flush is still delivered.
+- [`efda1bf`](https://github.com/Ad-Astra-Computing/aer/commit/efda1bf607c6ef0e481ec4c65d982ce72db2f010) - Record LLM calls from an ESM agent, and stop claiming adapters that recorded nothing
+
+  Three faults, found by testing the collector against the real SDKs in a real
+  install rather than against objects shaped like them.
+
+  **A project with the Vercel AI SDK installed crashed at startup.** `ai` is ESM
+  and an ESM module namespace is frozen, so writing the patch marker to it threw,
+  uncaught, out through the register entry point before the application ran a
+  line. Adapter installation is now isolated per adapter and a target that cannot
+  be patched is reported rather than thrown.
+
+  **The OpenAI and Anthropic adapters recorded nothing in an ESM agent.** Both
+  packages are dual-published: `index.mjs` and `index.js` are different classes
+  with different prototypes. The collector reached the SDK with `createRequire`,
+  so it patched the CJS copy while the application imported the other one. The
+  signed record carried no model and no token counts, while its own
+  `collector.report` listed both adapters as active. Resolution is now anchored to
+  the application, and every copy the application could use is patched before its
+  first call. `enabled` now means patched rather than present, so the report stops
+  naming an adapter that records nothing.
+
+  **The Vercel AI SDK was not instrumented at all.** It is now recorded at the
+  provider layer: one `doGenerate` is one real model call, with the model id and
+  the token counts. Streaming records the call but not its counts, which arrive in
+  a stream part this release does not read.
+
+  If you run an ESM agent, records produced before this release are missing their
+  `llm.requested` and `llm.completed` events. Those records are signed and are not
+  rewritten; new sessions are complete.
+
+  Security review before publishing found three more, all fixed here.
+
+  The collector crashed at startup on Node older than 22.15. It imported
+  `registerHooks` from `node:module` as a named import, and a missing named
+  export from a builtin is a link error rather than undefined, so the guard
+  beneath it never ran. The process died before the application loaded, and
+  before `AER_DISABLE` was read.
+
+  `spawn(line, [], { shell: true })` skipped the command reducer entirely,
+  because an argv array was read as proof that argv[0] was a program path. That
+  put the tail of the line back in the record: a redirect target, an scp target,
+  or whatever followed a semicolon. cross-spawn and execa both pass an array and
+  forward `shell`, so this was the common shape.
+
+  A record could assert instrumentation coverage a run did not have. Tearing the
+  collector down left every adapter listed as patched, so the closing report read
+  as a run that made no calls; a wrapper replaced after installation was not
+  noticed at all; and a provider host two adapters could both have called was
+  read as a contradiction against whichever one did not record it.
+- [`7f9d050`](https://github.com/Ad-Astra-Computing/aer/commit/7f9d050e186fc7faf57e8b403ecda79c37df119a) - Stop recording part of a shell command line as the program that ran
+
+  The reducer that turns a shell command into a program name split the line on
+  whitespace and took the first token. That is not how a shell reads a line, and
+  in several ordinary cases the token it picked was not the program:
+
+  - `MSG="hello world" notify` recorded `world`, because the skip over the
+    leading assignment stepped one whitespace token at a time and landed inside
+    the quoted value. An inline credential recorded the credential.
+  - `ls;cat /etc/shadow`, `ls&&curl example.com` and `ls|grep secret` recorded
+    `shadow`, `example.com` and `secret`: an operator glued to a token hid the
+    command boundary entirely.
+  - `ls>/tmp/private-name` recorded the redirect target, and `2>/dev/null cmd`
+    recorded `null`.
+  - A bare URL or an scp-style target recorded its last path segment.
+
+  The collector had a second route to the same outcome. It decided whether
+  argv[0] was a whole shell line by testing it for whitespace, so
+  `spawn('ls>/tmp/private-name', { shell: true })` was treated as a program path
+  and reduced with `basename`.
+
+  Both now use one quote-aware parser that honours quoting, escapes, operators
+  and redirections, and answers `unknown` whenever it did not fully understand
+  the line. A partial parse states something false about what ran, which is
+  worse than saying nothing. The collector also reads the `shell` option rather
+  than guessing from whitespace.
+
+  These values reach a signed record, so anyone who imported a transcript or ran
+  the collector over a shell command in one of these shapes has records naming
+  something other than the program that ran. New records are correct; existing
+  ones are not rewritten, because a signed record is not editable.
+
 ## 0.3.0
 
 ### Minor Changes
