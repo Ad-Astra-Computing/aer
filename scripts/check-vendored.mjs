@@ -17,7 +17,10 @@ const VENDORED = new Map([
   ],
   [
     'shared/bodies-off/ingest-allowlist.ts',
-    ['packages/aer-hooks/src/shared/ingest-allowlist.ts'],
+    [
+      'packages/aer-hooks/src/shared/ingest-allowlist.ts',
+      'packages/aer-mcp-recorder/src/shared/ingest-allowlist.ts',
+    ],
   ],
 ]);
 

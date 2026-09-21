@@ -70,29 +70,30 @@ bytes.
 | `AER_PRINCIPAL_ID` | Human, service or CI identity the run is on behalf of. Optional. |
 | `AER_PRINCIPAL_KIND` | `user`, `service` or `ci`. Optional. |
 | `AER_PRINCIPAL_DISPLAY` | Short label for feeds. Optional. |
-| `AER_MCP_RECORD_ARGS` | Set to `1` to also capture argument values. Off by default. |
-| `AER_MCP_RECORD_RESULTS` | Set to `1` to also capture result content. Off by default. |
 | `AER_CLOSE_TIMEOUT_MS` | Shutdown flush budget in milliseconds. Default `15000`. Must be a positive integer; an invalid value is ignored (with a stderr warning) and the default is used. |
 
 ## What it records
 
-By default each MCP tool call produces two events. The default `tool.started`
-payload is:
+Each MCP tool call produces two events. The `tool.started` payload is:
 
 ```json
 { "tool": "search", "arg_keys": ["query", "limit"] }
 ```
 
-and the default `tool.completed` payload is:
+and the `tool.completed` payload is:
 
 ```json
 { "tool": "search", "ok": true, "is_error": false, "duration_ms": 42, "result_size": 318 }
 ```
 
-No argument values and no result content appear unless you opt in with
-`AER_MCP_RECORD_ARGS=1` or `AER_MCP_RECORD_RESULTS=1`. On close the recorder emits a
-`mcp.recorder.report` coverage event carrying the recorder version, the server name
-and version, the tools it saw, plus call and error counts.
+No argument values and no result content ever appear, and there is no flag that
+changes that: every payload is filtered against the keys AER ingest stores before
+it is sent. On close the recorder emits a `mcp.recorder.report` coverage event
+carrying the recorder version, the server name and version, the tools it saw, plus
+call and error counts.
+
+If you need evidence about the arguments themselves, use content commitments
+(ADR-011), which put a one-way tag in the record that only your key can open.
 
 ## Shutdown and exit codes
 

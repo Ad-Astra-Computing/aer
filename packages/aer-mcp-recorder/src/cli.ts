@@ -40,9 +40,8 @@ real server; every byte is forwarded unchanged and a copy is parsed for recordin
 Recording is best-effort and never in the critical path. If AER is unconfigured or
 unreachable, tools keep working exactly as if the proxy were not there.
 
-Redaction by default: only tool names, argument key names, error flags, result
-sizes and timing are captured. Set AER_MCP_RECORD_ARGS=1 to also capture argument
-values and AER_MCP_RECORD_RESULTS=1 to capture result content.
+Redaction always: only tool names, argument key names, error flags, result sizes
+and timing are captured. There is no flag that records values.
 
 Configuration (environment):
   AER_API_KEY, AER_TENANT_ID, AER_AGENT_ID   required to record (else no-op)
@@ -50,8 +49,6 @@ Configuration (environment):
   AER_AGENT_VERSION                          defaults to mcp-recorder/<version>
   AER_BASE_URL                               default https://api.aer.run
   AER_PRINCIPAL_ID/_KIND/_DISPLAY            optional human/service/ci attribution
-  AER_MCP_RECORD_ARGS=1                       capture argument values (off by default)
-  AER_MCP_RECORD_RESULTS=1                    capture result content (off by default)
   AER_CLOSE_TIMEOUT_MS                        shutdown flush budget in ms (default 15000)
 `;
 
@@ -83,9 +80,7 @@ function buildRecorder(): McpRecorder {
   } catch {
     sink = new NullSink();
   }
-  const recordArgs = process.env['AER_MCP_RECORD_ARGS'] === '1';
-  const recordResults = process.env['AER_MCP_RECORD_RESULTS'] === '1';
-  return new McpRecorder({ sink, recordArgumentValues: recordArgs, recordResultContent: recordResults });
+  return new McpRecorder({ sink });
 }
 
 export async function main(argv: string[] = process.argv, env: NodeJS.ProcessEnv = process.env): Promise<number> {
