@@ -52,6 +52,8 @@ export interface CoverageInput {
   transportWatching: boolean;
   /** Whether our wrapper is still the installed method at session close. */
   patchIntact?: boolean;
+  /** Model-shaped requests to hosts no patched adapter claims. Default 0. */
+  unattributedTraffic?: number;
 }
 
 /**
@@ -69,7 +71,32 @@ export function deriveCoverage(input: CoverageInput): Coverage {
 
   if (input.callsRecorded > 0) return 'confirmed';
   if (!input.transportWatching) return 'unverifiable';
-  return input.providerTraffic > 0 ? 'contradicted' : 'idle';
+  if (input.providerTraffic > 0) return 'contradicted';
+
+  // Zero calls plus model-shaped traffic we cannot attribute is not a quiet
+  // adapter. ai@7 sends a bare string model id through @ai-sdk/gateway, and a
+  // custom baseURL does the same, so `idle` would be a signed claim that no
+  // model traffic happened in a session where it did.
+  if ((input.unattributedTraffic ?? 0) > 0) return 'unverifiable';
+  return 'idle';
+}
+
+// An LLM API call by its shape rather than its vendor, so a self-hosted proxy
+// or a gateway is judged the same way a first-party host is.
+const MODEL_CALL_PATHS: readonly RegExp[] = [
+  /\/chat\/completions\b/,            // OpenAI and every compatible proxy, Azure included
+  /\/v1\/messages\b/,                 // Anthropic
+  /\/v1\/responses\b/,                // OpenAI Responses
+  /\/v1\/complete(?:tions)?\b/,       // legacy completion endpoints
+  /:(?:stream)?[Gg]enerateContent\b/, // Google Generative Language and Vertex
+  /\/model\/[^/]+\/invoke/,           // Bedrock, streaming variant included
+  /\/v1\/ai\//,                       // Vercel AI Gateway
+];
+
+/** Whether a recorded request path is shaped like a model call. */
+export function looksLikeModelCall(path: unknown): boolean {
+  if (typeof path !== 'string' || path.length === 0) return false;
+  return MODEL_CALL_PATHS.some((re) => re.test(path));
 }
 
 export interface AdapterRow {
@@ -106,6 +133,8 @@ export function adapterRows(input: AdapterRowsInput): AdapterRow[] {
     for (const host of PROVIDER_HOSTS[name] ?? []) claims.set(host, (claims.get(host) ?? 0) + 1);
   }
 
+  const unattributed = countUnattributedModelTraffic(input.events, new Set(claims.keys()));
+
   const names = [...new Set([...input.configured, ...input.patched])].sort();
   return names.map((name) => {
     const status: AdapterStatus = input.patched.includes(name) ? 'patched' : 'absent';
@@ -120,6 +149,7 @@ export function adapterRows(input: AdapterRowsInput): AdapterRow[] {
       status,
       callsRecorded,
       providerTraffic: ownTraffic,
+      unattributedTraffic: unattributed,
       ...(input.replaced?.includes(name) === true ? { patchIntact: false } : {}),
       // A shared host cannot settle it either way.
       transportWatching: input.transportWatching && !(shared && ownTraffic === 0),
@@ -136,6 +166,27 @@ function countHostTraffic(events: readonly EventLike[], hosts: readonly string[]
     const raw = (event.payload as Record<string, unknown> | undefined)?.['host'];
     if (typeof raw !== 'string') continue;
     if (hosts.includes(raw.split(':')[0]?.toLowerCase() ?? '')) n += 1;
+  }
+  return n;
+}
+
+/**
+ * Model-shaped requests to hosts no patched adapter claims. Traffic to a host
+ * an adapter owns is that adapter's business; this is the traffic that belongs
+ * to nobody, which is what makes a quiet adapter unverifiable rather than idle.
+ */
+export function countUnattributedModelTraffic(
+  events: readonly EventLike[],
+  claimedHosts: ReadonlySet<string>,
+): number {
+  let n = 0;
+  for (const event of events) {
+    if (event.event_type !== 'http.requested') continue;
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const raw = payload?.['host'];
+    if (typeof raw !== 'string') continue;
+    if (claimedHosts.has(raw.split(':')[0]?.toLowerCase() ?? '')) continue;
+    if (looksLikeModelCall(payload?.['path_redacted'])) n += 1;
   }
   return n;
 }
