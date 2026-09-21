@@ -327,3 +327,28 @@ describe('the closing report reconciles what was claimed against what happened',
     expect(open?.payload).not.toHaveProperty('adapters');
   });
 });
+
+describe('tearing the collector down stops the record claiming coverage', () => {
+  it('reports every adapter as uninstalled, not as covered', async () => {
+    // uninstall() is public through getActiveCollector(), and it used to
+    // leave enabledAdapters standing: the closing report then said every
+    // adapter was patched with zero calls and zero traffic, which reads as a
+    // run that made no LLM calls rather than one that stopped recording.
+    const { transport, emitted } = recordingTransport();
+    const collector = createCollector(resolveConfig({ env: {} }), {
+      transport,
+      patchInstaller: () => ({ enabled: ['http', 'fetch'], uninstall: () => undefined }),
+      adapterInstaller: () => ({ enabled: ['openai'], uninstall: () => undefined, stats: new AdapterStats() }),
+    });
+    collector.capture({ event_type: 'http.requested', payload: { host: 'api.openai.com', method: 'POST' } });
+    collector.uninstall();
+    await collector.complete();
+
+    const reports = emitted().filter((e) => e.event_type === 'collector.report');
+    const rows = (reports[reports.length - 1]?.payload['adapters'] ?? []) as Array<Record<string, unknown>>;
+    expect(rows.find((r) => r['name'] === 'openai')).toMatchObject({
+      status: 'uninstalled',
+      coverage: 'unverifiable',
+    });
+  });
+});
