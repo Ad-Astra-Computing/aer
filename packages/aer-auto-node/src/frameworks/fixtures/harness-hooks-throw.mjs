@@ -1,5 +1,5 @@
 // registerHooks present but refusing. Registration failure must not propagate.
-const { startFrameworkObserver } = await import('../../../dist/frameworks/observe.js');
+const { startFrameworkObserver } = await import(process.env.AER_OBSERVE_MODULE);
 const observer = startFrameworkObserver({
   registerHooks: () => { throw new Error('hooks unavailable'); },
 });

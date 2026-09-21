@@ -34,6 +34,7 @@
           "@aer/schemas"
           "@adastracomputing/aer-sdk-ts"
           "@adastracomputing/aer"
+          "@aer/conformance"
         ];
 
         # Vendors the exact pnpm-lock.yaml graph as a fixed-output derivation
@@ -48,7 +49,7 @@
           inherit pnpmWorkspaces;
           pnpm = pkgs.pnpm;
           fetcherVersion = 4;
-          hash = "sha256-1plVXnG6up1XCwOvvvRsPYTjIZwOganUm87j5TC5AoU=";
+          hash = "sha256-U03FyfyrL4nyBKJE/nmFkFqjhn/cAY9GHrVz/Ok0AM0=";
         };
 
         # Common offline build environment shared by every package/check
