@@ -16,6 +16,7 @@ import {
 } from './session.js';
 import { installTransportPatches, type InstalledPatches } from './patches/index.js';
 import { adapterRows } from './adapters/coverage.js';
+import { replacedAdapters, patchRegistryMark } from './adapters/llm-core.js';
 import { installAdapters, patchRemainingCopies, type InstalledAdapters, type AdapterStats, type PolicyOption, type CommitOption } from './adapters/index.js';
 import { commitmentKeyFromString, deriveKid } from './commitment.js';
 import { buildDependencySnapshot } from './dependencies/snapshot.js';
@@ -143,7 +144,10 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       preamble: () => buildPreamble(config, enabledPatches, enabledAdapters, observer),
       closingReport: () => buildCollectorReport(
         config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
-        adapterEvidence(config, enabledPatches, enabledAdapters, adapterStats, hostCounts, uninstalled),
+        adapterEvidence(
+          config, enabledPatches, enabledAdapters, adapterStats, hostCounts, uninstalled,
+          replacedAdapters(patchMark),
+        ),
         observer,
       ),
       onError,
@@ -280,6 +284,8 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
 
   const teardowns: Array<() => void> = [];
   let uninstalled = false;
+  // Only patches this collector installed are its to answer for.
+  const patchMark = patchRegistryMark();
   teardowns.push(() => observer.stop());
   if (deps.patchInstaller !== false) {
     const installer = typeof deps.patchInstaller === 'function' ? deps.patchInstaller : installTransportPatches;
@@ -311,8 +317,15 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     // entry point awaits `ready` before the app loads, so nothing is missed.
     const statsForCopies = installed.stats;
     if (statsForCopies) {
-      ready = patchRemainingCopies(capture, config.capture.adapters, statsForCopies, currentPolicyOption, commit)
+      // Bounded: --import awaits this before the customer's entry loads, so a
+      // dependency whose module body never settles would otherwise stop
+      // their program from starting at all.
+      ready = withDeadline(
+        patchRemainingCopies(capture, config.capture.adapters, statsForCopies, currentPolicyOption, commit),
+        ADAPTER_PATCH_DEADLINE_MS,
+      )
         .then((extra) => {
+          if (!extra) return;
           for (const name of extra.enabled) {
             if (!enabledAdapters.includes(name)) enabledAdapters.push(name);
           }
@@ -394,6 +407,21 @@ function dependencySnapshotEvent(): CollectorEvent {
  * transport watched calls to that provider go unrecorded is reported as
  * contradicted, rather than left as a bare name in a list.
  */
+/** How long the async adapter pass may hold up the customer's entry. */
+const ADAPTER_PATCH_DEADLINE_MS = 5000;
+
+/** The promise, or undefined if it did not settle in time. Never rejects. */
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise<T | undefined>((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    if (typeof timer.unref === 'function') timer.unref();
+    work.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      () => { clearTimeout(timer); resolve(undefined); },
+    );
+  });
+}
+
 function adapterEvidence(
   config: AerAutoConfig,
   enabledPatches: readonly string[],
@@ -401,6 +429,7 @@ function adapterEvidence(
   adapterStats: AdapterStats | undefined,
   hostCounts: ReadonlyMap<string, number>,
   uninstalled: boolean,
+  replacedSinceStart: readonly string[],
 ): Array<Record<string, unknown>> {
   // Torn down means the wrapper was not in place for the rest of the run, so
   // nothing after that point was seen and no verdict is honest.
@@ -426,6 +455,7 @@ function adapterEvidence(
   calls['vercel-provider'] = Object.values(counts).reduce((t, c) => t + c.calls, 0);
 
   return adapterRows({
+    replaced: replacedSinceStart,
     patched: enabledAdapters,
     configured: config.capture.adapters,
     calls,

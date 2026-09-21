@@ -32,3 +32,12 @@ describe('reading the provider-spec response', () => {
     for (const v of [undefined, null, {}, 42, []]) expect(finishReasonOf(v)).toBeUndefined();
   });
 });
+
+describe('a stream is not reported as finished when it opens', () => {
+  it('leaves token counts off a streaming completion', () => {
+    // doStream resolves as soon as the stream opens, so the counts do not
+    // exist yet. Recording the call without them is honest; a zero would not
+    // be, and neither would waiting.
+    expect(tokenCount(undefined)).toBeUndefined();
+  });
+});

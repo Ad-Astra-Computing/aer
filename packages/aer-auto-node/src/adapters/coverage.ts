@@ -89,6 +89,8 @@ export interface AdapterRowsInput {
   calls: Readonly<Record<string, number>>;
   events: readonly EventLike[];
   transportWatching: boolean;
+  /** Adapters whose wrapper is no longer the installed method. */
+  replaced?: readonly string[];
 }
 
 /**
@@ -118,6 +120,7 @@ export function adapterRows(input: AdapterRowsInput): AdapterRow[] {
       status,
       callsRecorded,
       providerTraffic: ownTraffic,
+      ...(input.replaced?.includes(name) === true ? { patchIntact: false } : {}),
       // A shared host cannot settle it either way.
       transportWatching: input.transportWatching && !(shared && ownTraffic === 0),
     });

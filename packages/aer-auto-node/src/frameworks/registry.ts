@@ -29,7 +29,10 @@ export const KNOWN_FRAMEWORKS: Readonly<Record<string, string>> = {
  * Matches only whole path segments, so `not-langchain` and a local directory
  * called `langchain` are both misses.
  */
-function packageOf(specifier: string): string | undefined {
+function packageOf(raw: string): string | undefined {
+  // require.cache keys are native paths, so on Windows they use backslashes
+  // and the marker would never match.
+  const specifier = raw.replace(/\\/g, '/');
   const marker = '/node_modules/';
   const last = specifier.lastIndexOf(marker);
   if (last === -1) {

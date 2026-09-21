@@ -492,6 +492,7 @@ export function patchMethod(
   const original = target[key] as AnyFn;
   try {
     const wrapper = makeWrapper(original);
+    PATCHED_TARGETS.push({ target, key, symbolName });
     // The wrapper itself, not a boolean: at session close we compare it with
     // the installed method to tell whether anyone replaced us afterwards.
     slot[PATCHED] = wrapper;
@@ -508,6 +509,33 @@ export function patchMethod(
     delete slot[PATCHED];
     delete slot[ORIGINAL];
   };
+}
+
+// Every target we patched, so the closing report can ask whether our wrapper
+// is still the installed method. Restoring the original is one line from
+// inside the process, and every call after that is invisible to us.
+const PATCHED_TARGETS: Array<{ target: Record<string, unknown>; key: string; symbolName: string }> = [];
+
+/**
+ * Where the registry stands now. A collector takes one at birth and asks only
+ * about patches recorded after it, so a second collector in the same process
+ * never reports the first one's targets as missing.
+ */
+export function patchRegistryMark(): number {
+  return PATCHED_TARGETS.length;
+}
+
+/**
+ * Adapter names whose wrapper is no longer installed, among patches recorded
+ * since `from`. The name is the first segment of the patch symbol, so
+ * `vercel-provider.openai.doGenerate` reports as `vercel-provider`.
+ */
+export function replacedAdapters(from = 0): string[] {
+  const gone = new Set<string>();
+  for (const { target, key, symbolName } of PATCHED_TARGETS.slice(from)) {
+    if (!patchIntact(target, key, symbolName)) gone.add(symbolName.split('.')[0] ?? symbolName);
+  }
+  return [...gone];
 }
 
 /**
