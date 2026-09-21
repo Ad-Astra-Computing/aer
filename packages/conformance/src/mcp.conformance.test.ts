@@ -9,6 +9,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { cleanEnv } from './env.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, 'fixtures');
@@ -48,14 +49,13 @@ afterAll(async () => {
 
 /** Drive a real client through the recorder into a real server. */
 async function session(): Promise<{ stdout: string; events: Array<Record<string, unknown>> }> {
-  const env = {
-    ...process.env,
+  const env = cleanEnv({
     AER_BASE_URL: baseUrl,
     AER_API_KEY: 'not-a-real-key',
     AER_TENANT_ID: '01950000-0000-7000-8000-000000000001',
     AER_AGENT_ID: '01950000-0000-7000-8000-000000000002',
     AER_ENV_ID: '01950000-0000-7000-8000-000000000003',
-  };
+  });
   const child = spawn(
     process.execPath,
     [

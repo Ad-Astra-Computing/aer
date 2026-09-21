@@ -11,6 +11,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { cleanEnv } from './env.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, 'fixtures');
@@ -56,15 +57,14 @@ async function runAgent(app = 'llm-app.mjs'): Promise<{ adapters: string[]; even
   const child = spawn(process.execPath, ['--import', register, join(fixtures, app)], {
     cwd: fixtures,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
+    env: cleanEnv({
       FAKE_KEY,
       AER_BASE_URL: baseUrl,
       AER_API_KEY: FAKE_KEY,
       AER_TENANT_ID: '01950000-0000-7000-8000-000000000001',
       AER_AGENT_ID: '01950000-0000-7000-8000-000000000002',
-      AER_ENVIRONMENT_ID: '01950000-0000-7000-8000-000000000003',
-    },
+      AER_ENV_ID: '01950000-0000-7000-8000-000000000003',
+    }),
   });
   let stdout = '';
   let stderr = '';
