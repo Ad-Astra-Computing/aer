@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.6
+
+### Patch Changes
+
+- [`6c416e4`](https://github.com/Ad-Astra-Computing/aer/commit/6c416e4999a4f97d7ea62080b1518817f52f3516) - Answer `--version`
+
+  Neither binary could say which version it was. That is the first question a
+  support conversation asks when a record looks wrong, and the answer was
+  unavailable from the machine that produced it. `aer --version`, `aer-hooks
+  --version` and `aer-hook --version` now print the installed version and exit 0,
+  and `-V` is accepted for both spellings people reach for.
+
+  The version is read from the package manifest a release bumps, never restated
+  in the source, so it cannot drift a release behind.
+
 ## 0.1.5
 
 ### Patch Changes
