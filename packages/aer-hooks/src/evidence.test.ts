@@ -109,3 +109,41 @@ describe('HOOKS_VERSION', () => {
     expect(HOOKS_VERSION).toBe(pkg.version);
   });
 });
+
+// Claude Code and Codex both load a project layer alongside the home one, and
+// all matching layers load rather than the nearest replacing the rest. A real
+// run reported the home layer's events while the project layer was the one
+// actually firing, so the record described a registration that was not in use.
+describe('registeredEvents across config layers', () => {
+  it('unions the project layer with the home one', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aer-home-'));
+    try {
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({
+        hooks: { Stop: [{ matcher: '*', hooks: [{ type: 'command', command: 'aer-hook --harness claude-code' }] }] },
+      }));
+      await install('claude-code', { dir });
+      const events = await registeredEvents('claude-code', home, dir);
+      expect(events).toContain('Stop');
+      expect(events).toContain('SessionEnd');
+      expect(events).toEqual([...new Set(events)].sort());
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the project layer even when the home one has nothing', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'aer-home-'));
+    try {
+      await install('claude-code', { dir });
+      expect(await registeredEvents('claude-code', home, dir)).toContain('SessionEnd');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a project directory that is not one', async () => {
+    await install('claude-code', { dir });
+    expect(await registeredEvents('claude-code', dir, '/nonexistent-xyz')).toContain('SessionEnd');
+  });
+});

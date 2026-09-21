@@ -6,18 +6,47 @@
 // and a hook that fails must not disturb the harness.
 
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { status, type Harness } from './install.js';
 
-/** The AER-wired events in the harness's own config, sorted. */
-export async function registeredEvents(harness: Harness, base?: string): Promise<string[]> {
-  try {
-    const entries = await status(base !== undefined ? { dir: base } : {});
-    const mine = entries.find((e) => e.harness === harness);
-    return [...(mine?.wiredEvents ?? [])].sort();
-  } catch {
-    return [];
+/**
+ * The AER-wired events across every config layer the harness loads, sorted.
+ *
+ * All matching layers load, rather than the nearest one replacing the rest,
+ * so reading only the home layer describes a registration that may not be the
+ * one firing.
+ */
+export async function registeredEvents(
+  harness: Harness,
+  base?: string,
+  projectDir?: string,
+): Promise<string[]> {
+  const found = new Set<string>();
+  for (const dir of layerDirs(base, projectDir)) {
+    try {
+      const entries = await status({ dir });
+      const mine = entries.find((e) => e.harness === harness);
+      for (const ev of mine?.wiredEvents ?? []) found.add(ev);
+    } catch {
+      /* a layer we cannot read contributes nothing */
+    }
   }
+  return [...found].sort();
+}
+
+/**
+ * Where each layer's config lives, as a base directory `configPathFor` can
+ * resolve. Claude Code and Codex both read a project copy under the working
+ * directory in the same relative place as the home one.
+ */
+function layerDirs(base: string | undefined, projectDir: string | undefined): string[] {
+  const dirs = [base ?? os.homedir()];
+  if (projectDir !== undefined && projectDir.length > 0) {
+    const resolved = path.resolve(projectDir);
+    if (!dirs.includes(resolved)) dirs.push(resolved);
+  }
+  return dirs;
 }
 
 /** This package's version, reported so a record names the code that made it. */
