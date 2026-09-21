@@ -22,8 +22,12 @@ export interface ToolShape {
   payload: Record<string, unknown>;
 }
 
-/** Field bound, matching what ingest will accept for a string value. */
-const MAX_FIELD = 2048;
+/**
+ * What ingest accepts for a name-shaped value (MAX_FIELD_LEN in the API's
+ * schema). Anything longer is rejected per event, so sending it loses the
+ * detail and tells nobody.
+ */
+const MAX_FIELD = 512;
 
 function bounded(v: unknown): string | undefined {
   const s = asString(v);

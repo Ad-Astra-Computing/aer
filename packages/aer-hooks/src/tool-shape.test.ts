@@ -76,7 +76,10 @@ describe('what a tool call reduces to', () => {
   });
 
   it('keeps a long or hostile value out of the record entirely', () => {
-    // A path is recorded, so its length is bounded like every other value.
+    // Bounded at what ingest accepts, not at something larger: a value the
+    // server rejects per event loses the detail and reports nothing.
+    expect(shapeOfToolCall('Read', { file_path: '/a/' + 'x'.repeat(509) })).toBeDefined();
+    expect(shapeOfToolCall('Read', { file_path: '/a/' + 'x'.repeat(510) })).toBeUndefined();
     const long = '/a/' + 'x'.repeat(5000);
     expect(shapeOfToolCall('Read', { file_path: long })).toBeUndefined();
     const longUrl = `https://h.example.com/${'y'.repeat(5000)}`;

@@ -101,6 +101,12 @@ export interface HttpSinkOptions {
    * ingest token so later processes can attach to the same session.
    */
   onOpen?: ((info: { id: string; ingestToken: string }) => void) | undefined;
+  /**
+   * Whether POST /complete landed, for a caller holding recovery state. A
+   * failed completion is otherwise only a line on stderr, and a caller that
+   * discards its ingest token on close leaves the session open forever.
+   */
+  onComplete?: ((ok: boolean) => void) | undefined;
 }
 
 interface OpenSession {
@@ -418,6 +424,14 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
       }
       if (opts.completeOnClose === false) return;
       if (!openAttempted || disabled || !session) return;
+      // Telling the caller must never be the thing that breaks the close.
+      const reportComplete = (ok: boolean): void => {
+        try {
+          opts.onComplete?.(ok);
+        } catch {
+          /* best-effort, like onOpen */
+        }
+      };
       try {
         const res = await timedFetch(`${opts.baseUrl}/v1/sessions/${session.sessionId}/complete`, {
           method: 'POST',
@@ -428,8 +442,10 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
           body: JSON.stringify({}),
         });
         if (!res.ok) noteOnce('complete-failed', `${label}: session complete failed: HTTP ${res.status}`);
+        reportComplete(res.ok);
       } catch (err) {
         noteOnce('complete-failed', `${label}: session complete failed: ${err instanceof Error ? err.message : String(err)}`);
+        reportComplete(false);
       }
     },
   };
