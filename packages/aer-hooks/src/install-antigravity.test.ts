@@ -1,10 +1,12 @@
 /**
- * Antigravity's hooks.json is shaped differently from the other two harnesses:
- * the root is a map of NAMED hook groups, each holding its own event map, with
- * no `hooks` wrapper key. Writing the Claude Code shape into it registers
- * nothing, silently, so the layout is per-harness and covered here.
+ * Antigravity's hooks.json is shaped differently from the other two harnesses
+ * at BOTH levels: the root is a map of named hook groups with no `hooks`
+ * wrapper, and inside an event the command sits directly on the entry rather
+ * than in a nested `hooks` array of typed objects.
  *
- * Format verified against antigravity.google/docs/hooks.
+ * Getting the inner level wrong is not ignored, it is rejected: the CLI logs
+ * `invalid hook "aer": command hook must specify 'command'` and loads none of
+ * the group. Shape confirmed by running the CLI, not only by reading the docs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
@@ -38,11 +40,16 @@ describe('install for antigravity', () => {
 
     expect(r.added).toEqual(['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop']);
     const config = await readConfig();
-    const group = config['aer'] as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-    expect(Object.keys(group).sort()).toEqual(['PostInvocation', 'PostToolUse', 'PreInvocation', 'PreToolUse', 'Stop']);
+    const group = config['aer'] as Record<string, unknown>;
+    expect(Object.keys(group).filter((k) => k !== 'enabled').sort())
+      .toEqual(['PostInvocation', 'PostToolUse', 'PreInvocation', 'PreToolUse', 'Stop']);
     for (const ev of Object.keys(group)) {
-      const cmd = group[ev]![0]!.hooks[0]!.command;
-      expect(cmd).toBe(`aer-hook --harness antigravity --lifecycle v2 --event ${ev}`);
+      if (ev === 'enabled') continue;
+      const entry = (group[ev] as Array<Record<string, unknown>>)[0]!;
+      expect(entry['command']).toBe(`aer-hook --harness antigravity --lifecycle v2 --event ${ev}`);
+      // The nested typed-object form is what the CLI rejects outright.
+      expect(entry).not.toHaveProperty('hooks');
+      expect(entry).not.toHaveProperty('type');
     }
   });
 
@@ -127,5 +134,23 @@ describe('status reports antigravity alongside the other harnesses', () => {
     const after = (await status({ dir })).find((e) => e.harness === 'antigravity')!;
     expect(after.exists).toBe(true);
     expect(after.wiredEvents.sort()).toEqual(['PostInvocation', 'PostToolUse', 'PreInvocation', 'PreToolUse', 'Stop']);
+  });
+});
+
+describe('the shape the CLI actually accepts', () => {
+  it('puts the command on the entry, not in a nested typed object', async () => {
+    // Running the real CLI against the nested form logged
+    // `invalid hook "aer": command hook must specify 'command'` and loaded
+    // nothing, so this integration never recorded anything at all.
+    await install('antigravity', { dir });
+    const group = (await readConfig())['aer'] as Record<string, unknown>;
+    const entry = (group['Stop'] as Array<Record<string, unknown>>)[0]!;
+    expect(Object.keys(entry).sort()).toEqual(['command']);
+  });
+
+  it('marks the group enabled, as the schema expects', async () => {
+    await install('antigravity', { dir });
+    const group = (await readConfig())['aer'] as Record<string, unknown>;
+    expect(group['enabled']).toBe(true);
   });
 });

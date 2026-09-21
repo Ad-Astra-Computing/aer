@@ -333,11 +333,12 @@ function antigravityKind(eventName: string, p: Record<string, unknown>): HookKin
     case 'PostToolUse':
       return 'tool_end';
     case 'PreInvocation': {
-      // Fires every turn. Only the first opens the session, or every turn
-      // would reopen it. A missing count is treated as the first: opening a
-      // session twice is recoverable, never opening it loses the run.
+      // Fires every turn, and the count is ZERO based: a real run sends 0
+      // then 1. Only the first opens the session. A missing count is treated
+      // as the first, because opening a session twice is recoverable and
+      // never opening it loses the run.
       const n = p['invocationNum'];
-      return typeof n !== 'number' || n <= 1 ? 'session_start' : 'turn_start';
+      return typeof n !== 'number' || n <= 0 ? 'session_start' : 'turn_start';
     }
     case 'PostInvocation':
       return 'turn_end';

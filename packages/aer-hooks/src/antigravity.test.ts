@@ -75,9 +75,11 @@ describe('normalizeAntigravity', () => {
   });
 
   it('opens a session on the first invocation and marks the rest as turns', () => {
-    expect(normalizeAntigravity({ ...BASE, invocationNum: 1 }, 'PreInvocation').kind).toBe('session_start');
+    // The counter is zero based: a real run sends invocationNum 0 then 1.
+    expect(normalizeAntigravity({ ...BASE, invocationNum: 0 }, 'PreInvocation').kind).toBe('session_start');
     // A later invocation is a new turn, not a new session. Recording it as a
     // turn marker is what lets a reader tell a quiet run from a lost one.
+    expect(normalizeAntigravity({ ...BASE, invocationNum: 1 }, 'PreInvocation').kind).toBe('turn_start');
     expect(normalizeAntigravity({ ...BASE, invocationNum: 2 }, 'PreInvocation').kind).toBe('turn_start');
     expect(normalizeAntigravity({ ...BASE, invocationNum: 9 }, 'PreInvocation').kind).toBe('turn_start');
   });

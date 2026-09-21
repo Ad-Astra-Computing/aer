@@ -149,11 +149,24 @@ function harnessCommand(harness: Harness, event?: string): string {
   return event === undefined ? base : `${base} --event ${event}`;
 }
 
-/** The hook group AER installs into an Antigravity config. */
-function antigravityGroup(): HooksMap {
-  const group: HooksMap = {};
+/** One Antigravity entry: the command sits on the entry itself. */
+interface AntigravityEntry {
+  matcher?: string;
+  command: string;
+}
+
+/**
+ * The hook group AER installs into an Antigravity config.
+ *
+ * Antigravity differs from the other two at both levels: named groups at the
+ * root with no `hooks` wrapper, and the command directly on the entry. The
+ * nested typed-object form the others use is rejected outright, with
+ * `command hook must specify 'command'` in the CLI log and nothing loaded.
+ */
+function antigravityGroup(): Record<string, unknown> {
+  const group: Record<string, unknown> = { enabled: true };
   for (const ev of ANTIGRAVITY_EVENTS) {
-    const entry: HookMatcherGroup = { hooks: [{ type: 'command', command: harnessCommand('antigravity', ev) }] };
+    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev) };
     if (ANTIGRAVITY_MATCHED.has(ev)) entry.matcher = '*';
     group[ev] = [entry];
   }
@@ -213,7 +226,13 @@ function isAerEntry(entry: unknown): boolean {
   return m !== null;
 }
 
+/**
+ * Whether one entry in an event array is ours, in either layout: the nested
+ * `hooks` array Claude Code and Codex use, or Antigravity's bare entry with
+ * the command on it.
+ */
 function groupHasAer(group: HookMatcherGroup): boolean {
+  if (isAerEntry(group)) return true;
   return Array.isArray(group.hooks) && group.hooks.some(isAerEntry);
 }
 
