@@ -140,14 +140,16 @@ function closingEvidence(event: HookEvent, toolsOpen: number): void {
   const meta = event.meta ?? (event.meta = {});
   meta['collector'] = 'aer-hooks';
   meta['version'] = HOOKS_VERSION;
-  if (event.seq !== undefined) meta['events_emitted'] = event.seq;
+  // Counting the closing marker itself, which is about to go out.
+  meta['events_emitted'] = event.seq ?? 1;
   meta['tools_unresolved'] = toolsOpen;
 }
 
 /** Build the sink for one already-decided branch, emit the event, and close it. */
-async function emitThrough(event: HookEvent, sink: EventSink, env: NodeJS.ProcessEnv): Promise<void> {
-  emitHookEvent(event, sink, { env });
+async function emitThrough(event: HookEvent, sink: EventSink, env: NodeJS.ProcessEnv): Promise<number> {
+  const count = emitHookEvent(event, sink, { env });
   await sink.close();
+  return count;
 }
 
 /**
@@ -182,7 +184,8 @@ async function orchestrateAndEmit(
   const ref = event.sessionRef;
   if (!ref) {
     // No correlation id: single-shot session (open + emit + complete on close).
-    return emitThrough(event, createHttpSink(base), env);
+    await emitThrough(event, createHttpSink(base), env);
+    return;
   }
 
   const lock = await acquireSessionLock(ref, env);
@@ -190,7 +193,8 @@ async function orchestrateAndEmit(
     // Could not converge with a concurrent hook for this harness session in
     // time (or the store is unwritable): degrade to single-shot rather than
     // risk reading a half-written entry or waiting indefinitely.
-    return emitThrough(event, createHttpSink(base), env);
+    await emitThrough(event, createHttpSink(base), env);
+    return;
   }
 
   try {
@@ -215,9 +219,9 @@ async function orchestrateAndEmit(
       // and completing here is what split one conversation across records.
       event.seq = (stored.seq ?? 0) + 1;
       const toolsOpen = nextToolsOpen(stored.toolsOpen ?? 0, event.kind);
-      saveSession(ref, { ...stored, seq: event.seq, toolsOpen }, env);
       const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
-      await emitThrough(event, sink, env);
+      const count = await emitThrough(event, sink, env);
+      saveSession(ref, { ...stored, seq: (stored.seq ?? 0) + count, toolsOpen }, env);
       return;
     }
 
@@ -231,7 +235,10 @@ async function orchestrateAndEmit(
       saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: 1, toolsOpen: nextToolsOpen(0, event.kind) }, env);
     };
     const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
-    await emitThrough(event, sink, env);
+    const count = await emitThrough(event, sink, env);
+    // The open persisted position 1; advance it to what actually went out.
+    const saved = loadSession(ref, env, now);
+    if (saved) saveSession(ref, { ...saved, seq: count }, env);
   } finally {
     lock.release();
   }

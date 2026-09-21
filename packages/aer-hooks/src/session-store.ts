@@ -22,9 +22,10 @@ export interface StoredSession {
   baseUrl: string;
   createdAt: number;
   /**
-   * How many events this harness session has emitted so far. Assigned under
-   * the same lock that decides whether a session already exists, so two hooks
-   * racing for one harness session cannot take the same position.
+   * How many events this harness session has emitted so far, which is the
+   * position the next one takes. Assigned under the same lock that decides
+   * whether a session already exists, so two hooks racing for one harness
+   * session cannot take the same position.
    */
   seq?: number;
   /**

@@ -41,38 +41,53 @@ function emitFiltered(sink: EventSink, type: string, payload: Record<string, unk
  * can tell which harness, model and permission mode produced the run without
  * inferring it. Any failure inside the sink is swallowed; this never throws.
  */
-export function emitHookEvent(event: HookEvent, sink: EventSink, _opts: EmitOptions = {}): void {
+export function emitHookEvent(event: HookEvent, sink: EventSink, _opts: EmitOptions = {}): number {
   try {
-    if (event.kind === 'other') return;
+    if (event.kind === 'other') return 0;
 
-    const payload: Record<string, unknown> = { ...(event.meta ?? {}) };
-    if (event.sessionRef !== undefined) payload['session_ref'] = event.sessionRef;
-    if (event.seq !== undefined) payload['seq'] = event.seq;
+    const common: Record<string, unknown> = { ...(event.meta ?? {}) };
+    if (event.sessionRef !== undefined) common['session_ref'] = event.sessionRef;
+
+    // One invocation can produce more than one event, so the position counts
+    // events rather than invocations: a repeated number would read as a
+    // duplicate to anyone checking the record for gaps.
+    let seq = event.seq;
+    let sent = 0;
+    const send = (type: string, extra: Record<string, unknown>): void => {
+      const payload: Record<string, unknown> = { ...common, ...extra };
+      if (seq !== undefined) payload['seq'] = seq++;
+      emitFiltered(sink, type, payload);
+      sent += 1;
+    };
 
     switch (event.kind) {
       case 'tool_start': {
-        if (event.tool !== undefined) payload['tool'] = event.tool;
-        if (event.argKeys !== undefined) payload['arg_keys'] = event.argKeys;
-        emitFiltered(sink, 'tool.started', payload);
-        return;
+        const fields: Record<string, unknown> = {};
+        if (event.tool !== undefined) fields['tool'] = event.tool;
+        if (event.argKeys !== undefined) fields['arg_keys'] = event.argKeys;
+        send('tool.started', fields);
+        // What the call actually did, alongside the fact that it happened.
+        // Both go through the same sink, so it is one request either way.
+        if (event.shape !== undefined) send(event.shape.eventType, { ...fields, ...event.shape.payload });
+        return sent;
       }
       case 'tool_end': {
-        if (event.tool !== undefined) payload['tool'] = event.tool;
-        if (event.ok !== undefined) payload['ok'] = event.ok;
-        if (event.isError !== undefined) payload['is_error'] = event.isError;
-        emitFiltered(sink, 'tool.completed', payload);
-        return;
+        const fields: Record<string, unknown> = {};
+        if (event.tool !== undefined) fields['tool'] = event.tool;
+        if (event.ok !== undefined) fields['ok'] = event.ok;
+        if (event.isError !== undefined) fields['is_error'] = event.isError;
+        send('tool.completed', fields);
+        return sent;
       }
       default: {
         // collector.report requires a non-empty `collector`; `phase` rides
         // along via the variant's passthrough() to carry which marker this is.
-        payload['collector'] = 'aer-hooks';
-        payload['phase'] = event.kind;
-        emitFiltered(sink, 'collector.report', payload);
-        return;
+        send('collector.report', { collector: 'aer-hooks', phase: event.kind });
+        return sent;
       }
     }
   } catch {
     /* emit must never throw */
   }
+  return 0;
 }

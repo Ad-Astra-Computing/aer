@@ -185,12 +185,18 @@ describe('a multi-turn harness session is one record', () => {
 
     const all = bodies.join('\n');
     expect(all).toContain('"phase":"turn_end"');
+    // The shell call is recorded as the program it ran, not just as a tool
+    // named Bash, and the command line itself never appears.
+    expect(all).toContain('"command":"ls"');
+    expect(all).toContain('"command_known":true');
     expect(all).toContain('"phase":"session_end"');
 
     // Every event carries its position, and the positions run 1..10 with no
     // gap and no repeat, which is what makes a missing event detectable.
     const seqs = [...all.matchAll(/"seq":(\d+)/g)].map((m) => Number(m[1])).sort((a, b) => a - b);
-    expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    // Twelve events from ten invocations: each Bash call also records the
+    // program it ran, and every position is distinct.
+    expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   }, 90_000);
 
   it('still completes on Stop for a registration written before SessionEnd', async () => {
@@ -243,7 +249,7 @@ describe('the record says how complete it is', () => {
     expect(all).toContain('"collector":"aer-hooks"');
     expect(all).toContain('"events_registered":["PostToolUse","PreToolUse","SessionEnd","SessionStart","Stop","SubagentStart","SubagentStop","UserPromptSubmit"]');
     // The closing marker counts what arrived and what never resolved.
-    expect(all).toContain('"events_emitted":5');
+    expect(all).toContain('"events_emitted":7');
     expect(all).toContain('"tools_unresolved":1');
   }, 60_000);
 });
