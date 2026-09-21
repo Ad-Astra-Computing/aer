@@ -15,7 +15,7 @@ import {
   type SessionTransport,
 } from './session.js';
 import { installTransportPatches, type InstalledPatches } from './patches/index.js';
-import { countProviderTraffic, deriveCoverage, type AdapterStatus } from './adapters/coverage.js';
+import { adapterRows } from './adapters/coverage.js';
 import { installAdapters, patchRemainingCopies, type InstalledAdapters, type AdapterStats, type PolicyOption, type CommitOption } from './adapters/index.js';
 import { commitmentKeyFromString, deriveKid } from './commitment.js';
 import { buildDependencySnapshot } from './dependencies/snapshot.js';
@@ -143,7 +143,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       preamble: () => buildPreamble(config, enabledPatches, enabledAdapters, observer),
       closingReport: () => buildCollectorReport(
         config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
-        adapterEvidence(config, enabledPatches, enabledAdapters, adapterStats, hostCounts),
+        adapterEvidence(config, enabledPatches, enabledAdapters, adapterStats, hostCounts, uninstalled),
         observer,
       ),
       onError,
@@ -279,6 +279,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   }
 
   const teardowns: Array<() => void> = [];
+  let uninstalled = false;
   teardowns.push(() => observer.stop());
   if (deps.patchInstaller !== false) {
     const installer = typeof deps.patchInstaller === 'function' ? deps.patchInstaller : installTransportPatches;
@@ -351,7 +352,12 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     // needs closing (per-task sessions complete/abort inside withSession).
     complete: () => defaultSession ? defaultSession.complete() : Promise.resolve(),
     abort: () => defaultSession ? defaultSession.abort() : Promise.resolve(),
-    uninstall: () => { for (const t of teardowns) { try { t(); } catch { /* ignore */ } } },
+    uninstall: () => {
+      // Recorded, because a record whose patches were torn down mid-run must
+      // not go on claiming the coverage they would have given.
+      uninstalled = true;
+      for (const t of teardowns) { try { t(); } catch { /* ignore */ } }
+    },
     enabledPatches,
     enabledAdapters,
     get ready() { return ready; },
@@ -394,33 +400,38 @@ function adapterEvidence(
   enabledAdapters: readonly string[],
   adapterStats: AdapterStats | undefined,
   hostCounts: ReadonlyMap<string, number>,
+  uninstalled: boolean,
 ): Array<Record<string, unknown>> {
+  // Torn down means the wrapper was not in place for the rest of the run, so
+  // nothing after that point was seen and no verdict is honest.
+  if (uninstalled) {
+    return [...new Set([...config.capture.adapters, ...enabledAdapters])].sort().map((name) => ({
+      name, status: 'uninstalled', coverage: 'unverifiable',
+    }));
+  }
+
   const transportWatching = enabledPatches.includes('http')
     || enabledPatches.includes('https')
     || enabledPatches.includes('fetch');
-  const traffic = [...hostCounts.entries()].map(([host, n]) => ({
-    event_type: 'http.requested', payload: { host }, n,
-  }));
+  // One synthetic event per request, so a host seen n times counts n times.
+  const events: Array<{ event_type: string; payload: { host: string } }> = [];
+  for (const [host, n] of hostCounts) {
+    for (let i = 0; i < n; i += 1) events.push({ event_type: 'http.requested', payload: { host } });
+  }
   const counts = adapterStats?.snapshot() ?? {};
+  const calls: Record<string, number> = {};
+  for (const [provider, c] of Object.entries(counts)) calls[provider] = c.calls;
+  // The Vercel adapter records under each provider it wrapped, so its own row
+  // sums them.
+  calls['vercel-provider'] = Object.values(counts).reduce((t, c) => t + c.calls, 0);
 
-  const names = new Set<string>([...config.capture.adapters, ...enabledAdapters]);
-  return [...names].sort().map((name) => {
-    const status: AdapterStatus = enabledAdapters.includes(name) ? 'patched' : 'absent';
-    // AdapterStats is keyed by provider; the Vercel provider adapter records
-    // under each provider it wrapped, so sum those for its own row.
-    const callsRecorded = name === 'vercel-provider'
-      ? Object.values(counts).reduce((t, c) => t + c.calls, 0)
-      : (counts[name]?.calls ?? 0);
-    let providerTraffic = 0;
-    for (const t of traffic) providerTraffic += countProviderTraffic([t], name) * t.n;
-    return {
-      name,
-      status,
-      calls_recorded: callsRecorded,
-      provider_requests: providerTraffic,
-      coverage: deriveCoverage({ status, callsRecorded, providerTraffic, transportWatching }),
-    };
-  });
+  return adapterRows({
+    patched: enabledAdapters,
+    configured: config.capture.adapters,
+    calls,
+    events,
+    transportWatching,
+  }) as unknown as Array<Record<string, unknown>>;
 }
 
 function buildCollectorReport(

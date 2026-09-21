@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveCoverage, PROVIDER_HOSTS, countProviderTraffic } from './coverage.js';
+import { deriveCoverage, PROVIDER_HOSTS, countProviderTraffic, adapterRows } from './coverage.js';
 
 describe('deriveCoverage', () => {
   it('confirms an adapter that recorded calls', () => {
@@ -82,5 +82,46 @@ describe('countProviderTraffic', () => {
     for (const name of ['openai', 'anthropic']) {
       expect(PROVIDER_HOSTS[name]?.length ?? 0).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('a host two adapters could have called settles nothing', () => {
+  // vercel-provider lists api.openai.com because a Vercel app can reach it,
+  // and so does the openai adapter. An app using the openai SDK directly
+  // produced a vercel-provider row of `contradicted`: a coverage failure
+  // asserted in a signed record that did not happen.
+  it('does not contradict an adapter over a host another one owns', () => {
+    const traffic = [{ event_type: 'http.requested', payload: { host: 'api.openai.com' } }];
+    const rows = adapterRows({
+      patched: ['openai', 'vercel-provider'],
+      configured: ['openai', 'vercel-provider'],
+      calls: { openai: 2 },
+      events: traffic,
+      transportWatching: true,
+    });
+    expect(rows.find((r) => r.name === 'openai')?.coverage).toBe('confirmed');
+    expect(rows.find((r) => r.name === 'vercel-provider')?.coverage).toBe('unverifiable');
+  });
+
+  it('still contradicts when the host belongs to that adapter alone', () => {
+    const rows = adapterRows({
+      patched: ['openai'],
+      configured: ['openai'],
+      calls: {},
+      events: [{ event_type: 'http.requested', payload: { host: 'api.openai.com' } }],
+      transportWatching: true,
+    });
+    expect(rows.find((r) => r.name === 'openai')?.coverage).toBe('contradicted');
+  });
+
+  it('counts a shared host as traffic for the adapter that recorded it', () => {
+    const rows = adapterRows({
+      patched: ['openai', 'vercel-provider'],
+      configured: ['openai', 'vercel-provider'],
+      calls: { 'vercel-provider': 1 },
+      events: [{ event_type: 'http.requested', payload: { host: 'api.anthropic.com' } }],
+      transportWatching: true,
+    });
+    expect(rows.find((r) => r.name === 'vercel-provider')?.coverage).toBe('confirmed');
   });
 });

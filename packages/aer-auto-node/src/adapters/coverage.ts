@@ -71,3 +71,68 @@ export function deriveCoverage(input: CoverageInput): Coverage {
   if (!input.transportWatching) return 'unverifiable';
   return input.providerTraffic > 0 ? 'contradicted' : 'idle';
 }
+
+export interface AdapterRow {
+  name: string;
+  status: AdapterStatus;
+  calls_recorded: number;
+  provider_requests: number;
+  coverage: Coverage;
+}
+
+export interface AdapterRowsInput {
+  /** Adapters that actually patched something. */
+  patched: readonly string[];
+  /** Adapters the configuration asked for, patched or not. */
+  configured: readonly string[];
+  /** Calls each adapter recorded. */
+  calls: Readonly<Record<string, number>>;
+  events: readonly EventLike[];
+  transportWatching: boolean;
+}
+
+/**
+ * One evidence row per adapter.
+ *
+ * A host more than one patched adapter could have called proves nothing about
+ * either, so it is counted but never used to contradict. Reporting a coverage
+ * failure that did not happen is as damaging to a record as missing one.
+ */
+export function adapterRows(input: AdapterRowsInput): AdapterRow[] {
+  const claims = new Map<string, number>();
+  for (const name of input.patched) {
+    for (const host of PROVIDER_HOSTS[name] ?? []) claims.set(host, (claims.get(host) ?? 0) + 1);
+  }
+
+  const names = [...new Set([...input.configured, ...input.patched])].sort();
+  return names.map((name) => {
+    const status: AdapterStatus = input.patched.includes(name) ? 'patched' : 'absent';
+    const callsRecorded = input.calls[name] ?? 0;
+    const hosts = PROVIDER_HOSTS[name] ?? [];
+    const own = hosts.filter((h) => (claims.get(h) ?? 0) <= 1);
+    const ownTraffic = countHostTraffic(input.events, own);
+    const allTraffic = countHostTraffic(input.events, hosts);
+    const shared = allTraffic > ownTraffic;
+
+    const coverage = deriveCoverage({
+      status,
+      callsRecorded,
+      providerTraffic: ownTraffic,
+      // A shared host cannot settle it either way.
+      transportWatching: input.transportWatching && !(shared && ownTraffic === 0),
+    });
+    return { name, status, calls_recorded: callsRecorded, provider_requests: allTraffic, coverage };
+  });
+}
+
+function countHostTraffic(events: readonly EventLike[], hosts: readonly string[]): number {
+  if (hosts.length === 0) return 0;
+  let n = 0;
+  for (const event of events) {
+    if (event.event_type !== 'http.requested') continue;
+    const raw = (event.payload as Record<string, unknown> | undefined)?.['host'];
+    if (typeof raw !== 'string') continue;
+    if (hosts.includes(raw.split(':')[0]?.toLowerCase() ?? '')) n += 1;
+  }
+  return n;
+}
