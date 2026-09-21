@@ -10,10 +10,6 @@ import type { EventSink } from '@adastracomputing/aer-emit';
 import type { HookEvent } from './normalize.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 
-export interface EmitOptions {
-  env?: NodeJS.ProcessEnv;
-}
-
 /**
  * A tool event with no tool name is rejected by ingest, because the name is
  * the whole content of it. Record the call as unnamed rather than send
@@ -51,7 +47,7 @@ function emitFiltered(sink: EventSink, type: string, payload: Record<string, unk
  * can tell which harness, model and permission mode produced the run without
  * inferring it. Any failure inside the sink is swallowed; this never throws.
  */
-export function emitHookEvent(event: HookEvent, sink: EventSink, _opts: EmitOptions = {}): number {
+export function emitHookEvent(event: HookEvent, sink: EventSink): number {
   try {
     if (event.kind === 'other') return 0;
 
