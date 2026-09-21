@@ -154,4 +154,12 @@ describe('a real agent using the real Vercel AI SDK', () => {
     expect(raw).not.toContain('THE-REPLY-TEXT');
     expect(raw).not.toContain(FAKE_KEY);
   });
+
+  it('never records the values it probed the SDK with', async () => {
+    // Reaching the model prototype means constructing a throwaway provider
+    // and model. Neither the placeholder key nor the placeholder model id is
+    // a real thing, and neither belongs in a record.
+    const { raw } = await runAgent('vercel-app.mjs');
+    expect(raw).not.toContain('aer-probe');
+  });
 });
