@@ -72,7 +72,7 @@ const codexPostToolUse = {
 
 describe('normalizeClaudeCode', () => {
   it('maps PreToolUse to tool_start with tool + arg keys', () => {
-    const e = normalizeClaudeCode(ccPreToolUse, {});
+    const e = normalizeClaudeCode(ccPreToolUse);
     expect(e.kind).toBe('tool_start');
     expect(e.tool).toBe('Bash');
     expect(e.argKeys).toEqual(['command']);
@@ -80,7 +80,7 @@ describe('normalizeClaudeCode', () => {
   });
 
   it('maps PostToolUse (success) to tool_end ok=true', () => {
-    const e = normalizeClaudeCode(ccPostToolUse, {});
+    const e = normalizeClaudeCode(ccPostToolUse);
     expect(e.kind).toBe('tool_end');
     expect(e.tool).toBe('Edit');
     expect(e.argKeys).toEqual(['file_path', 'new_string', 'old_string']);
@@ -89,21 +89,21 @@ describe('normalizeClaudeCode', () => {
   });
 
   it('maps PostToolUse (is_error) to tool_end ok=false', () => {
-    const e = normalizeClaudeCode(ccPostToolUseError, {});
+    const e = normalizeClaudeCode(ccPostToolUseError);
     expect(e.kind).toBe('tool_end');
     expect(e.ok).toBe(false);
     expect(e.isError).toBe(true);
   });
 
   it('maps SessionStart / Stop / UserPromptSubmit', () => {
-    expect(normalizeClaudeCode(ccSessionStart, {}).kind).toBe('session_start');
-    expect(normalizeClaudeCode(ccStop, {}).kind).toBe('session_end');
-    expect(normalizeClaudeCode(ccPrompt, {}).kind).toBe('prompt');
+    expect(normalizeClaudeCode(ccSessionStart).kind).toBe('session_start');
+    expect(normalizeClaudeCode(ccStop).kind).toBe('session_end');
+    expect(normalizeClaudeCode(ccPrompt).kind).toBe('prompt');
   });
 
   it('yields kind=other for an unknown event and tolerates garbage', () => {
     expect(normalizeClaudeCode({ hook_event_name: 'Weird' }, {}).kind).toBe('other');
-    expect(normalizeClaudeCode(null, {}).kind).toBe('other');
+    expect(normalizeClaudeCode(null).kind).toBe('other');
     expect(normalizeClaudeCode(42, {}).kind).toBe('other');
     expect(normalizeClaudeCode({}, {}).kind).toBe('other');
   });
@@ -111,23 +111,22 @@ describe('normalizeClaudeCode', () => {
 
 describe('redaction', () => {
   it('never surfaces argument values by default, only keys', () => {
-    const e = normalizeClaudeCode(ccPreToolUse, {});
+    const e = normalizeClaudeCode(ccPreToolUse);
     expect(e.argKeys).toEqual(['command']);
     // the value 'npm test' must not appear anywhere on the event
     expect(JSON.stringify(e)).not.toContain('npm test');
   });
 
-  it('argKeys are the same regardless of the opt-in flag (values handled downstream)', () => {
-    const off = normalizeClaudeCode(ccPreToolUse, {});
-    const on = normalizeClaudeCode(ccPreToolUse, { AER_HOOK_RECORD_ARGS: '1' });
-    expect(on.argKeys).toEqual(off.argKeys);
-    expect(JSON.stringify(on)).not.toContain('npm test');
+  it('keeps argument values out of the event, with no opt-in to change that', () => {
+    const e = normalizeClaudeCode(ccPreToolUse);
+    expect(e.argKeys).toEqual(['command']);
+    expect(JSON.stringify(e)).not.toContain('npm test');
   });
 });
 
 describe('normalizeCodex', () => {
   it('maps PreToolUse to tool_start', () => {
-    const e = normalizeCodex(codexPreToolUse, {});
+    const e = normalizeCodex(codexPreToolUse);
     expect(e.kind).toBe('tool_start');
     expect(e.tool).toBe('Bash');
     expect(e.argKeys).toEqual(['command']);
@@ -135,7 +134,7 @@ describe('normalizeCodex', () => {
   });
 
   it('maps PostToolUse to tool_end ok=true', () => {
-    const e = normalizeCodex(codexPostToolUse, {});
+    const e = normalizeCodex(codexPostToolUse);
     expect(e.kind).toBe('tool_end');
     expect(e.tool).toBe('apply_patch');
     expect(e.ok).toBe(true);

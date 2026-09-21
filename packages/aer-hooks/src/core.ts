@@ -1,34 +1,27 @@
 // Map a normalized HookEvent to AER event types and emit it. Never throws.
 //
-// Redaction by default: the emitted payload carries the tool name, argument KEY
-// names and result flags only, never argument values or result content, unless the
-// operator opts in with AER_HOOK_RECORD_ARGS=1 (in which case the raw tool_input is
-// forwarded under `arg_values`, if a raw payload is supplied).
+// Redaction always: the emitted payload carries the tool name, argument KEY
+// names and result flags only, never argument values or result content. Every
+// payload is filtered through the ingest allowlist before it is handed to the
+// sink, so a key ingest would discard never reaches the wire in the first
+// place.
 
 import type { EventSink } from '@adastracomputing/aer-emit';
 import type { HookEvent } from './normalize.js';
-import { recordArgsEnabled } from './normalize.js';
+import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 
 export interface EmitOptions {
-  /** The raw hook payload; only read when AER_HOOK_RECORD_ARGS=1 to attach values. */
-  raw?: unknown;
   env?: NodeJS.ProcessEnv;
 }
 
-function rawToolInput(raw: unknown): Record<string, unknown> | undefined {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
-  const rec = raw as Record<string, unknown>;
-  // Antigravity nests the call, so its args are at toolCall.args.
-  const call = rec['toolCall'];
-  const nested =
-    typeof call === 'object' && call !== null && !Array.isArray(call)
-      ? (call as Record<string, unknown>)['args']
-      : undefined;
-  const ti = rec['tool_input'] ?? rec['arguments'] ?? nested;
-  if (typeof ti === 'object' && ti !== null && !Array.isArray(ti)) {
-    return ti as Record<string, unknown>;
-  }
-  return undefined;
+/**
+ * Hand one payload to the sink, minus anything ingest would drop. Filtering
+ * here rather than trusting the server keeps the privacy claim true on the
+ * wire and not just in the database.
+ */
+function emitFiltered(sink: EventSink, type: string, payload: Record<string, unknown>): void {
+  const { payload: safe } = stripToIngestPayload(payload);
+  void sink.emit(type, safe);
 }
 
 /**
@@ -48,20 +41,15 @@ function rawToolInput(raw: unknown): Record<string, unknown> | undefined {
  * not EventSchema types and the API rejects them per-event.
  * Any failure inside the sink is swallowed; this function never throws.
  */
-export function emitHookEvent(event: HookEvent, sink: EventSink, opts: EmitOptions = {}): void {
+export function emitHookEvent(event: HookEvent, sink: EventSink, _opts: EmitOptions = {}): void {
   try {
-    const env = opts.env ?? process.env;
     switch (event.kind) {
       case 'tool_start': {
         const payload: Record<string, unknown> = {};
         if (event.tool !== undefined) payload['tool'] = event.tool;
         if (event.argKeys !== undefined) payload['arg_keys'] = event.argKeys;
         if (event.sessionRef !== undefined) payload['session_ref'] = event.sessionRef;
-        if (recordArgsEnabled(env)) {
-          const values = rawToolInput(opts.raw);
-          if (values !== undefined) payload['arg_values'] = values;
-        }
-        void sink.emit('tool.started', payload);
+        emitFiltered(sink, 'tool.started', payload);
         return;
       }
       case 'tool_end': {
@@ -70,7 +58,7 @@ export function emitHookEvent(event: HookEvent, sink: EventSink, opts: EmitOptio
         if (event.ok !== undefined) payload['ok'] = event.ok;
         if (event.isError !== undefined) payload['is_error'] = event.isError;
         if (event.sessionRef !== undefined) payload['session_ref'] = event.sessionRef;
-        void sink.emit('tool.completed', payload);
+        emitFiltered(sink, 'tool.completed', payload);
         return;
       }
       case 'session_start':
@@ -82,7 +70,7 @@ export function emitHookEvent(event: HookEvent, sink: EventSink, opts: EmitOptio
           event.kind === 'session_start' ? 'session_start' : event.kind === 'session_end' ? 'session_end' : 'prompt';
         const payload: Record<string, unknown> = { collector: 'aer-hooks', phase };
         if (event.sessionRef !== undefined) payload['session_ref'] = event.sessionRef;
-        void sink.emit('collector.report', payload);
+        emitFiltered(sink, 'collector.report', payload);
         return;
       }
       case 'other':

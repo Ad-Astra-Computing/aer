@@ -15,6 +15,10 @@ const VENDORED = new Map([
     'shared/bodies-off/shell-reduce.ts',
     ['packages/aer-auto-node/src/shared/shell-reduce.ts', 'apps/cli/src/shared/shell-reduce.ts'],
   ],
+  [
+    'shared/bodies-off/ingest-allowlist.ts',
+    ['packages/aer-hooks/src/shared/ingest-allowlist.ts'],
+  ],
 ]);
 
 const sha = (path) => createHash('sha256').update(readFileSync(join(root, path))).digest('hex');

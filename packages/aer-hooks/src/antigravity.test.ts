@@ -130,7 +130,6 @@ describe('normalize routes to Antigravity with the event name', () => {
     const e = normalize(
       { ...BASE, toolCall: { name: 'view_file', args: { Path: 'a.ts' } } },
       'antigravity',
-      process.env,
       'PostToolUse',
     );
 

@@ -62,23 +62,28 @@ describe('emitHookEvent mapping', () => {
     expect(events).toHaveLength(0);
   });
 
-  it('does not include arg_values by default', () => {
-    const { sink, events } = fakeSink();
-    emitHookEvent({ kind: 'tool_start', tool: 'Bash', argKeys: ['command'] }, sink, {
-      env: {},
-      raw: { tool_input: { command: 'rm -rf /' } },
-    });
-    expect(events[0]!.payload['arg_values']).toBeUndefined();
-    expect(JSON.stringify(events[0]!.payload)).not.toContain('rm -rf');
+  it('never emits argument values, and the old opt-in does nothing', () => {
+    // AER_HOOK_RECORD_ARGS used to attach arg_values here. Ingest has never
+    // stored that key, so the flag put raw arguments on the wire and recorded
+    // nothing. It is gone; setting it must not resurrect the behaviour.
+    for (const env of [{}, { AER_HOOK_RECORD_ARGS: '1' }]) {
+      const { sink, events } = fakeSink();
+      emitHookEvent({ kind: 'tool_start', tool: 'Bash', argKeys: ['command'] }, sink, { env });
+      expect(events[0]!.payload['arg_values']).toBeUndefined();
+      expect(events[0]!.payload['arg_keys']).toEqual(['command']);
+    }
   });
 
-  it('includes arg_values only when AER_HOOK_RECORD_ARGS=1', () => {
+  it('drops a key ingest would not store rather than sending it', () => {
+    // Defence in depth: the emitter filters, so a future key added without an
+    // allowlist entry never reaches the wire.
     const { sink, events } = fakeSink();
-    emitHookEvent({ kind: 'tool_start', tool: 'Bash', argKeys: ['command'] }, sink, {
-      env: { AER_HOOK_RECORD_ARGS: '1' },
-      raw: { tool_input: { command: 'ls' } },
-    });
-    expect(events[0]!.payload['arg_values']).toEqual({ command: 'ls' });
+    emitHookEvent(
+      { kind: 'tool_start', tool: 'Bash', argKeys: ['command'] } as never,
+      sink,
+      { env: {} },
+    );
+    expect(Object.keys(events[0]!.payload).sort()).toEqual(['arg_keys', 'tool']);
   });
 
   it('never throws when the sink emit throws', () => {

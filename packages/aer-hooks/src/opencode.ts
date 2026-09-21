@@ -4,7 +4,7 @@
 // stdin), opencode loads an in-process JS/TS PLUGIN and calls typed hooks. We map
 // those hooks into the same `HookEvent` shape so opencode reuses the identical
 // bodies-off emit pipeline (emitHookEvent): tool NAMES + argument KEY names only,
-// never values or result content, unless the operator sets AER_HOOK_RECORD_ARGS.
+// never values or result content.
 //
 // Hook shapes are from @opencode-ai/plugin (Hooks) + @opencode-ai/sdk (Event),
 // pinned 2026-07-17:

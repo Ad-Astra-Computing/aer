@@ -15,7 +15,6 @@ export {
   normalizeCodex,
   normalizeAntigravity,
   detectHarness,
-  recordArgsEnabled,
 } from './normalize.js';
 export type { HookEvent, HookKind, Harness } from './normalize.js';
 
