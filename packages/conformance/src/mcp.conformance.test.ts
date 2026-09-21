@@ -36,6 +36,7 @@ beforeAll(async () => {
         }));
         return;
       }
+      res.statusCode = 202;
       res.end(JSON.stringify({ accepted: 1 }));
     });
   });
