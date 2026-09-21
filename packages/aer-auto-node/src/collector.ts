@@ -15,6 +15,7 @@ import {
   type SessionTransport,
 } from './session.js';
 import { installTransportPatches, type InstalledPatches } from './patches/index.js';
+import { countProviderTraffic, deriveCoverage, type AdapterStatus } from './adapters/coverage.js';
 import { installAdapters, patchRemainingCopies, type InstalledAdapters, type AdapterStats, type PolicyOption, type CommitOption } from './adapters/index.js';
 import { commitmentKeyFromString, deriveKid } from './commitment.js';
 import { buildDependencySnapshot } from './dependencies/snapshot.js';
@@ -135,7 +136,10 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       transport,
       eager,
       preamble: () => buildPreamble(config, enabledPatches, enabledAdapters),
-      closingReport: () => buildCollectorReport(config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats),
+      closingReport: () => buildCollectorReport(
+        config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
+        adapterEvidence(config, enabledPatches, enabledAdapters, adapterStats, hostCounts),
+      ),
       onError,
     });
     // Enforcer starts disabled (null) so any LLM call before the policy fetch
@@ -221,7 +225,14 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     return getDefault();
   }
 
+  // Outbound requests per host, so the closing report can say whether the
+  // provider traffic this session made was actually recorded by an adapter.
+  const hostCounts = new Map<string, number>();
   const capture = (e: CollectorEvent): void => {
+    if (e.event_type === 'http.requested') {
+      const host = (e.payload as Record<string, unknown> | undefined)?.['host'];
+      if (typeof host === 'string') hostCounts.set(host, (hostCounts.get(host) ?? 0) + 1);
+    }
     const s = currentSession();
     if (s) s.capture(e);
   };
@@ -368,6 +379,47 @@ function dependencySnapshotEvent(): CollectorEvent {
 // loaded yet.
 const frameworkObserver = startFrameworkObserver();
 
+/**
+ * Per-adapter evidence for the closing report. The point is the `coverage`
+ * verdict: an adapter that claimed to be instrumenting a provider while the
+ * transport watched calls to that provider go unrecorded is reported as
+ * contradicted, rather than left as a bare name in a list.
+ */
+function adapterEvidence(
+  config: AerAutoConfig,
+  enabledPatches: readonly string[],
+  enabledAdapters: readonly string[],
+  adapterStats: AdapterStats | undefined,
+  hostCounts: ReadonlyMap<string, number>,
+): Array<Record<string, unknown>> {
+  const transportWatching = enabledPatches.includes('http')
+    || enabledPatches.includes('https')
+    || enabledPatches.includes('fetch');
+  const traffic = [...hostCounts.entries()].map(([host, n]) => ({
+    event_type: 'http.requested', payload: { host }, n,
+  }));
+  const counts = adapterStats?.snapshot() ?? {};
+
+  const names = new Set<string>([...config.capture.adapters, ...enabledAdapters]);
+  return [...names].sort().map((name) => {
+    const status: AdapterStatus = enabledAdapters.includes(name) ? 'patched' : 'absent';
+    // AdapterStats is keyed by provider; the Vercel provider adapter records
+    // under each provider it wrapped, so sum those for its own row.
+    const callsRecorded = name === 'vercel-provider'
+      ? Object.values(counts).reduce((t, c) => t + c.calls, 0)
+      : (counts[name]?.calls ?? 0);
+    let providerTraffic = 0;
+    for (const t of traffic) providerTraffic += countProviderTraffic([t], name) * t.n;
+    return {
+      name,
+      status,
+      calls_recorded: callsRecorded,
+      provider_requests: providerTraffic,
+      coverage: deriveCoverage({ status, callsRecorded, providerTraffic, transportWatching }),
+    };
+  });
+}
+
 function buildCollectorReport(
   config: AerAutoConfig,
   phase: 'open' | 'final',
@@ -375,6 +427,7 @@ function buildCollectorReport(
   enabledAdapters: readonly string[],
   attestor?: Attestor,
   adapterStats?: AdapterStats,
+  adapters?: Array<Record<string, unknown>>,
 ): CollectorEvent {
   const frameworks = frameworkObserver.observed();
   const providers = adapterStats ? Object.keys(adapterStats.snapshot()).sort() : [];
@@ -397,6 +450,9 @@ function buildCollectorReport(
       // Providers that actually made a call, not merely those installed and
       // patched. enabled_adapters above already says which were patched.
       ...(providers.length > 0 ? { providers } : {}),
+      // Evidence per adapter, on the closing report only: the open report
+      // predates every call, so it can say nothing about coverage.
+      ...(adapters !== undefined ? { adapters } : {}),
       capture_policy: {
         headers: config.capture.headers ? 'on' : 'off',
         bodies: config.capture.bodies ? 'on' : 'off',

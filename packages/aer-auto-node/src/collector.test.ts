@@ -263,3 +263,67 @@ describe('framework and provider evidence on the report', () => {
     for (const claim of ['"frameworks"', '"providers"']) expect(json).not.toContain(claim);
   });
 });
+
+describe('the closing report reconciles what was claimed against what happened', () => {
+  async function finalReport(opts: {
+    enabled: string[];
+    hosts: string[];
+    patches?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const { transport, emitted } = recordingTransport();
+    const collector = createCollector(resolveConfig({ env: {} }), {
+      transport,
+      patchInstaller: opts.patches === false
+        ? false
+        : () => ({ enabled: ['http', 'fetch'], uninstall: () => undefined }),
+      // An adapter that reports itself installed and then never records a
+      // call: exactly the shape of the ESM dual-package bug.
+      adapterInstaller: () => ({ enabled: opts.enabled, uninstall: () => undefined, stats: new AdapterStats() }),
+    });
+    for (const host of opts.hosts) {
+      collector.capture({ event_type: 'http.requested', payload: { host, method: 'POST' } });
+    }
+    await collector.complete();
+    const reports = emitted().filter((e) => e.event_type === 'collector.report');
+    return (reports[reports.length - 1]?.payload ?? {}) as Record<string, unknown>;
+  }
+
+  function row(payload: Record<string, unknown>, name: string): Record<string, unknown> | undefined {
+    const rows = payload['adapters'] as Array<Record<string, unknown>> | undefined;
+    return rows?.find((r) => r['name'] === name);
+  }
+
+  it('reports contradicted when a claimed adapter recorded nothing', async () => {
+    const payload = await finalReport({ enabled: ['openai'], hosts: ['api.openai.com', 'api.openai.com'] });
+    expect(row(payload, 'openai')).toMatchObject({
+      status: 'patched',
+      calls_recorded: 0,
+      provider_requests: 2,
+      coverage: 'contradicted',
+    });
+  });
+
+  it('reports idle when the provider was never called', async () => {
+    const payload = await finalReport({ enabled: ['openai'], hosts: ['example.com'] });
+    expect(row(payload, 'openai')).toMatchObject({ provider_requests: 0, coverage: 'idle' });
+  });
+
+  it('will not judge without the transport patches', async () => {
+    // One unrelated event so the session opens at all.
+    const payload = await finalReport({ enabled: ['openai'], hosts: ['example.com'], patches: false });
+    expect(row(payload, 'openai')).toMatchObject({ coverage: 'unverifiable' });
+  });
+
+  it('does not put the evidence on the opening report', async () => {
+    // The open report predates every call, so it can say nothing about
+    // coverage and must not appear to.
+    const { transport, emitted } = recordingTransport();
+    const collector = createCollector(resolveConfig({ env: {} }), {
+      transport, patchInstaller: false, adapterInstaller: false,
+    });
+    collector.capture({ event_type: 'http.requested', payload: { host: 'x', method: 'GET' } });
+    await collector.session.flush();
+    const open = emitted().find((e) => e.event_type === 'collector.report');
+    expect(open?.payload).not.toHaveProperty('adapters');
+  });
+});
