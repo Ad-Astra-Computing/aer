@@ -20,6 +20,7 @@ import { replacedAdapters, patchRegistryMark } from './adapters/llm-core.js';
 import { installAdapters, patchRemainingCopies, type InstalledAdapters, type AdapterStats, type PolicyOption, type CommitOption } from './adapters/index.js';
 import { commitmentKeyFromString, deriveKid } from './commitment.js';
 import { buildDependencySnapshot } from './dependencies/snapshot.js';
+import { resolveRunId, threadIdentity } from './run-id.js';
 import { createAttestor, type Attestor } from './attestor.js';
 import { PolicyEnforcer } from './policy.js';
 import { fetchUsagePolicy } from './policy-fetch.js';
@@ -484,6 +485,10 @@ function buildCollectorReport(
       phase,
       runtime: 'node',
       node_version: process.versions.node,
+      // A worker thread runs its own collector and signs its own record, so
+      // every record carries what joins it back to the run it came from.
+      run_id: resolveRunId(),
+      ...threadIdentity(),
       session_strategy: config.session.strategy,
       enabled_patches: [...enabledPatches],
       // Adapters actually detected + patched (not just configured).
