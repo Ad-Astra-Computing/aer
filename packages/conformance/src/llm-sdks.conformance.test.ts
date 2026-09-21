@@ -37,6 +37,9 @@ beforeAll(async () => {
         return;
       }
       captured.push(body);
+      // 202 is what the real ingest route answers. A double the client
+      // considers broken makes delivery unreliable and the test flaky.
+      res.statusCode = 202;
       res.end(JSON.stringify({ accepted: 1 }));
     });
   });
