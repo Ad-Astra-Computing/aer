@@ -3,7 +3,7 @@
 // Never reads prompts, message content text, or tool inputs.
 
 import { wrapCreate, patchMethod, type ProviderConfig, type PolicyOptionSource, type CommitOption } from './llm-core.js';
-import { loadModule, type AdapterDeps, type AdapterInstall, type ProtoTarget } from './resolve.js';
+import { loadAppModule, type AdapterDeps, type AdapterInstall, type ProtoTarget } from './resolve.js';
 import type { AdapterStats } from './stats.js';
 import type { CollectorEvent } from '../session.js';
 
@@ -127,15 +127,22 @@ export function installAnthropicAdapter(capture: Capture, deps: AdapterDeps = {}
   return { enabled: true, uninstall };
 }
 
-function defaultResolveProto(): ProtoTarget | null {
+export const ANTHROPIC_PACKAGE = '@anthropic-ai/sdk';
+
+/** The prototype carrying `create` inside one copy of the package. */
+export function anthropicProtoOf(mod: unknown): ProtoTarget | null {
   try {
-    const mod = loadModule('@anthropic-ai/sdk') as Record<string, unknown> | null;
     if (!mod) return null;
+    const m = mod as Record<string, unknown>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Anthropic = (mod['default'] ?? mod['Anthropic'] ?? mod) as any;
+    const Anthropic = (m['default'] ?? m['Anthropic'] ?? m) as any;
     const proto = Anthropic?.Messages?.prototype;
     return proto && typeof proto.create === 'function' ? (proto as ProtoTarget) : null;
   } catch {
     return null;
   }
+}
+
+function defaultResolveProto(): ProtoTarget | null {
+  return anthropicProtoOf(loadAppModule(ANTHROPIC_PACKAGE));
 }

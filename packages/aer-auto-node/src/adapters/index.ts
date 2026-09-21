@@ -6,9 +6,11 @@ import type { CollectorEvent } from '../session.js';
 import type { AdapterDeps, AdapterInstall } from './resolve.js';
 import type { PolicyOptionSource, CommitOption } from './llm-core.js';
 import { AdapterStats } from './stats.js';
-import { installOpenAIAdapter } from './openai.js';
-import { installAnthropicAdapter } from './anthropic.js';
+import { installOpenAIAdapter, openaiConfig, OPENAI_PACKAGE, openaiProtoOf } from './openai.js';
+import { installAnthropicAdapter, anthropicConfig, ANTHROPIC_PACKAGE, anthropicProtoOf } from './anthropic.js';
 import { installVercelAdapter } from './vercel.js';
+import { loadModuleCopies, type ProtoTarget } from './resolve.js';
+import { patchMethod, wrapCreate, type ProviderConfig } from './llm-core.js';
 
 type Capture = (event: CollectorEvent) => void;
 
@@ -29,6 +31,56 @@ export interface InstalledAdapters {
    * installAdapters always does.
    */
   stats?: AdapterStats;
+}
+
+// A dual-published package has two physical copies with two different class
+// objects. The sync pass above patches the one `require` finds; this reaches
+// the one an ESM app imports, which is the one most agents actually use.
+const COPY_TARGETS: Record<string, { pkg: string; protoOf: (mod: unknown) => ProtoTarget | null; config: () => ProviderConfig; symbol: string }> = {
+  openai: { pkg: OPENAI_PACKAGE, protoOf: openaiProtoOf, config: () => openaiConfig, symbol: 'openai' },
+  anthropic: { pkg: ANTHROPIC_PACKAGE, protoOf: anthropicProtoOf, config: () => anthropicConfig, symbol: 'anthropic' },
+};
+
+/**
+ * Patch every copy of each adapter's package that the app could be using.
+ * Awaited by the register entry point before the app loads, so there is no
+ * window in which a call can miss the wrapper.
+ */
+export async function patchRemainingCopies(
+  capture: Capture,
+  adapterNames: string[],
+  stats: AdapterStats,
+  policy?: PolicyOptionSource,
+  commit?: CommitOption,
+): Promise<{ enabled: string[]; uninstall: () => void }> {
+  const enabled: string[] = [];
+  const uninstalls: Array<() => void> = [];
+
+  for (const name of adapterNames) {
+    const target = COPY_TARGETS[name];
+    if (!target) continue;
+    try {
+      for (const mod of await loadModuleCopies(target.pkg)) {
+        const proto = target.protoOf(mod);
+        if (!proto) continue;
+        // Already patched in the sync pass is a no-op: the guard is keyed on
+        // the target object, and the two copies are different objects.
+        const uninstall = patchMethod(
+          proto, 'create',
+          (orig) => wrapCreate(orig, target.config(), capture, stats, policy, commit),
+          target.symbol,
+        );
+        if (uninstall) {
+          uninstalls.push(uninstall);
+          if (!enabled.includes(name)) enabled.push(name);
+        }
+      }
+    } catch {
+      // Not instrumentable. Never a reason to fail the host.
+    }
+  }
+
+  return { enabled, uninstall: () => { for (const u of uninstalls) { try { u(); } catch { /* best-effort */ } } } };
 }
 
 export function installAdapters(

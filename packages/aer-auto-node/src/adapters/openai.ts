@@ -3,7 +3,7 @@
 // Never reads prompts, message text, or tool-call arguments.
 
 import { wrapCreate, patchMethod, type ProviderConfig, type PolicyOptionSource, type CommitOption } from './llm-core.js';
-import { loadModule, type AdapterDeps, type AdapterInstall, type ProtoTarget } from './resolve.js';
+import { loadAppModule, type AdapterDeps, type AdapterInstall, type ProtoTarget } from './resolve.js';
 import type { AdapterStats } from './stats.js';
 import type { CollectorEvent } from '../session.js';
 
@@ -154,15 +154,22 @@ export function installOpenAIAdapter(capture: Capture, deps: AdapterDeps = {}, s
   return { enabled: true, uninstall };
 }
 
-function defaultResolveProto(): ProtoTarget | null {
+export const OPENAI_PACKAGE = 'openai';
+
+/** The prototype carrying `create` inside one copy of the package. */
+export function openaiProtoOf(mod: unknown): ProtoTarget | null {
   try {
-    const mod = loadModule('openai') as Record<string, unknown> | null;
     if (!mod) return null;
+    const m = mod as Record<string, unknown>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const OpenAI = (mod['default'] ?? mod['OpenAI'] ?? mod) as any;
+    const OpenAI = (m['default'] ?? m['OpenAI'] ?? m) as any;
     const proto = OpenAI?.Chat?.Completions?.prototype ?? OpenAI?.Completions?.prototype;
     return proto && typeof proto.create === 'function' ? (proto as ProtoTarget) : null;
   } catch {
     return null;
   }
+}
+
+function defaultResolveProto(): ProtoTarget | null {
+  return openaiProtoOf(loadAppModule(OPENAI_PACKAGE));
 }
