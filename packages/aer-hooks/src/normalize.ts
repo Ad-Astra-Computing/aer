@@ -22,9 +22,11 @@
 //     Stop: { executionNum, terminationReason, fullyIdle, error?, conversationId, ... }
 //     No hook_event_name field, so the event arrives on argv instead.
 //
-// REDACTION BY DEFAULT: we only ever surface tool names and argument KEY names
-// (Object.keys of tool_input/arguments), never argument values, unless
-// AER_HOOK_RECORD_ARGS=1.
+// REDACTION ALWAYS: we surface tool names and argument KEY names
+// (Object.keys of tool_input/arguments) and never argument values. There is no
+// opt-in. The ingest allowlist has never stored an argument-value key, so the
+// old AER_HOOK_RECORD_ARGS flag put raw arguments on the wire and recorded
+// nothing; see shared/ingest-allowlist.ts.
 
 export type HookKind =
   | 'session_start'
@@ -53,11 +55,6 @@ export function asRecord(v: unknown): Record<string, unknown> | undefined {
 
 export function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
-}
-
-/** Whether argument values may be recorded. Off unless AER_HOOK_RECORD_ARGS=1. */
-export function recordArgsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env['AER_HOOK_RECORD_ARGS'] === '1';
 }
 
 /** Redaction-safe: the sorted key names of a tool-input/arguments object, never values. */
@@ -101,10 +98,7 @@ export function responseIsError(resp: unknown): boolean | undefined {
  * Map a Claude Code hook payload to a HookEvent. Reads the common fields
  * defensively so an unexpected or partial payload still yields a usable event.
  */
-export function normalizeClaudeCode(
-  payload: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): HookEvent {
+export function normalizeClaudeCode(payload: unknown): HookEvent {
   const p = asRecord(payload) ?? {};
   const eventName = asString(p['hook_event_name']) ?? '';
   const kind = kindFromEventName(eventName);
@@ -116,9 +110,7 @@ export function normalizeClaudeCode(
   if (kind === 'tool_start' || kind === 'tool_end') {
     const tool = asString(p['tool_name']);
     if (tool !== undefined) event.tool = tool;
-    const argKeys = recordArgsEnabled(env)
-      ? keysOfWithValues(p['tool_input'])
-      : keysOf(p['tool_input']);
+    const argKeys = keysOf(p['tool_input']);
     if (argKeys !== undefined) event.argKeys = argKeys;
   }
 
@@ -142,7 +134,7 @@ export function normalizeClaudeCode(
  * names as Claude Code for tool events, so this shares the mapping logic; it is a
  * distinct entry point so harness-specific fields can diverge without churn.
  */
-export function normalizeCodex(payload: unknown, env: NodeJS.ProcessEnv = process.env): HookEvent {
+export function normalizeCodex(payload: unknown): HookEvent {
   const p = asRecord(payload) ?? {};
   // Codex additionally may carry tool args under `arguments` for some tools; prefer
   // tool_input and fall back to arguments.
@@ -157,7 +149,7 @@ export function normalizeCodex(payload: unknown, env: NodeJS.ProcessEnv = proces
     const tool = asString(p['tool_name']);
     if (tool !== undefined) event.tool = tool;
     const argsSource = p['tool_input'] !== undefined ? p['tool_input'] : p['arguments'];
-    const argKeys = recordArgsEnabled(env) ? keysOfWithValues(argsSource) : keysOf(argsSource);
+    const argKeys = keysOf(argsSource);
     if (argKeys !== undefined) event.argKeys = argKeys;
   }
 
@@ -175,14 +167,6 @@ export function normalizeCodex(payload: unknown, env: NodeJS.ProcessEnv = proces
   return event;
 }
 
-// When AER_HOOK_RECORD_ARGS=1 the operator has opted in to values. We still return
-// only the key list from `keysOf` here for argKeys; opt-in value capture is applied
-// downstream in core.ts, which reads the raw payload. keysOfWithValues keeps the
-// same key surface so argKeys is stable regardless of the opt-in flag.
-function keysOfWithValues(v: unknown): string[] | undefined {
-  return keysOf(v);
-}
-
 /**
  * Map an Antigravity hook payload to a HookEvent.
  *
@@ -191,11 +175,7 @@ function keysOfWithValues(v: unknown): string[] | undefined {
  * Fields are camelCase and the tool call is nested, so none of the Claude Code
  * mapping is reusable.
  */
-export function normalizeAntigravity(
-  payload: unknown,
-  eventName: string,
-  env: NodeJS.ProcessEnv = process.env,
-): HookEvent {
+export function normalizeAntigravity(payload: unknown, eventName: string): HookEvent {
   const p = asRecord(payload) ?? {};
   const kind = antigravityKind(eventName, p);
   const event: HookEvent = { kind };
@@ -209,7 +189,7 @@ export function normalizeAntigravity(
     const call = asRecord(p['toolCall']) ?? {};
     const tool = asString(call['name']);
     if (tool !== undefined) event.tool = tool;
-    const argKeys = recordArgsEnabled(env) ? keysOfWithValues(call['args']) : keysOf(call['args']);
+    const argKeys = keysOf(call['args']);
     if (argKeys !== undefined) event.argKeys = argKeys;
   }
 
@@ -270,13 +250,8 @@ export function detectHarness(payload: unknown): Harness {
 }
 
 /** Normalize with an explicit or auto-detected harness. */
-export function normalize(
-  payload: unknown,
-  harness?: Harness,
-  env: NodeJS.ProcessEnv = process.env,
-  eventName?: string,
-): HookEvent {
+export function normalize(payload: unknown, harness?: Harness, eventName?: string): HookEvent {
   const h = harness ?? detectHarness(payload);
-  if (h === 'antigravity') return normalizeAntigravity(payload, eventName ?? '', env);
-  return h === 'codex' ? normalizeCodex(payload, env) : normalizeClaudeCode(payload, env);
+  if (h === 'antigravity') return normalizeAntigravity(payload, eventName ?? '');
+  return h === 'codex' ? normalizeCodex(payload) : normalizeClaudeCode(payload);
 }

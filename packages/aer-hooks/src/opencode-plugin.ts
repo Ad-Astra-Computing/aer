@@ -110,9 +110,7 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
     'tool.execute.before': async (input, output) => {
       try {
         const ev = normalizeOpencodeToolBefore(input, output);
-        // raw enables opt-in arg-VALUE capture under AER_HOOK_RECORD_ARGS, exactly
-        // as the shell-hook path does (core.ts reads raw.tool_input).
-        emitHookEvent(ev, ensure(ev.sessionRef), { raw: { tool_input: output?.args }, ...envOpt });
+        emitHookEvent(ev, ensure(ev.sessionRef), { ...envOpt });
       } catch { /* fail open */ }
     },
     'tool.execute.after': async (input, output) => {

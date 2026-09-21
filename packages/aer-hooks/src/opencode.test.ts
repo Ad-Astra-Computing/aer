@@ -3,7 +3,7 @@
  * shared HookEvent shape, so opencode reuses the same bodies-off emit pipeline
  * (emitHookEvent) as the Claude Code / Codex shell hooks. Locks the redaction
  * contract: tool NAMES + argument KEY names only (never values), unless the
- * operator opts in with AER_HOOK_RECORD_ARGS.
+ * values never leave the machine.
  */
 import { describe, it, expect } from 'vitest';
 import {

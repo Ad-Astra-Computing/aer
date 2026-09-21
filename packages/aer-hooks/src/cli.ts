@@ -102,8 +102,8 @@ export interface RunHookDeps {
 }
 
 /** Build the sink for one already-decided branch, emit the event, and close it. */
-async function emitThrough(event: HookEvent, sink: EventSink, raw: unknown, env: NodeJS.ProcessEnv): Promise<void> {
-  emitHookEvent(event, sink, { raw, env });
+async function emitThrough(event: HookEvent, sink: EventSink, env: NodeJS.ProcessEnv): Promise<void> {
+  emitHookEvent(event, sink, { env });
   await sink.close();
 }
 
@@ -126,14 +126,13 @@ async function emitThrough(event: HookEvent, sink: EventSink, raw: unknown, env:
 async function orchestrateAndEmit(
   event: HookEvent,
   base: HttpSinkOptions,
-  raw: unknown,
   env: NodeJS.ProcessEnv,
   now: number,
 ): Promise<void> {
   const ref = event.sessionRef;
   if (!ref) {
     // No correlation id: single-shot session (open + emit + complete on close).
-    return emitThrough(event, createHttpSink(base), raw, env);
+    return emitThrough(event, createHttpSink(base), env);
   }
 
   const lock = await acquireSessionLock(ref, env);
@@ -141,7 +140,7 @@ async function orchestrateAndEmit(
     // Could not converge with a concurrent hook for this harness session in
     // time (or the store is unwritable): degrade to single-shot rather than
     // risk reading a half-written entry or waiting indefinitely.
-    return emitThrough(event, createHttpSink(base), raw, env);
+    return emitThrough(event, createHttpSink(base), env);
   }
 
   try {
@@ -152,14 +151,14 @@ async function orchestrateAndEmit(
         ? createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: true })
         : createHttpSink(base); // never saw a start; single-shot
       if (stored) deleteSession(ref, env);
-      await emitThrough(event, sink, raw, env);
+      await emitThrough(event, sink, env);
       return;
     }
 
     if (stored) {
       // Attach to the running AER session; do not complete it here.
       const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
-      await emitThrough(event, sink, raw, env);
+      await emitThrough(event, sink, env);
       return;
     }
 
@@ -171,7 +170,7 @@ async function orchestrateAndEmit(
       saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now }, env);
     };
     const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
-    await emitThrough(event, sink, raw, env);
+    await emitThrough(event, sink, env);
   } finally {
     lock.release();
   }
@@ -207,8 +206,8 @@ export async function runHook(
       return;
     }
     const now = (deps.now ?? Date.now)();
-    const event = normalize(payload, harness, env, parseEventFlag(argv));
-    await orchestrateAndEmit(event, base, payload, env, now);
+    const event = normalize(payload, harness, parseEventFlag(argv));
+    await orchestrateAndEmit(event, base, env, now);
   } catch {
     /* fail open: never surface an error to the harness */
   }
