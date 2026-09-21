@@ -37,6 +37,9 @@ beforeAll(async () => {
         return;
       }
       captured.push(body);
+      // The sink completes the session last, so seeing /complete is the only
+      // reliable signal that everything it meant to send has arrived.
+      if (/\/complete$/.test(req.url ?? '')) completed = true;
       // 202 is what the real ingest route answers. A double the client
       // considers broken makes delivery unreliable and the test flaky.
       res.statusCode = 202;
@@ -52,11 +55,26 @@ afterAll(async () => {
 });
 
 const captured: string[] = [];
+let completed = false;
+
+/**
+ * The child exiting does not mean the server has finished receiving what the
+ * child sent: the last batch can still be in flight, which read as one
+ * llm.completed instead of two. Wait for the terminal request instead of
+ * assuming the exit implies it.
+ */
+async function waitForDelivery(deadlineMs = 5000): Promise<void> {
+  const until = Date.now() + deadlineMs;
+  while (!completed && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
 
 interface Ev { event_type: string; payload: Record<string, unknown> }
 
 async function runAgent(app = 'llm-app.mjs'): Promise<{ adapters: string[]; events: Ev[]; raw: string }> {
   captured.length = 0;
+  completed = false;
   const child = spawn(process.execPath, ['--import', register, join(fixtures, app)], {
     cwd: fixtures,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -75,6 +93,7 @@ async function runAgent(app = 'llm-app.mjs'): Promise<{ adapters: string[]; even
   child.stderr.on('data', (d) => (stderr += String(d)));
   const code = await new Promise<number>((r) => child.on('exit', (c) => r(c ?? -1)));
   if (code !== 0) throw new Error(`agent exited ${code}: ${stderr}`);
+  await waitForDelivery();
 
   const line = stdout.split('\n').find((l) => l.startsWith('ADAPTERS:'));
   const raw = captured.join('\n');
