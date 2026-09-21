@@ -173,6 +173,35 @@ function antigravityGroup(): Record<string, unknown> {
   return group;
 }
 
+/**
+ * A warning when AER is wired in more than one config layer, or nothing.
+ *
+ * Every matching layer loads: a project config does not replace the home one,
+ * it runs alongside it. Two registrations mean every event is recorded twice
+ * and the run is split across records, and nothing in either config says so.
+ */
+export async function duplicateLayerWarning(
+  harness: Harness,
+  base: string,
+  projectDir: string | undefined,
+): Promise<string | undefined> {
+  if (projectDir === undefined || projectDir.length === 0) return undefined;
+  const project = path.resolve(projectDir);
+  if (project === path.resolve(base)) return undefined;
+
+  const wiredIn = async (dir: string): Promise<boolean> => {
+    const entry = (await status({ dir })).find((e) => e.harness === harness);
+    return (entry?.wiredEvents.length ?? 0) > 0;
+  };
+  if (!(await wiredIn(base)) || !(await wiredIn(project))) return undefined;
+
+  return [
+    `  AER is also wired for ${harness} in ${configPathFor(harness, project)}.`,
+    '  Both layers load, so every event would be recorded twice and the run',
+    '  split across records. Uninstall one of them.',
+  ].join('\n');
+}
+
 /** Resolve the config file path for a harness under `base` (home or --dir). */
 export function configPathFor(harness: Harness, base: string): string {
   if (harness === 'claude-code') return path.join(base, '.claude', 'settings.json');

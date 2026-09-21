@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { install, configPathFor } from './install.js';
+import { install, configPathFor, duplicateLayerWarning } from './install.js';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'aer-install-')); });
@@ -126,5 +126,33 @@ describe('upgrading an install that predates the lifecycle change', () => {
     expect(r.upgraded).toEqual([]);
     expect(r.backupPath).toBeNull();
     expect(readFileSync(configPathFor('claude-code', dir), 'utf8')).toBe(before);
+  });
+});
+
+describe('AER wired in more than one config layer', () => {
+  it('warns, because every matching layer loads and each one records', async () => {
+    // Found by running the real CLI with a project config and a home config
+    // both wired: every event arrived twice and the run produced two records.
+    const project = mkdtempSync(join(tmpdir(), 'aer-proj-'));
+    try {
+      await install('claude-code', { dir: project });
+      await install('claude-code', { dir });
+      const warning = await duplicateLayerWarning('claude-code', dir, project);
+      expect(warning).toContain('twice');
+      expect(warning).toContain(project);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  it('says nothing when only one layer is wired', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'aer-proj-'));
+    try {
+      await install('claude-code', { dir });
+      expect(await duplicateLayerWarning('claude-code', dir, project)).toBeUndefined();
+      expect(await duplicateLayerWarning('claude-code', dir, undefined)).toBeUndefined();
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 });

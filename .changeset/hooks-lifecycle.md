@@ -18,6 +18,10 @@ which is the reduction the transcript importer already did. Metadata values
 must be identifier-shaped or they are dropped, so a harness putting a sentence
 in a `reason` field cannot put it in a record.
 
+`aer-hooks install` warns when AER is already wired in another config layer:
+every matching layer loads, so two registrations record every event twice and
+split the run across records.
+
 The session markers now declare what the collector was registered for and how
 much of it arrived, so a reader can tell a quiet session from a broken one.
 

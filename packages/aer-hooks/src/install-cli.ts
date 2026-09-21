@@ -8,7 +8,8 @@
 // Unlike the per-event `aer-hook` binary, this is an interactive operator command:
 // it prints to stdout and exits non-zero on a usage error or an aborted write.
 
-import { install, uninstall, status, type Harness } from './install.js';
+import { install, uninstall, status, duplicateLayerWarning, type Harness } from './install.js';
+import { homedir } from 'node:os';
 import { isInvokedDirectly } from './invoked-directly.js';
 
 interface Parsed {
@@ -86,6 +87,8 @@ export async function run(
         out(`AER hooks already present for ${harness} in ${r.path}; nothing to do.`);
       }
       if (harness === 'codex') out(CODEX_TRUST_NOTE);
+      const duplicate = await duplicateLayerWarning(harness, dir ?? homedir(), process.cwd());
+      if (duplicate !== undefined) out(duplicate);
       return 0;
     }
 
