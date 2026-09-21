@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { run } from './install-cli.js';
 
 // The installer's exit codes are a contract: a shell script, a CI smoke step
@@ -44,5 +47,47 @@ describe('aer-hooks exit codes', () => {
     const c = capture();
     const code = await run(['install', 'emacs'], c.out, c.err);
     expect(code).toBe(2);
+  });
+});
+
+// Codex skips a hook it has not been told to trust, and says nothing when it
+// does. An installer that prints "wired" and stops sends the user away
+// believing they are recording when they are not.
+describe('Codex hook trust', () => {
+  it('tells the user to trust the hook after installing it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aer-hookcfg-'));
+    try {
+      const lines: string[] = [];
+      const code = await run(['install', 'codex', '--dir', dir], (s) => lines.push(s));
+      expect(code).toBe(0);
+      const out = lines.join('\n');
+      expect(out).toContain('/hooks');
+      expect(out.toLowerCase()).toContain('trust');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('says nothing about trust for the harnesses that do not require it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aer-hookcfg-'));
+    try {
+      const lines: string[] = [];
+      await run(['install', 'claude-code', '--dir', dir], (s) => lines.push(s));
+      expect(lines.join('\n').toLowerCase()).not.toContain('trust');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('repeats it in status, where a user checks why nothing is recorded', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aer-hookcfg-'));
+    try {
+      await run(['install', 'codex', '--dir', dir], () => {});
+      const lines: string[] = [];
+      await run(['status', '--dir', dir], (s) => lines.push(s));
+      expect(lines.join('\n')).toContain('/hooks');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

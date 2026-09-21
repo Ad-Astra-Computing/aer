@@ -2,8 +2,9 @@
 
 Record what a coding harness does, using the harness's own hooks. Claude Code and
 OpenAI Codex CLI both fire shell hooks that pass a JSON event on stdin
-(SessionStart, PreToolUse, PostToolUse, Stop, UserPromptSubmit). One binary
-normalizes both harnesses' payloads and emits the tool events into AER.
+(SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd and
+the subagent boundaries). One binary normalizes both harnesses' payloads,
+along with Antigravity's, and emits the tool events into AER.
 
 ESM only: use `import`, not `require`. Requires Node 20 or newer.
 
@@ -24,8 +25,13 @@ aer-hooks install claude-code
 aer-hooks install codex
 ```
 
-That writes `aer-hook --harness <name>` into the harness config for PreToolUse,
-PostToolUse, SessionStart and Stop. If `aer-hook` is not on `PATH` at install
+That writes `aer-hook --harness <name> --lifecycle v2` into the harness config
+for the whole run lifecycle: SessionStart, UserPromptSubmit, PreToolUse,
+PostToolUse, Stop, SubagentStart, SubagentStop and SessionEnd. `Stop` fires
+once per assistant turn, so the record is completed at `SessionEnd` and a
+multi-turn conversation stays one record. On Claude Code the SessionEnd entry
+carries its own `timeout`, because that harness shares 1.5 seconds across
+every SessionEnd hook and completing a record takes longer than that. If `aer-hook` is not on `PATH` at install
 time, the installer writes the absolute path of the copy it is running from and
 says so, which keeps recording working but ties the config to that install
 location. `npx @adastracomputing/aer-hooks install ...` works the same way, and
@@ -42,6 +48,15 @@ Remove AER's entries (and only AER's) with:
 ```
 npx @adastracomputing/aer-hooks uninstall claude-code
 ```
+
+### Codex will not run the hook until you trust it
+
+Codex skips any hook it has not been told to trust, and skips it silently, so
+a Codex install that looks finished records nothing. After installing, run
+`/hooks` inside Codex and approve the AER entry. Trust is recorded against the
+command itself, so upgrading AER can change the command and need approving
+again. A project-local `.codex` layer also has to be a trusted project before
+its hooks load at all.
 
 Configure AER with the standard environment: `AER_API_KEY`, `AER_TENANT_ID`,
 `AER_AGENT_ID` (and optionally `AER_ENV_ID`, `AER_BASE_URL`, `AER_AGENT_VERSION`,
