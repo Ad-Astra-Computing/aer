@@ -79,6 +79,25 @@ describe('Claude Code metadata', () => {
     expect(e.meta?.['reason']).toBe('clear');
   });
 
+  // Nothing documents this field on any harness today, so we record it only
+  // where one actually sends it. It is what attributes a subagent's work back
+  // to the call that spawned it.
+  it('carries a parent tool id through when the harness sends one', () => {
+    const e = normalizeClaudeCode({
+      hook_event_name: 'PreToolUse', session_id: 's1', tool_name: 'Read',
+      tool_input: {}, tool_use_id: 'toolu_child', parent_tool_use_id: 'toolu_parent',
+    }, 2);
+    expect(e.meta?.['parent_tool_use_id']).toBe('toolu_parent');
+  });
+
+  it('omits the parent tool id when the harness does not send one', () => {
+    const e = normalizeClaudeCode({
+      hook_event_name: 'PreToolUse', session_id: 's1', tool_name: 'Read',
+      tool_input: {}, tool_use_id: 'toolu_child',
+    }, 2);
+    expect(e.meta).not.toHaveProperty('parent_tool_use_id');
+  });
+
   it('pairs a tool start with its completion through tool_use_id', () => {
     const start = normalizeClaudeCode({
       hook_event_name: 'PreToolUse', session_id: 's1', tool_name: 'Bash',

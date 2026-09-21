@@ -20,7 +20,7 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'count', 'tools', 'recorder', 'server', 'tools_seen', 'calls', 'errors', 'error_code',
   'session_ref', 'frameworks', 'providers', 'adapters', 'calls_recorded', 'provider_requests',
   'coverage', 'harness', 'permission_mode', 'effort', 'repo_head', 'seq', 'turn_id',
-  'tool_use_id', 'agent_type', 'events_registered', 'events_emitted', 'tools_unresolved',
+  'tool_use_id', 'parent_tool_use_id', 'agent_type', 'events_registered', 'events_emitted', 'tools_unresolved',
   'run_id', 'thread_id', 'main_thread'
 ]);
 

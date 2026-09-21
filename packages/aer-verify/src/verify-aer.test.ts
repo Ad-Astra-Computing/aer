@@ -388,3 +388,53 @@ describe('verifyAerBundle: offline anchor (phase 3)', () => {
     expect(res.ok).toBe(false);
   });
 });
+
+// An offline verifier that had to be re-released every time the bundle grew a
+// field would be worthless: the copy already on someone's disk is the one that
+// has to keep working. verifyAerBundle is deliberately structure-agnostic, and
+// these hold that line against a future field.
+describe('verifyAerBundle is agnostic to bundle-schema additions', () => {
+  const GRAPH_BODY = {
+    ...BODY,
+    execution_graph: {
+      nodes: [
+        {
+          id: 'n1',
+          type: 'tool.started',
+          timestamp: '2026-09-21T00:00:00.000Z',
+          payload_digest: 'a'.repeat(64),
+          attrs: { seq: 1, turn_id: 't1', tool_use_id: 'tu_1', main_thread: true },
+        },
+        {
+          id: 'n2',
+          type: 'llm.requested',
+          timestamp: '2026-09-21T00:00:01.000Z',
+          payload_digest: 'b'.repeat(64),
+          attrs: { seq: 2, agent_type: 'Explore', thread_id: 'th_2' },
+        },
+      ],
+      edges: [{ from: 'n1', to: 'n2', kind: 'spawned' }],
+    },
+  };
+
+  it('verifies a bundle carrying node attrs and a spawned edge', async () => {
+    const signer = createInMemorySigner();
+    const bundle = await signBundle(signer, GRAPH_BODY);
+    const res = await verifyAerBundle(bundle, { publicKeyHex: bytesToHex(signer.publicKey()) });
+
+    expect(res.ok).toBe(true);
+    expect(res.checks.hash_match).toBe(true);
+    expect(res.checks.signature_valid).toBe(true);
+  });
+
+  it('still catches a tampered attribute, so agnostic is not the same as blind', async () => {
+    const signer = createInMemorySigner();
+    const bundle = await signBundle(signer, GRAPH_BODY);
+    const graph = bundle['execution_graph'] as { nodes: { attrs: { turn_id?: string } }[] };
+    graph.nodes[0]!.attrs.turn_id = 't9';
+
+    const res = await verifyAerBundle(bundle, { publicKeyHex: bytesToHex(signer.publicKey()) });
+    expect(res.ok).toBe(false);
+    expect(res.checks.hash_match).toBe(false);
+  });
+});
