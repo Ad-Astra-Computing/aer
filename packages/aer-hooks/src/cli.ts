@@ -128,7 +128,7 @@ async function openingEvidence(event: HookEvent): Promise<void> {
   meta['version'] = HOOKS_VERSION;
   const harness = meta['harness'];
   if (harness === 'claude-code' || harness === 'codex' || harness === 'antigravity') {
-    const registered = await registeredEvents(harness);
+    const registered = await registeredEvents(harness, undefined, event.cwd);
     if (registered.length > 0) meta['events_registered'] = registered;
   }
   const head = repoHead(event.cwd);

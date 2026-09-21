@@ -4,9 +4,9 @@
 // code, and a run records nothing without either.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { install, configPathFor } from './install.js';
 
 let dir: string;
@@ -73,5 +73,57 @@ describe('antigravity registration', () => {
     for (const ev of ['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop']) {
       expect(aerEntries(group[ev]), `${ev} not registered`).toHaveLength(1);
     }
+  });
+});
+
+describe('upgrading an install that predates the lifecycle change', () => {
+  it('rewrites our own entry instead of leaving the old command in place', async () => {
+    // Idempotence was keyed on "an AER entry exists", so an upgraded user
+    // kept the command an older release wrote and never moved to the new
+    // lifecycle. Their records would keep splitting at every turn.
+    const file = configPathFor('claude-code', dir);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'somebody-elses-hook.sh' }] },
+          { matcher: '*', hooks: [{ type: 'command', command: 'aer-hook --harness claude-code' }] },
+        ],
+        Stop: [{ matcher: '*', hooks: [{ type: 'command', command: 'aer-hook --harness claude-code' }] }],
+      },
+    }));
+
+    const r = await install('claude-code', { dir });
+    expect(r.upgraded).toContain('PreToolUse');
+    expect(r.upgraded).toContain('Stop');
+
+    const hooks = hooksOf('claude-code');
+    for (const c of aerEntries(hooks['PreToolUse']).map((h) => h.command)) {
+      expect(c).toContain('--lifecycle v2');
+    }
+    // Somebody else's hook is untouched, and not duplicated.
+    const others = (hooks['PreToolUse'] ?? []).flatMap((g) => g.hooks).filter((h) => h.command.includes('somebody-elses'));
+    expect(others).toHaveLength(1);
+  });
+
+  it('adds the timeout an older entry was missing', async () => {
+    const file = configPathFor('claude-code', dir);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({
+      hooks: { SessionEnd: [{ matcher: '*', hooks: [{ type: 'command', command: 'aer-hook --harness claude-code' }] }] },
+    }));
+    await install('claude-code', { dir });
+    const [entry] = aerEntries(hooksOf('claude-code')['SessionEnd']);
+    expect(entry?.timeout).toBeGreaterThanOrEqual(10);
+  });
+
+  it('still changes nothing when the entry is already current', async () => {
+    await install('claude-code', { dir });
+    const before = readFileSync(configPathFor('claude-code', dir), 'utf8');
+    const r = await install('claude-code', { dir });
+    expect(r.added).toEqual([]);
+    expect(r.upgraded).toEqual([]);
+    expect(r.backupPath).toBeNull();
+    expect(readFileSync(configPathFor('claude-code', dir), 'utf8')).toBe(before);
   });
 });

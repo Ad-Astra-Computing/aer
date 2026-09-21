@@ -77,9 +77,10 @@ export async function run(
         return 2;
       }
       const r = await install(harness, opts);
-      if (r.added.length > 0) {
+      if (r.added.length > 0 || r.upgraded.length > 0) {
         out(`Wired AER hooks for ${harness} into ${r.path}`);
-        out(`  added: ${r.added.join(', ')}`);
+        if (r.added.length > 0) out(`  added: ${r.added.join(', ')}`);
+        if (r.upgraded.length > 0) out(`  brought up to date: ${r.upgraded.join(', ')}`);
         if (r.backupPath) out(`  backup: ${r.backupPath}`);
       } else {
         out(`AER hooks already present for ${harness} in ${r.path}; nothing to do.`);

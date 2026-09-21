@@ -217,17 +217,39 @@ function groupHasAer(group: HookMatcherGroup): boolean {
   return Array.isArray(group.hooks) && group.hooks.some(isAerEntry);
 }
 
-/** Merge AER's command into one event array without clobbering existing entries. */
-function mergeEvent(existing: unknown, command: string, timeout?: number): { groups: HookMatcherGroup[]; added: boolean } {
+/**
+ * Add our entry, or bring an existing one up to date.
+ *
+ * Idempotence used to mean "an AER entry exists, leave it alone", which left
+ * every upgraded user running the command an older release wrote. Our own
+ * entries are rewritten; everybody else's are never touched.
+ */
+function mergeEvent(
+  existing: unknown,
+  command: string,
+  timeout?: number,
+): { groups: HookMatcherGroup[]; added: boolean; upgraded: boolean } {
   const groups: HookMatcherGroup[] = Array.isArray(existing)
-    ? (existing as HookMatcherGroup[]).map((g) => ({ ...g }))
+    ? (existing as HookMatcherGroup[]).map((g) => ({ ...g, hooks: [...(g.hooks ?? [])] }))
     : [];
-  // Idempotent: if any group already carries an AER entry, do nothing.
-  if (groups.some(groupHasAer)) return { groups, added: false };
+
+  let upgraded = false;
+  for (const group of groups) {
+    group.hooks = group.hooks.map((h) => {
+      if (!isAerEntry(h)) return h;
+      const want: HookCommandEntry = { type: 'command', command };
+      if (timeout !== undefined) want.timeout = timeout;
+      if (h.command === want.command && h.timeout === want.timeout) return h;
+      upgraded = true;
+      return want;
+    });
+  }
+  if (groups.some(groupHasAer)) return { groups, added: false, upgraded };
+
   const entry: HookCommandEntry = { type: 'command', command };
   if (timeout !== undefined) entry.timeout = timeout;
   groups.push({ matcher: '*', hooks: [entry] });
-  return { groups, added: true };
+  return { groups, added: true, upgraded: false };
 }
 
 export interface InstallResult {
@@ -236,6 +258,8 @@ export interface InstallResult {
   backupPath: string | null;
   added: string[];
   alreadyPresent: string[];
+  /** Events whose existing AER entry was brought up to date. */
+  upgraded: string[];
 }
 
 /** Wire AER hooks into the harness config. Conservative read-modify-write. */
@@ -254,23 +278,25 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
   const events = harness === 'claude-code' ? CLAUDE_EVENTS : CODEX_EVENTS;
   const added: string[] = [];
   const alreadyPresent: string[] = [];
+  const upgraded: string[] = [];
 
   for (const ev of events) {
     const timeout = harness === 'claude-code' && ev === 'SessionEnd' ? CLAUDE_SESSION_END_TIMEOUT_S : undefined;
-    const { groups, added: didAdd } = mergeEvent(existingHooks[ev], command, timeout);
+    const { groups, added: didAdd, upgraded: didUpgrade } = mergeEvent(existingHooks[ev], command, timeout);
     existingHooks[ev] = groups;
     if (didAdd) added.push(ev);
     else alreadyPresent.push(ev);
+    if (didUpgrade) upgraded.push(ev);
   }
 
   // Nothing to do: do not rewrite the file or create a backup.
-  if (added.length === 0) {
-    return { harness, path: file, backupPath: null, added, alreadyPresent };
+  if (added.length === 0 && upgraded.length === 0) {
+    return { harness, path: file, backupPath: null, added, alreadyPresent, upgraded };
   }
 
   const next = { ...config, hooks: existingHooks };
   const backupPath = await writeWithBackup(file, next);
-  return { harness, path: file, backupPath, added, alreadyPresent };
+  return { harness, path: file, backupPath, added, alreadyPresent, upgraded };
 }
 
 /**
@@ -342,6 +368,7 @@ async function installAntigravity(
       backupPath: null,
       added: [],
       alreadyPresent: [...ANTIGRAVITY_EVENTS],
+      upgraded: [],
     };
   }
 
@@ -352,6 +379,8 @@ async function installAntigravity(
     backupPath,
     added: [...ANTIGRAVITY_EVENTS],
     alreadyPresent: [],
+    // AER owns its whole group here, so a rewrite is always the current one.
+    upgraded: [],
   };
 }
 
