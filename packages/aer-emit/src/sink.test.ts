@@ -676,3 +676,40 @@ describe('onComplete', () => {
     expect(seen).toEqual([]);
   });
 });
+
+describe('collector identity on session open', () => {
+  // The API stores collector_name/collector_version (sessions.ts) and the
+  // console wants to say how a session was recorded. We never sent it, so the
+  // field was null for every session AER has ever opened.
+  const open = (input: RequestInfo | URL) =>
+    String(input).endsWith('/v1/sessions')
+      ? jsonResponse({ agent_session_id: 's', ingest_token: 't', status: 'running' }, 201)
+      : jsonResponse({ ok: true });
+
+  async function openBody(extra: Record<string, unknown>): Promise<Record<string, unknown>> {
+    let body: Record<string, unknown> = {};
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/v1/sessions')) body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return open(input);
+    }) as unknown as typeof fetch;
+    const sink = createHttpSink({ baseUrl: 'https://api.test', apiKey: 'k', fetch: fakeFetch, batchSize: 1, ...extra });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    return body;
+  }
+
+  it('sends the collector the caller declared', async () => {
+    const body = await openBody({ collector: { name: 'aer-hooks', version: '0.1.3' } });
+    expect(body['collector']).toEqual({ name: 'aer-hooks', version: '0.1.3' });
+  });
+
+  it('sends the schema capability when the caller declares one', async () => {
+    const body = await openBody({ collector: { name: 'aer-auto-node', version: '0.3.0', schema_capability: 'v1' } });
+    expect(body['collector']).toEqual({ name: 'aer-auto-node', version: '0.3.0', schema_capability: 'v1' });
+  });
+
+  it('sends nothing when the caller declares nothing', async () => {
+    expect(await openBody({})).not.toHaveProperty('collector');
+  });
+});

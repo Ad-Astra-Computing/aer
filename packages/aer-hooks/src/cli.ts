@@ -282,7 +282,13 @@ export async function runHook(
     // A harness records tool lifecycle through hooks and never watches the
     // wire, so mark it as such rather than inherit the wrapper default, which
     // means the auto-node collector did watch it.
-    const base = { ...resolved, sourceType: 'harness' as const };
+    const base = {
+      ...resolved,
+      sourceType: 'harness' as const,
+      // Declare who is recording, so a reader can tell a harness session from
+      // a wrapped process without inferring it from the events.
+      collector: { name: 'aer-hooks', version: HOOKS_VERSION },
+    };
 
     const input = await (deps.readInput ?? readStdin)();
     if (!input.trim()) return;
