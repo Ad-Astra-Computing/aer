@@ -282,3 +282,72 @@ describe('a shell line never leaks anything but the program name', () => {
     uninstall();
   });
 });
+
+describe('an argv array does not stop a shell line being a shell line', () => {
+  // cross-spawn and execa always normalise to an array and forward `shell`,
+  // so this is the common shape, not an exotic one. Treating an array as
+  // proof that argv[0] is a program path put the tail of the line back in
+  // the record: the exact leak the parser exists to close.
+  const cases: [line: string, argv: string[], command: string, forbidden: string][] = [
+    ['true; cat /home/u/.aws/credentials', [], 'true', 'credentials'],
+    ['ls>/tmp/private-file', [], 'ls', 'private-file'],
+    ['git push git@github.com:acme/private-repo', ['main'], 'git', 'private-repo'],
+    ['echo x > /var/tmp/leaked-name', [], 'echo', 'leaked-name'],
+  ];
+
+  for (const [line, argv, command, forbidden] of cases) {
+    it(`reduces ${JSON.stringify(line)} passed with an argv array`, async () => {
+      const { capture, events } = withCapture();
+      const uninstall = installChildProcessPatch(capture);
+      await new Promise<void>((resolve) => {
+        const child = cp.spawn(line, argv, { shell: true });
+        child.on('exit', () => resolve());
+        child.on('error', () => resolve());
+      });
+      const exec = events.find((e) => e.event_type === 'process.exec');
+      expect(exec?.payload['command']).toBe(command);
+      expect(JSON.stringify(exec?.payload)).not.toContain(forbidden);
+      uninstall();
+    });
+  }
+
+  it('honours a string shell option too', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    await new Promise<void>((resolve) => {
+      const child = cp.spawn('echo x > /var/tmp/other-leaked-name', [], { shell: '/bin/bash' });
+      child.on('exit', () => resolve());
+      child.on('error', () => resolve());
+    });
+    const exec = events.find((e) => e.event_type === 'process.exec');
+    expect(exec?.payload['command']).toBe('echo');
+    expect(JSON.stringify(exec?.payload)).not.toContain('other-leaked-name');
+    uninstall();
+  });
+});
+
+describe('argv[0] that is not a program name is never reported as one', () => {
+  // basename was applied before validation, so the last path segment of
+  // anything containing a slash was recorded as the program that ran.
+  const cases: [label: string, first: unknown, forbidden: string][] = [
+    ['a URL', 'https://example.com/secret-path', 'secret-path'],
+    ['a directory', '/tmp/private-dir/', 'private-dir'],
+    ['an scp target', 'git@github.com:acme/private-repo', 'private-repo'],
+  ];
+
+  for (const [label, first, forbidden] of cases) {
+    it(`refuses ${label}`, async () => {
+      const { capture, events } = withCapture();
+      const uninstall = installChildProcessPatch(capture);
+      await new Promise<void>((resolve) => {
+        const child = cp.spawn(first as string, ['arg']);
+        child.on('exit', () => resolve());
+        child.on('error', () => resolve());
+      });
+      const exec = events.find((e) => e.event_type === 'process.exec');
+      expect(exec?.payload['command']).toBe('unknown');
+      expect(JSON.stringify(exec?.payload)).not.toContain(forbidden);
+      uninstall();
+    });
+  }
+});

@@ -115,18 +115,25 @@ interface ExecMeta { command: string; argsRedacted: string }
 // alone missed `ls>/tmp/secret`, which the shell splits and we did not.
 const SHELL_META_RE = /[\s;&|<>()$`'"\\*?]/;
 
-function isShellLine(first: string, args: unknown[]): boolean {
+/** Whether the call asked node to run argv[0] through a shell. */
+function usesShell(args: unknown[]): boolean {
   for (const arg of args) {
-    if (typeof arg === 'object' && arg !== null && !Array.isArray(arg)
-        && (arg as Record<string, unknown>)['shell']) {
-      return true;
+    if (typeof arg === 'object' && arg !== null && !Array.isArray(arg)) {
+      const shell = (arg as { shell?: unknown }).shell;
+      if (shell === true || typeof shell === 'string') return true;
     }
   }
-  return SHELL_META_RE.test(first);
+  return false;
 }
 
-/** A program name from an argv[0], or `unknown` when it is not one. */
-function safeProgramName(name: string): string {
+/**
+ * A program name from an argv[0], or `unknown`. The refusals run BEFORE
+ * basename: a URL, an scp target or a directory each have a final segment
+ * that looks like a name, and none of them ran.
+ */
+function safeProgramName(first: string): string {
+  if (first.startsWith('~') || first.includes(':') || first.endsWith('/')) return UNKNOWN_COMMAND;
+  const name = basename(first);
   return /^[A-Za-z0-9._+-]{1,64}$/.test(name) ? name : UNKNOWN_COMMAND;
 }
 
@@ -150,11 +157,17 @@ function safeExtract(kind: CmdKind, args: unknown[]): ExecMeta {
     // array) as args[1]. Treat that shape the same way `exec` is treated,
     // otherwise the raw command - flags, secrets and all - ends up in
     // `command` unredacted.
-    if (!Array.isArray(args[1]) && isShellLine(first, args)) return extractShellString(first);
+    // The shell option settles it on its own. An argv array alongside it is
+    // the normal shape from cross-spawn and execa, and reading the array as
+    // proof that argv[0] is a program path put the tail of the line back in
+    // the record.
+    if (usesShell(args) || !Array.isArray(args[1]) || SHELL_META_RE.test(first)) {
+      return extractShellString(first);
+    }
     const list = Array.isArray(args[1]) ? (args[1] as string[]) : [];
     // An argv[0] is a path or a program name, never a line, so basename is
     // right here. It is still validated: a name that is not one is unknown.
-    return { command: safeProgramName(basename(first)), argsRedacted: redactArgs(list) };
+    return { command: safeProgramName(first), argsRedacted: redactArgs(list) };
   } catch {
     return { command: 'unknown', argsRedacted: redactArgs([]) };
   }
