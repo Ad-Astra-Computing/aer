@@ -15,7 +15,7 @@ import {
   type SessionTransport,
 } from './session.js';
 import { installTransportPatches, type InstalledPatches } from './patches/index.js';
-import { installAdapters, type InstalledAdapters, type AdapterStats, type PolicyOption, type CommitOption } from './adapters/index.js';
+import { installAdapters, patchRemainingCopies, type InstalledAdapters, type AdapterStats, type PolicyOption, type CommitOption } from './adapters/index.js';
 import { commitmentKeyFromString, deriveKid } from './commitment.js';
 import { buildDependencySnapshot } from './dependencies/snapshot.js';
 import { createAttestor, type Attestor } from './attestor.js';
@@ -59,6 +59,12 @@ export interface Collector {
   enabledPatches: readonly string[];
   /** Active SDK adapter names (also reflected in collector.report). */
   enabledAdapters: readonly string[];
+  /**
+   * Resolves when the async adapter pass has finished. `--import` awaits the
+   * register module, so the documented setup has no window; a caller invoking
+   * bootstrap() by hand should await this before its first provider call.
+   */
+  ready: Promise<void>;
 }
 
 export interface CreateCollectorDeps {
@@ -93,6 +99,8 @@ export interface CreateCollectorDeps {
 export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps = {}): Collector {
   const enabledPatches: string[] = [];
   const enabledAdapters: string[] = [];
+  // Resolves once every copy of every SDK this process could use is patched.
+  let ready: Promise<void> = Promise.resolve();
   let adapterStats: AdapterStats | undefined;
   const onError = deps.onError ?? defaultOnError;
 
@@ -277,6 +285,22 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     enabledAdapters.push(...installed.enabled);
     adapterStats = installed.stats;
     teardowns.push(installed.uninstall);
+
+    // Second pass, async: reach the ESM copy of a dual-published SDK. The
+    // sync pass above only sees what `require` resolves, and an ESM app
+    // imports a different class with a different prototype. The register
+    // entry point awaits `ready` before the app loads, so nothing is missed.
+    const statsForCopies = installed.stats;
+    if (statsForCopies) {
+      ready = patchRemainingCopies(capture, config.capture.adapters, statsForCopies, currentPolicyOption, commit)
+        .then((extra) => {
+          for (const name of extra.enabled) {
+            if (!enabledAdapters.includes(name)) enabledAdapters.push(name);
+          }
+          teardowns.push(extra.uninstall);
+        })
+        .catch(() => undefined);
+    }
   }
 
   // Eager prewarm: when protected resources are configured on
@@ -312,6 +336,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     uninstall: () => { for (const t of teardowns) { try { t(); } catch { /* ignore */ } } },
     enabledPatches,
     enabledAdapters,
+    get ready() { return ready; },
   };
 }
 
