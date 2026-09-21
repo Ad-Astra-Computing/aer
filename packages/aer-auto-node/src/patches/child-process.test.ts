@@ -351,3 +351,38 @@ describe('argv[0] that is not a program name is never reported as one', () => {
     });
   }
 });
+
+describe('a refused reduction is distinguishable from a program called unknown', () => {
+  // Otherwise an agent can make every exec read as `unknown` by prefixing a
+  // no-op expansion, and a baseline cannot tell hiding from a binary that
+  // happens to carry that name.
+  async function run(first: string, argv?: string[], opts?: object): Promise<Record<string, unknown>> {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    await new Promise<void>((resolve) => {
+      const child = argv ? cp.spawn(first, argv, opts ?? {}) : cp.spawn(first, opts ?? {});
+      child.on('exit', () => resolve());
+      child.on('error', () => resolve());
+    });
+    uninstall();
+    return (events.find((e) => e.event_type === 'process.exec')?.payload ?? {});
+  }
+
+  it('marks a line it could not understand', async () => {
+    const payload = await run('$(:) /usr/bin/evil', [], { shell: true });
+    expect(payload['command']).toBe('unknown');
+    expect(payload['command_known']).toBe(false);
+  });
+
+  it('does not mark a program that is genuinely named unknown', async () => {
+    const payload = await run('/usr/bin/unknown', []);
+    expect(payload['command']).toBe('unknown');
+    expect(payload['command_known']).toBeUndefined();
+  });
+
+  it('says nothing extra when the name was read', async () => {
+    const payload = await run(process.execPath, ['-e', 'process.exit(0)']);
+    expect(payload['command']).toBe('node');
+    expect(payload['command_known']).toBeUndefined();
+  });
+});

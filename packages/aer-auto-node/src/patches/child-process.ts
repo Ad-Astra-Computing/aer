@@ -52,7 +52,11 @@ export function installChildProcessPatch(capture: Capture): () => void {
       const start = Date.now();
       safeCapture(capture, {
         event_type: 'process.exec',
-        payload: { command: meta.command, args_redacted: meta.argsRedacted },
+        payload: {
+          command: meta.command,
+          args_redacted: meta.argsRedacted,
+          ...(meta.commandKnown === false ? { command_known: false } : {}),
+        },
       });
       let child: ChildProcess;
       inWrappedCall = true;
@@ -109,7 +113,23 @@ export function installChildProcessPatch(capture: Capture): () => void {
   };
 }
 
-interface ExecMeta { command: string; argsRedacted: string }
+interface ExecMeta {
+  command: string;
+  argsRedacted: string;
+  /**
+   * Present and false only when the line was refused. Without it, an agent
+   * hiding behind a no-op expansion is indistinguishable from a binary that
+   * happens to be called unknown, and refusals cannot be counted.
+   */
+  commandKnown?: false;
+}
+
+/** Mark a refusal, and say nothing extra when the name was read. */
+function execMeta(command: string | null, argsRedacted: string): ExecMeta {
+  return command === null
+    ? { command: UNKNOWN_COMMAND, argsRedacted, commandKnown: false }
+    : { command, argsRedacted };
+}
 
 // Whether argv[0] is a whole shell line rather than a program. Whitespace
 // alone missed `ls>/tmp/secret`, which the shell splits and we did not.
@@ -127,21 +147,22 @@ function usesShell(args: unknown[]): boolean {
 }
 
 /**
- * A program name from an argv[0], or `unknown`. The refusals run BEFORE
- * basename: a URL, an scp target or a directory each have a final segment
- * that looks like a name, and none of them ran.
+ * A program name from an argv[0], or null when it is not one. The refusals
+ * run BEFORE basename: a URL, an scp target or a directory each have a final
+ * segment that looks like a name, and none of them ran.
  */
-function safeProgramName(first: string): string {
-  if (first.startsWith('~') || first.includes(':') || first.endsWith('/')) return UNKNOWN_COMMAND;
+function safeProgramName(first: string): string | null {
+  if (first.startsWith('~') || first.includes(':') || first.endsWith('/')) return null;
   const name = basename(first);
-  return /^[A-Za-z0-9._+-]{1,64}$/.test(name) ? name : UNKNOWN_COMMAND;
+  return /^[A-Za-z0-9._+-]{1,64}$/.test(name) ? name : null;
 }
 
 // A whole shell line: only the program name survives, and only when the
 // parser understood the line. Everything else is a count.
 function extractShellString(first: string): ExecMeta {
   const tokens = first.trim().split(/\s+/).filter(Boolean);
-  return { command: reduceShellCommand(first), argsRedacted: redactArgs(tokens.slice(1)) };
+  const command = reduceShellCommand(first);
+  return execMeta(command === UNKNOWN_COMMAND ? null : command, redactArgs(tokens.slice(1)));
 }
 
 function safeExtract(kind: CmdKind, args: unknown[]): ExecMeta {
@@ -167,9 +188,10 @@ function safeExtract(kind: CmdKind, args: unknown[]): ExecMeta {
     const list = Array.isArray(args[1]) ? (args[1] as string[]) : [];
     // An argv[0] is a path or a program name, never a line, so basename is
     // right here. It is still validated: a name that is not one is unknown.
-    return { command: safeProgramName(first), argsRedacted: redactArgs(list) };
+    // A program genuinely named `unknown` is a name we read, not a refusal.
+    return execMeta(safeProgramName(first), redactArgs(list));
   } catch {
-    return { command: 'unknown', argsRedacted: redactArgs([]) };
+    return execMeta(null, redactArgs([]));
   }
 }
 

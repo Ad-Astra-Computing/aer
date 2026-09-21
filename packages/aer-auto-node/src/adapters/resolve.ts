@@ -3,7 +3,7 @@
 
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { esmEntryOf } from './esm-entry.js';
 
@@ -43,11 +43,42 @@ export function loadModule(name: string): unknown | null {
  * app imports.
  */
 function appRequire(): NodeRequire {
-  try {
-    const entry = process.argv[1];
-    if (entry !== undefined && entry !== '') return createRequire(pathToFileURL(entry));
-  } catch { /* fall through to our own location */ }
+  // In order of how well each names the app: require.main is realpath'd by
+  // Node, argv[1] is not (a symlinked or shimmed entry resolves from the
+  // wrong tree), and our own location is the last resort rather than the
+  // first, because a collector installed globally or shared through
+  // NODE_OPTIONS sits nowhere near the app's dependencies.
+  for (const candidate of [mainFilename(), realEntry()]) {
+    if (candidate === undefined) continue;
+    try {
+      const req = createRequire(pathToFileURL(candidate));
+      // Only accept an anchor that can see the app's tree at all.
+      req.resolve('./');
+      return req;
+    } catch { /* try the next anchor */ }
+  }
   return nodeRequire();
+}
+
+function mainFilename(): string | undefined {
+  try {
+    const main = (globalThis as { require?: { main?: { filename?: string } } }).require?.main;
+    const name = main?.filename;
+    return typeof name === 'string' && name.length > 0 ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** argv[1] with symlinks resolved, which Node does not do for it. */
+function realEntry(): string | undefined {
+  const entry = process.argv[1];
+  if (entry === undefined || entry === '') return undefined;
+  try {
+    return realpathSync(entry);
+  } catch {
+    return entry;
+  }
 }
 
 /** Load a module by name from the app's position; null when not installed. */

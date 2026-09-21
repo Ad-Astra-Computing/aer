@@ -134,3 +134,38 @@ describe('rank', () => {
     expect(rank(['something-new', 'langgraph'])).toEqual(['langgraph', 'something-new']);
   });
 });
+
+describe('the kill switch installs no resolve hook', () => {
+  // The observer used to start when collector.js was imported, which happens
+  // before bootstrap reads AER_DISABLE. A disabled collector still hooked
+  // every module resolution in the customer's process.
+  function run(env: Record<string, string>): string {
+    const res = spawnSync(process.execPath, [join(fixtures, 'kill-switch.mjs')], {
+      cwd: fixtures,
+      encoding: 'utf8',
+      env: {
+        ...childEnv(),
+        AER_BOOTSTRAP_MODULE: pathToFileURL(join(dist, 'bootstrap.js')).href,
+        ...env,
+      },
+    });
+    if (res.status !== 0) throw new Error(`exited ${res.status}: ${res.stderr}`);
+    return res.stdout;
+  }
+
+  const configured = {
+    AER_API_KEY: 'not-a-real-key',
+    AER_TENANT_ID: '01950000-0000-7000-8000-000000000001',
+    AER_AGENT_ID: '01950000-0000-7000-8000-000000000002',
+    AER_ENV_ID: '01950000-0000-7000-8000-000000000003',
+    AER_BASE_URL: 'http://127.0.0.1:1',
+  };
+
+  it('installs none when disabled', () => {
+    expect(run({ ...configured, AER_DISABLE: '1' })).toContain('INSTALLS:0 COLLECTOR:null');
+  });
+
+  it('installs one when it actually starts, so the test above can fail', () => {
+    expect(run(configured)).toContain('INSTALLS:1 COLLECTOR:made');
+  });
+});
