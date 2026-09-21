@@ -13,7 +13,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VENDORED = new Map([
   [
     'shared/bodies-off/shell-reduce.ts',
-    ['packages/aer-auto-node/src/shared/shell-reduce.ts', 'apps/cli/src/shared/shell-reduce.ts'],
+    [
+      'packages/aer-auto-node/src/shared/shell-reduce.ts',
+      'apps/cli/src/shared/shell-reduce.ts',
+      'packages/aer-hooks/src/shared/shell-reduce.ts',
+    ],
   ],
   [
     'shared/bodies-off/ingest-allowlist.ts',
