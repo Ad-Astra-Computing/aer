@@ -10,6 +10,11 @@
 //   https://learn.chatgpt.com/docs/hooks
 //   https://antigravity.google/docs/hooks
 
+// Probed against the running CLIs, because the docs and the payloads differ:
+// Claude Code sends no model on any event and no CLAUDE_MODEL, but it does
+// send an undocumented prompt_id that groups a turn the way Codex's turn_id
+// does.
+
 // Claude Code and Codex name the event in the payload; Antigravity does not,
 // so its registrations pass the name on argv. Antigravity is also camelCase,
 // nests the tool call, has no tool-call id and sends no tool response.
@@ -167,7 +172,9 @@ function commonMeta(p: Record<string, unknown>, harness: Harness, kind: HookKind
   const meta: Record<string, unknown> = { harness };
   put(meta, 'model', identifier(p['model']));
   put(meta, 'permission_mode', identifier(p['permission_mode']));
-  put(meta, 'turn_id', identifier(p['turn_id']));
+  // Codex calls it turn_id; Claude Code sends prompt_id and documents
+  // neither. One name, so a reader does not need to know which harness ran.
+  put(meta, 'turn_id', identifier(p['turn_id'] ?? p['prompt_id']));
   if (kind === 'session_start') put(meta, 'source', identifier(p['source']));
   if (kind === 'session_end' || kind === 'permission' || kind === 'compact') {
     // PreCompact names it `trigger`; both are the same closed-set label.
