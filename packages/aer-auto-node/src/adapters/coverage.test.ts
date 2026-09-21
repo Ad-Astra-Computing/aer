@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { deriveCoverage, PROVIDER_HOSTS, countProviderTraffic, adapterRows } from './coverage.js';
+import {
+  deriveCoverage,
+  PROVIDER_HOSTS,
+  countProviderTraffic,
+  adapterRows,
+  looksLikeModelCall,
+} from './coverage.js';
 
 describe('deriveCoverage', () => {
   it('confirms an adapter that recorded calls', () => {
@@ -123,5 +129,128 @@ describe('a host two adapters could have called settles nothing', () => {
       transportWatching: true,
     });
     expect(rows.find((r) => r.name === 'vercel-provider')?.coverage).toBe('confirmed');
+  });
+});
+
+// An adapter that recorded nothing while the session made calls to hosts no
+// adapter claims is not a quiet adapter: it is a session we cannot vouch for.
+// ai@7 routes a bare string model id through @ai-sdk/gateway, and a custom
+// baseURL (Azure, Bedrock, Vertex, a corporate proxy) does the same thing, so
+// `idle` was a signed assertion that no model traffic happened when it had.
+describe('idle requires that nothing unattributed went out', () => {
+  const quiet = {
+    status: 'patched' as const,
+    callsRecorded: 0,
+    providerTraffic: 0,
+    transportWatching: true,
+  };
+
+  it('stays idle when the session made no unattributed calls', () => {
+    expect(deriveCoverage({ ...quiet, unattributedTraffic: 0 })).toBe('idle');
+  });
+
+  it('will not call an adapter idle when traffic went somewhere we cannot attribute', () => {
+    expect(deriveCoverage({ ...quiet, unattributedTraffic: 3 })).toBe('unverifiable');
+  });
+
+  it('still confirms when the adapter recorded calls, whatever else went out', () => {
+    expect(deriveCoverage({ ...quiet, callsRecorded: 2, unattributedTraffic: 9 })).toBe('confirmed');
+  });
+
+  it('still contradicts on the adapter own provider traffic, which is the stronger claim', () => {
+    expect(deriveCoverage({ ...quiet, providerTraffic: 1, unattributedTraffic: 9 })).toBe('contradicted');
+  });
+
+  it('treats a missing count as nothing unattributed, so old callers are unchanged', () => {
+    expect(deriveCoverage(quiet)).toBe('idle');
+  });
+});
+
+describe('a model call is recognised by its shape, not its vendor', () => {
+  it('knows the endpoints every provider and proxy actually uses', () => {
+    for (const path of [
+      '/v1/chat/completions',
+      '/openai/deployments/gpt-4o/chat/completions?<redacted>',
+      '/v1/messages',
+      '/v1/responses',
+      '/v1beta/models/gemini-2.0-flash:generateContent',
+      '/v1beta/models/gemini-2.0-flash:streamGenerateContent',
+      '/model/anthropic.claude-sonnet-4-5/invoke-with-response-stream',
+      '/v1/ai/language-model',
+    ]) {
+      expect(looksLikeModelCall(path)).toBe(true);
+    }
+  });
+
+  it('does not mistake ordinary traffic for a model call', () => {
+    for (const path of [
+      '/simple/requests',
+      '/Ad-Astra-Computing/aer.git/info/refs?<redacted>',
+      '/v1/sessions/abc/events',
+      '/healthz',
+      '/',
+      '',
+      undefined,
+    ]) {
+      expect(looksLikeModelCall(path)).toBe(false);
+    }
+  });
+});
+
+describe('adapterRows counts traffic no adapter claims', () => {
+  const req = (host: string, path = '/v1/chat/completions') => ({
+    event_type: 'http.requested',
+    payload: { host, path_redacted: path },
+  });
+
+  it('will not call the vercel adapter idle when the gateway was used', () => {
+    // `generateText({ model: 'anthropic/claude-sonnet-4-5' })` goes to the
+    // gateway, not to api.anthropic.com, and our provider patch never sees it.
+    const rows = adapterRows({
+      patched: ['vercel-provider'],
+      configured: ['vercel-provider'],
+      calls: {},
+      events: [req('ai-gateway.vercel.sh', '/v1/ai/language-model')],
+      transportWatching: true,
+    });
+    expect(rows[0]?.coverage).toBe('unverifiable');
+  });
+
+  it('will not call an adapter idle when a custom base url was used', () => {
+    const rows = adapterRows({
+      patched: ['openai'],
+      configured: ['openai'],
+      calls: {},
+      events: [req('my-team.openai.azure.com', '/openai/deployments/gpt-4o/chat/completions')],
+      transportWatching: true,
+    });
+    expect(rows[0]?.coverage).toBe('unverifiable');
+  });
+
+  it('keeps a genuinely quiet session idle', () => {
+    // Traffic that is plainly not a model endpoint must not drag every adapter
+    // to unverifiable, or the verdict stops meaning anything.
+    const rows = adapterRows({
+      patched: ['openai'],
+      configured: ['openai'],
+      calls: {},
+      events: [req('registry.npmjs.org', '/aer/-/aer-1.0.0.tgz'), req('github.com', '/org/repo')],
+      transportWatching: true,
+    });
+    expect(rows[0]?.coverage).toBe('idle');
+  });
+
+  it('does not hold an adapter answerable for a model host another adapter owns', () => {
+    // api.anthropic.com is claimed by the patched anthropic adapter, so it is
+    // that adapter own traffic and never unattributed for anyone else.
+    const rows = adapterRows({
+      patched: ['openai', 'anthropic'],
+      configured: ['openai', 'anthropic'],
+      calls: { anthropic: 1 },
+      events: [req('api.anthropic.com', '/v1/messages')],
+      transportWatching: true,
+    });
+    const openai = rows.find((r) => r.name === 'openai');
+    expect(openai?.coverage).toBe('idle');
   });
 });
