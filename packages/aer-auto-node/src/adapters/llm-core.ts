@@ -159,6 +159,29 @@ function emitViolations(policy: PolicyOption, violations: PolicyViolation[]): vo
   }
 }
 
+// Observations started but not yet emitted. A session close waits on these,
+// so a completion cannot be lost to the flush that was racing it.
+const inFlightObservations = new Set<Promise<void>>();
+
+function trackObservation(p: Promise<void>): void {
+  inFlightObservations.add(p);
+  void p.finally(() => inFlightObservations.delete(p));
+}
+
+/**
+ * Wait for every model call already observed to finish recording. Callers
+ * flush after this, so a completion emitted a few ticks late still lands in
+ * the session it belongs to. Never rejects.
+ */
+export async function pendingObservations(): Promise<void> {
+  // A settling observation can start another (a tapped stream), so drain
+  // rather than await a single snapshot. Bounded so a stuck stream cannot
+  // hold a close open forever.
+  for (let pass = 0; pass < 8 && inFlightObservations.size > 0; pass++) {
+    await Promise.allSettled([...inFlightObservations]);
+  }
+}
+
 export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Capture, stats?: AdapterStats, policySource?: PolicyOptionSource, commit?: CommitOption): AnyFn {
   return function wrapped(this: unknown, ...args: unknown[]): unknown {
     const req = safe(() => cfg.extractRequest(args));
@@ -456,9 +479,19 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
 
     // Observe the result WITHOUT replacing it (preserves the SDK's promise type;
     // streaming responses are tapped in place rather than consumed).
+    //
+    // Adopting a foreign thenable costs extra microtask ticks, so the caller's
+    // await can run first and complete the session before this observation
+    // emits. Register the observation so completion can wait for it: a record
+    // showing a request that never finished is worse than a slower close.
     if (isThenable(result)) {
       try {
-        Promise.resolve(result).then(handleResolved, emitError);
+        trackObservation(new Promise<void>((resolve) => {
+          Promise.resolve(result).then(
+            (r) => { try { handleResolved(r); } finally { resolve(); } },
+            () => { try { emitError(); } finally { resolve(); } },
+          );
+        }));
       } catch { /* observation must not affect the host */ }
     } else {
       handleResolved(result);

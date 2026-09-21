@@ -90,7 +90,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   let state: SessionState = 'idle';
   const queue: CollectorEvent[] = [];
   let openPromise: Promise<void> | null = null;
-  let draining = false;
+  let draining: Promise<void> | null = null;
 
   // Attestation token cache + concurrent-mint dedupe, per audience (2b).
   interface CachedToken { token: string; expiresAtMs: number; mintedAtMs: number }
@@ -134,19 +134,42 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     return openPromise;
   }
 
+  /**
+   * Send everything queued, including anything captured while a send was
+   * already in flight.
+   *
+   * The guard used to return early when another drain held it, and the close
+   * path called this same function, so an event captured mid-flush stayed in
+   * the queue and the session closed without it. That is how a model call
+   * that finished a moment before the close lost its completion.
+   */
   async function drain(): Promise<void> {
-    // Re-entrancy guard (defense-in-depth): if emit() itself triggers a capture
-    // (e.g. a mis-wired patched transport), don't recurse into a nested emit.
-    if (state !== 'open' || draining || queue.length === 0) return;
-    draining = true;
-    const batch = queue.splice(0, queue.length);
+    if (state !== 'open') return;
+    // Join the in-flight send rather than returning: the caller needs to know
+    // the queue is empty, not merely that somebody else is working on it.
+    if (draining) {
+      await draining;
+      if (state !== 'open' || queue.length === 0) return;
+    }
+    if (queue.length === 0) return;
+
+    draining = (async () => {
+      // A failed batch is dropped rather than requeued, so this terminates.
+      // The bound is belt and braces against a transport that captures.
+      for (let pass = 0; pass < 64 && state === 'open' && queue.length > 0; pass++) {
+        const batch = queue.splice(0, queue.length);
+        try {
+          await transport.emit(batch);
+        } catch (err) {
+          // Never-throw: drop the batch rather than requeue-and-loop.
+          fail(err, 'emit');
+        }
+      }
+    })();
     try {
-      await transport.emit(batch);
-    } catch (err) {
-      // Bounded + never-throw: drop the batch rather than requeue-and-loop.
-      fail(err, 'emit');
+      await draining;
     } finally {
-      draining = false;
+      draining = null;
     }
   }
 
