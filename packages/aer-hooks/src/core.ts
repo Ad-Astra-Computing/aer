@@ -15,6 +15,16 @@ export interface EmitOptions {
 }
 
 /**
+ * A tool event with no tool name is rejected by ingest, because the name is
+ * the whole content of it. Record the call as unnamed rather than send
+ * something that will be discarded and take the call with it.
+ */
+function unnamedTool(send: (type: string, extra: Record<string, unknown>) => void): number {
+  send('collector.report', { collector: 'aer-hooks', phase: 'tool_unnamed' });
+  return 1;
+}
+
+/**
  * Hand one payload to the sink, minus anything ingest would drop. Filtering
  * here rather than trusting the server keeps the privacy claim true on the
  * wire and not just in the database.
@@ -62,8 +72,8 @@ export function emitHookEvent(event: HookEvent, sink: EventSink, _opts: EmitOpti
 
     switch (event.kind) {
       case 'tool_start': {
-        const fields: Record<string, unknown> = {};
-        if (event.tool !== undefined) fields['tool'] = event.tool;
+        if (event.tool === undefined) return unnamedTool(send);
+        const fields: Record<string, unknown> = { tool: event.tool };
         if (event.argKeys !== undefined) fields['arg_keys'] = event.argKeys;
         send('tool.started', fields);
         // What the call actually did, alongside the fact that it happened.
@@ -72,8 +82,8 @@ export function emitHookEvent(event: HookEvent, sink: EventSink, _opts: EmitOpti
         return sent;
       }
       case 'tool_end': {
-        const fields: Record<string, unknown> = {};
-        if (event.tool !== undefined) fields['tool'] = event.tool;
+        if (event.tool === undefined) return unnamedTool(send);
+        const fields: Record<string, unknown> = { tool: event.tool };
         if (event.ok !== undefined) fields['ok'] = event.ok;
         if (event.isError !== undefined) fields['is_error'] = event.isError;
         send('tool.completed', fields);
