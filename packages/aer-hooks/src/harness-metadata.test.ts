@@ -54,6 +54,25 @@ describe('Claude Code metadata', () => {
     expect(e.meta?.['effort']).toBe('xhigh');
   });
 
+  it('groups a turn by prompt_id, which the docs do not mention', () => {
+    // Probing the running CLI found it on every event after the first input.
+    // It is the same correlator Codex calls turn_id, so it is recorded under
+    // that name and a reader does not need to know which harness ran.
+    const e = normalizeClaudeCode({
+      hook_event_name: 'PreToolUse', session_id: 's1', prompt_id: 'pr_01ABC',
+      tool_name: 'Read', tool_input: { file_path: '/a' },
+    }, 2);
+    expect(e.meta?.['turn_id']).toBe('pr_01ABC');
+  });
+
+  it('does not report a model this harness never sends', () => {
+    // Probing the running CLI found no model field on any event and no
+    // CLAUDE_MODEL in the environment, whatever the docs say. The key is
+    // absent rather than filled from somewhere it does not belong.
+    const e = normalizeClaudeCode({ hook_event_name: 'SessionStart', session_id: 's1', source: 'startup' }, 2);
+    expect(e.meta).not.toHaveProperty('model');
+  });
+
   it('records the reason a session ended', () => {
     const e = normalizeClaudeCode({ hook_event_name: 'SessionEnd', session_id: 's1', reason: 'clear' }, 2);
     expect(e.kind).toBe('session_end');
