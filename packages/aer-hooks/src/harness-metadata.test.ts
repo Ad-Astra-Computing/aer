@@ -215,3 +215,26 @@ describe('every metadata key survives the ingest allowlist', () => {
     }
   });
 });
+
+describe('an event ingest would reject is never sent as one', () => {
+  it('records an unnamed tool call as unnamed, rather than as a tool event', () => {
+    // The API requires `tool` on tool.started and tool.completed and rejects
+    // the event without it, so sending one loses the call silently. A marker
+    // keeps the call in the record and stays countable.
+    for (const kind of ['tool_start', 'tool_end'] as const) {
+      const { sink, events } = capture();
+      emitHookEvent({ kind, argKeys: ['a'], meta: { harness: 'codex' } }, sink);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.type).toBe('collector.report');
+      expect(events[0]!.payload['phase']).toBe('tool_unnamed');
+      expect(events[0]!.payload['collector']).toBe('aer-hooks');
+    }
+  });
+
+  it('still sends a proper tool event when the name is there', () => {
+    const { sink, events } = capture();
+    emitHookEvent({ kind: 'tool_start', tool: 'Bash', meta: { harness: 'codex' } }, sink);
+    expect(events[0]!.type).toBe('tool.started');
+    expect(events[0]!.payload['tool']).toBe('Bash');
+  });
+});

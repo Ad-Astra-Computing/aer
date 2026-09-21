@@ -202,6 +202,9 @@ importers:
       '@adastracomputing/aer-mcp-recorder':
         specifier: workspace:*
         version: link:../aer-mcp-recorder
+      '@aer/schemas':
+        specifier: workspace:*
+        version: link:../schemas
       '@ai-sdk/anthropic':
         specifier: ^4.0.58
         version: 4.0.58(zod@3.25.76)

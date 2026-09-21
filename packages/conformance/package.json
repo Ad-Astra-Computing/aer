@@ -12,20 +12,21 @@
   },
   "devDependencies": {
     "@adastracomputing/aer-auto-node": "workspace:*",
+    "@adastracomputing/aer-emit": "workspace:*",
     "@adastracomputing/aer-hooks": "workspace:*",
     "@adastracomputing/aer-mcp-recorder": "workspace:*",
+    "@aer/schemas": "workspace:*",
+    "@ai-sdk/anthropic": "^4.0.58",
+    "@ai-sdk/openai": "^4.0.71",
     "@anthropic-ai/sdk": "^0.127.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@opencode-ai/plugin": "^1.18.31",
     "@types/node": "^26.1.2",
     "ai": "^7.0.107",
+    "ajv": "^8.17.1",
     "openai": "^7.20.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
-    "@ai-sdk/anthropic": "^4.0.58",
-    "zod": "^3.25.76",
-    "@adastracomputing/aer-emit": "workspace:*",
-    "@ai-sdk/openai": "^4.0.71",
-    "ajv": "^8.17.1"
+    "zod": "^3.25.76"
   }
 }
