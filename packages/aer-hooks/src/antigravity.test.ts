@@ -74,10 +74,12 @@ describe('normalizeAntigravity', () => {
     expect(JSON.stringify(e)).not.toContain('ghp_abc123');
   });
 
-  it('opens a session on the first invocation only', () => {
+  it('opens a session on the first invocation and marks the rest as turns', () => {
     expect(normalizeAntigravity({ ...BASE, invocationNum: 1 }, 'PreInvocation').kind).toBe('session_start');
-    expect(normalizeAntigravity({ ...BASE, invocationNum: 2 }, 'PreInvocation').kind).toBe('other');
-    expect(normalizeAntigravity({ ...BASE, invocationNum: 9 }, 'PreInvocation').kind).toBe('other');
+    // A later invocation is a new turn, not a new session. Recording it as a
+    // turn marker is what lets a reader tell a quiet run from a lost one.
+    expect(normalizeAntigravity({ ...BASE, invocationNum: 2 }, 'PreInvocation').kind).toBe('turn_start');
+    expect(normalizeAntigravity({ ...BASE, invocationNum: 9 }, 'PreInvocation').kind).toBe('turn_start');
   });
 
   it('treats a PreInvocation with no invocationNum as the first one', () => {
@@ -88,7 +90,7 @@ describe('normalizeAntigravity', () => {
 
   it('closes the session only when the agent is fully idle', () => {
     expect(normalizeAntigravity({ ...BASE, fullyIdle: true }, 'Stop').kind).toBe('session_end');
-    expect(normalizeAntigravity({ ...BASE, fullyIdle: false }, 'Stop').kind).toBe('other');
+    expect(normalizeAntigravity({ ...BASE, fullyIdle: false }, 'Stop').kind).toBe('turn_end');
   });
 
   it('closes the session when Stop omits fullyIdle', () => {
@@ -96,8 +98,8 @@ describe('normalizeAntigravity', () => {
     expect(normalizeAntigravity({ ...BASE }, 'Stop').kind).toBe('session_end');
   });
 
-  it('drops PostInvocation, which is a turn boundary and not a session one', () => {
-    expect(normalizeAntigravity({ ...BASE, invocationNum: 1 }, 'PostInvocation').kind).toBe('other');
+  it('records PostInvocation as a turn boundary, not a session one', () => {
+    expect(normalizeAntigravity({ ...BASE, invocationNum: 1 }, 'PostInvocation').kind).toBe('turn_end');
   });
 
   it('yields a harmless event when the event name is missing or unknown', () => {
@@ -221,14 +223,17 @@ describe('runHook end to end on an Antigravity payload', () => {
     expect(body).not.toContain('curl');
   });
 
-  it('emits nothing for a Stop that is not the end of the run', async () => {
+  it('marks a Stop that is not the end of the run as a turn, and never completes', async () => {
     const calls = stubFetch();
 
     await runHook(['--harness=agy', '--event=Stop'], CONFIGURED, {
       readInput: async () => JSON.stringify({ ...BASE, fullyIdle: false, terminationReason: 'user_turn' }),
     });
 
-    expect(calls).toHaveLength(0);
+    const bodies = calls.map((c) => String(c.body ?? ''));
+    expect(bodies.some((b) => b.includes('"phase":"turn_end"'))).toBe(true);
+    // The run is not over, so nothing may complete the record.
+    expect(calls.some((c) => String(c.url).endsWith('/complete'))).toBe(false);
   });
 
   it('detects the harness from the payload when --harness is omitted', async () => {
