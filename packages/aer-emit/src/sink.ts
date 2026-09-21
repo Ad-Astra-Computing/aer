@@ -107,6 +107,12 @@ export interface HttpSinkOptions {
    * discards its ingest token on close leaves the session open forever.
    */
   onComplete?: ((ok: boolean) => void) | undefined;
+  /**
+   * Which collector opened this session. The API stores it, and a reader
+   * needs it to tell a harness recording from a wrapped process without
+   * inferring it from what the events happen to contain.
+   */
+  collector?: { name: string; version?: string; schema_capability?: string } | undefined;
 }
 
 interface OpenSession {
@@ -221,6 +227,7 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
         if (opts.environmentId !== undefined) body['environment_id'] = opts.environmentId;
         if (opts.agentVersion !== undefined) body['agent_version'] = opts.agentVersion;
         if (opts.principal !== undefined) body['principal'] = opts.principal;
+        if (opts.collector !== undefined) body['collector'] = opts.collector;
         const res = await timedFetch(`${opts.baseUrl}/v1/sessions`, {
           method: 'POST',
           headers: {

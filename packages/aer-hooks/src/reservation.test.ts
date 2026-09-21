@@ -89,3 +89,33 @@ describe('a completion that fails keeps the way back to the session', () => {
     expect(loadSession('dead-1', env, Date.now())).not.toBeNull();
   }, 20_000);
 });
+
+describe('the hook says who is recording', () => {
+  it('declares itself when it opens a session', async () => {
+    const { runHook } = await import('./cli.js');
+    const bodies: string[] = [];
+    const fetchStub = (async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/v1/sessions')) {
+        bodies.push(String(init?.body ?? ''));
+        return new Response(JSON.stringify({ agent_session_id: '01950000-0000-7000-8000-0000000000ee', ingest_token: 't' }), { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ accepted: 1 }), { status: 202, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    await runHook(['--harness', 'claude-code', '--lifecycle', 'v2'], {
+      ...env,
+      AER_BASE_URL: 'https://api.test',
+      AER_API_KEY: 'k',
+      AER_TENANT_ID: '01950000-0000-7000-8000-0000000000aa',
+      AER_AGENT_ID: '01950000-0000-7000-8000-0000000000ac',
+    }, {
+      fetch: fetchStub,
+      readInput: async () => JSON.stringify({ session_id: 'who-1', hook_event_name: 'SessionStart', source: 'startup' }),
+    });
+
+    expect(bodies).toHaveLength(1);
+    const body = JSON.parse(bodies[0]!) as { collector?: { name: string; version: string } };
+    expect(body.collector?.name).toBe('aer-hooks');
+    expect(body.collector?.version).toMatch(/^\d+\.\d+\.\d+$/);
+  }, 20_000);
+});
