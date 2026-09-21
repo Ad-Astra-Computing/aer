@@ -22,7 +22,7 @@ import { buildDependencySnapshot } from './dependencies/snapshot.js';
 import { createAttestor, type Attestor } from './attestor.js';
 import { PolicyEnforcer } from './policy.js';
 import { fetchUsagePolicy } from './policy-fetch.js';
-import { startFrameworkObserver } from './frameworks/observe.js';
+import { startFrameworkObserver, type FrameworkObserver } from './frameworks/observe.js';
 
 export const COLLECTOR_NAME = '@adastracomputing/aer-auto-node';
 export const COLLECTOR_VERSION = '0.3.0'; // keep in sync with package.json
@@ -102,6 +102,11 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   const enabledAdapters: string[] = [];
   // Resolves once every copy of every SDK this process could use is patched.
   let ready: Promise<void> = Promise.resolve();
+  // Started here, not at module load: bootstrap checks the kill switch before
+  // calling this, and AER_DISABLE must mean no resolve hook at all. --import
+  // still runs it ahead of the customer's entry, so the require.cache
+  // baseline is taken before any of their modules load.
+  const observer = startFrameworkObserver();
   let adapterStats: AdapterStats | undefined;
   const onError = deps.onError ?? defaultOnError;
 
@@ -135,10 +140,11 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     const session = createSessionManager({
       transport,
       eager,
-      preamble: () => buildPreamble(config, enabledPatches, enabledAdapters),
+      preamble: () => buildPreamble(config, enabledPatches, enabledAdapters, observer),
       closingReport: () => buildCollectorReport(
         config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
         adapterEvidence(config, enabledPatches, enabledAdapters, adapterStats, hostCounts),
+        observer,
       ),
       onError,
     });
@@ -273,6 +279,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   }
 
   const teardowns: Array<() => void> = [];
+  teardowns.push(() => observer.stop());
   if (deps.patchInstaller !== false) {
     const installer = typeof deps.patchInstaller === 'function' ? deps.patchInstaller : installTransportPatches;
     const installed = installer(capture, config.capture.transport, attestor);
@@ -355,6 +362,7 @@ function buildPreamble(
   config: AerAutoConfig,
   enabledPatches: readonly string[],
   enabledAdapters: readonly string[],
+  observer?: FrameworkObserver,
 ): CollectorEvent[] {
   return [
     {
@@ -362,7 +370,7 @@ function buildPreamble(
       payload: { agent: config.agentId ?? 'unknown', collector: COLLECTOR_NAME },
     },
     dependencySnapshotEvent(),
-    buildCollectorReport(config, 'open', enabledPatches, enabledAdapters),
+    buildCollectorReport(config, 'open', enabledPatches, enabledAdapters, undefined, undefined, undefined, observer),
   ];
 }
 
@@ -373,11 +381,6 @@ function dependencySnapshotEvent(): CollectorEvent {
     payload: { ...buildDependencySnapshot() },
   };
 }
-
-// Started at module load, not lazily: --import runs this before user code, and
-// the require.cache baseline is only honest if nothing of the agent's has
-// loaded yet.
-const frameworkObserver = startFrameworkObserver();
 
 /**
  * Per-adapter evidence for the closing report. The point is the `coverage`
@@ -428,8 +431,9 @@ function buildCollectorReport(
   attestor?: Attestor,
   adapterStats?: AdapterStats,
   adapters?: Array<Record<string, unknown>>,
+  observer?: FrameworkObserver,
 ): CollectorEvent {
-  const frameworks = frameworkObserver.observed();
+  const frameworks = observer?.observed() ?? [];
   const providers = adapterStats ? Object.keys(adapterStats.snapshot()).sort() : [];
   return {
     event_type: 'collector.report',

@@ -5,8 +5,22 @@
 // The hook is observe-only and every path is wrapped, so a fault reports
 // nothing rather than breaking the agent being watched.
 
-import { createRequire, registerHooks } from 'node:module';
+import { createRequire } from 'node:module';
 import type { ResolveHookSync } from 'node:module';
+
+// Read off the module object, never as a named import. registerHooks landed
+// in 22.15, and a missing named export from a builtin is a LINK error, not
+// undefined: a static import would crash every customer on an older Node
+// before any guard could run.
+type RegisterHooks = (hooks: { resolve?: ResolveHookSync }) => unknown;
+function nodeRegisterHooks(): RegisterHooks | undefined {
+  try {
+    const mod = createRequire(import.meta.url)('node:module') as { registerHooks?: RegisterHooks };
+    return typeof mod.registerHooks === 'function' ? mod.registerHooks : undefined;
+  } catch {
+    return undefined;
+  }
+}
 import { detectFrameworks, frameworkFromSpecifier } from './registry.js';
 
 // The directory holding the collector's OWN modules, so its probing of the
@@ -25,11 +39,11 @@ interface HookHandle { deregister?: () => void }
 
 /** Injectable so a test can present the runtime as one without the hooks API. */
 export interface ObserverDeps {
-  registerHooks?: typeof registerHooks | undefined;
+  registerHooks?: RegisterHooks | undefined;
 }
 
 export function startFrameworkObserver(deps: ObserverDeps = {}): FrameworkObserver {
-  const register = 'registerHooks' in deps ? deps.registerHooks : registerHooks;
+  const register = 'registerHooks' in deps ? deps.registerHooks : nodeRegisterHooks();
   const fromHook = new Set<string>();
   // Anything already required belongs to the collector or to Node, never to
   // the agent: bootstrap probes the provider SDKs before user code runs.

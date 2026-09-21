@@ -77,3 +77,4 @@ describe('bootstrap', () => {
     expect(installHooks).toHaveBeenCalledWith(coll);
   });
 });
+
