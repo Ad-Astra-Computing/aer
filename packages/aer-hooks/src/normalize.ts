@@ -184,6 +184,9 @@ function commonMeta(p: Record<string, unknown>, harness: Harness, kind: HookKind
   if (kind === 'subagent_start' || kind === 'subagent_end') {
     put(meta, 'agent_type', identifier(p['agent_type']));
   }
+  // No harness documents this today. Recorded only where one sends it: it is
+  // what attributes a subagent's work back to the call that spawned it.
+  put(meta, 'parent_tool_use_id', identifier(p['parent_tool_use_id']));
   if (kind === 'tool_start' || kind === 'tool_end') {
     put(meta, 'tool_use_id', identifier(p['tool_use_id']));
     if (typeof p['duration_ms'] === 'number') meta['duration_ms'] = p['duration_ms'];
