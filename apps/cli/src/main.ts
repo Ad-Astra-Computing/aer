@@ -27,6 +27,7 @@ import {
 
 const USAGE_TEXT = [
   'Usage:',
+  '  aer --version                      print the installed version',
   '  aer init [--yes] [--dry-run] [--json] [--session process|task|server]',
   '           [--entry <script>] [--tenant <id>] [--agent <id>] [--env <id>] [--base-url <url>]',
   '           (wires @adastracomputing/aer-auto-node into this project: auto-instrumentation)',
@@ -245,7 +246,30 @@ function tenantKey(): string | undefined {
   return process.env['AER_TENANT_API_KEY'] ?? process.env['AER_API_KEY'];
 }
 
+/**
+ * This package's version, reported so a support conversation can start from the
+ * code that actually ran. Read from package.json rather than restated here: a
+ * release bumps the manifest, and a second copy would name the previous one.
+ */
+function ownVersion(): string {
+  try {
+    const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+    const version = (JSON.parse(raw) as { version?: unknown }).version;
+    if (typeof version === 'string' && version.length > 0) return version;
+  } catch {
+    /* saying nothing useful beats naming the wrong version */
+  }
+  return 'unknown';
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  // --version before anything else, for the same reason as --help: asking a
+  // binary what it is must never write a file or make a network call.
+  if (argv.includes('--version') || argv.includes('-V')) {
+    console.log(ownVersion());
+    return;
+  }
+
   // --help/-h anywhere in the invocation must print usage and exit before any
   // other command handling runs, so probing --help can never write a file or
   // make a network call.

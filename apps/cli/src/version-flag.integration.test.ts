@@ -1,0 +1,68 @@
+import { it, expect, beforeAll, describe } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Every binary has to be able to say what version it is. It is the first thing
+// asked when a record looks wrong, and a CLI that cannot answer it leaves a
+// support conversation with nothing to go on. Asserted by EXECUTING the bin: an
+// import-level test cannot see argv handling at all, which is how a release of
+// the sibling package went out without it.
+
+const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')) as {
+  version: string;
+  bin: Record<string, string>;
+};
+
+// The package's OWN build, not tsc: `aer` ships a bundle built from src/bin.ts
+// into dist/main.js, and a tsc artifact in the same place is a different
+// program that never self-invokes. Testing that one proves nothing about what
+// ships.
+beforeAll(() => {
+  execFileSync(process.execPath, [join(pkgRoot, 'bundle.mjs')], { cwd: pkgRoot, stdio: 'ignore' });
+}, 120_000);
+
+function run(entry: string, args: string[]): { out: string; code: number } {
+  try {
+    const out = execFileSync(process.execPath, [join(pkgRoot, entry), ...args], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, AER_BASE_URL: '', AER_TENANT_API_KEY: '' },
+    });
+    return { out, code: 0 };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; status?: number };
+    return { out: (err.stdout ?? '') + (err.stderr ?? ''), code: err.status ?? 1 };
+  }
+}
+
+describe.each(Object.entries(manifest.bin))('%s --version', (_name, entry) => {
+  it('prints the package version and exits 0', () => {
+    const r = run(entry, ['--version']);
+    expect(r.out.trim()).toContain(manifest.version);
+    expect(r.code).toBe(0);
+  });
+
+  it('answers -V the same way, since both spellings are reached for', () => {
+    expect(run(entry, ['-V']).out.trim()).toContain(manifest.version);
+  });
+
+  // The version has to come from the manifest a release bumps. A literal in the
+  // source names the previous release forever and nobody notices.
+  it('reports the version the manifest carries, not a restated constant', () => {
+    expect(run(entry, ['--version']).out.trim()).toBe(manifest.version);
+  });
+
+  it('answers --version before it could reach the network or write a file', () => {
+    // No base URL, no key, no subcommand: anything that tried to do real work
+    // here would fail, so a clean version means it short-circuited.
+    expect(run(entry, ['--version']).code).toBe(0);
+  });
+
+  it('still rejects a flag it does not know, so --version is not a catch-all', () => {
+    expect(run(entry, ['--definitely-not-a-flag']).code).not.toBe(0);
+  });
+});
