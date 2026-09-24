@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, symlinkSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { distProblem } from '../../../scripts/require-dist.mjs';
 
 // Regression this test pins: the published bin is invoked through a
 // node_modules/.bin symlink, and the old entry guard never fired, so the wrapper
@@ -17,7 +18,8 @@ const distCli = join(pkgRoot, 'dist', 'cli.js');
 // Tests never build. A sibling file spawning this dist would load it half
 // written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  if (!existsSync(distCli)) throw new Error('dist is missing: run pnpm -r build first');
+  const problem = distProblem(pkgRoot);
+  if (problem) throw new Error(problem);
 });
 
 it('forwards stdin to the wrapped command when invoked through a .bin symlink', () => {

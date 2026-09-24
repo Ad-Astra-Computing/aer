@@ -12,10 +12,11 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, symlinkSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { distProblem } from '../../../scripts/require-dist.mjs';
 
 const execFileAsync = promisify(execFile);
 const pkgRoot = resolve(import.meta.dirname, '..');
@@ -69,7 +70,8 @@ describe('CLI entry point', () => {
   beforeAll(() => {
     // Tests never build: a sibling file spawning this bundle would load it
     // half written. `pnpm test` and CI build once, just before the tests.
-    if (!existsSync(built)) throw new Error('dist is missing: run pnpm -r build first');
+    const problem = distProblem(pkgRoot);
+    if (problem) throw new Error(problem);
     const dir = mkdtempSync(join(tmpdir(), 'aer-bin-'));
     mkdirSync(join(dir, '.bin'), { recursive: true });
     linked = join(dir, '.bin', 'aer');

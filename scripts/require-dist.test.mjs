@@ -3,19 +3,19 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const script = join(import.meta.dirname, 'require-dist.mjs');
 
-function pkg({ src = {}, dist = {} }) {
+// Every file gets an explicit mtime, so a file written by the test itself can
+// never be the newest input by accident.
+function tree(files) {
   const dir = mkdtempSync(join(tmpdir(), 'aer-require-dist-'));
-  for (const [tree, files] of [['src', src], ['dist', dist]]) {
-    for (const [name, mtime] of Object.entries(files)) {
-      mkdirSync(join(dir, tree), { recursive: true });
-      const file = join(dir, tree, name);
-      writeFileSync(file, '');
-      utimesSync(file, mtime, mtime);
-    }
+  for (const [path, [mtime, body = '']] of Object.entries(files)) {
+    const file = join(dir, path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, typeof body === 'string' ? body : JSON.stringify(body));
+    utimesSync(file, mtime, mtime);
   }
   return dir;
 }
@@ -25,32 +25,68 @@ function run(cwd) {
   return { code: r.status, err: r.stderr };
 }
 
+const manifest = (extra = {}) => [50, { name: 'p', ...extra }];
+
 test('passes when dist is newer than every source file', () => {
-  assert.equal(run(pkg({ src: { 'a.ts': 100 }, dist: { 'a.js': 200 } })).code, 0);
+  assert.equal(run(tree({ 'package.json': manifest(), 'src/a.ts': [100], 'dist/a.js': [200] })).code, 0);
 });
 
 test('fails when dist is missing', () => {
-  const r = run(pkg({ src: { 'a.ts': 100 } }));
+  const r = run(tree({ 'package.json': manifest(), 'src/a.ts': [100] }));
   assert.equal(r.code, 1);
   assert.match(r.err, /dist is missing/);
 });
 
-test('fails when a source file changed after the build', () => {
-  const r = run(pkg({ src: { 'a.ts': 100, 'b.ts': 300 }, dist: { 'a.js': 200 } }));
+test('fails when a source file changed after the build, and names it', () => {
+  const r = run(tree({ 'package.json': manifest(), 'src/a.ts': [100], 'src/b.ts': [300], 'dist/a.js': [200] }));
   assert.equal(r.code, 1);
   assert.match(r.err, /dist is stale/);
+  assert.match(r.err, /src[/\\]b\.ts/);
 });
 
 test('ignores tests, which never ship', () => {
-  assert.equal(run(pkg({ src: { 'a.ts': 100, 'a.test.ts': 300 }, dist: { 'a.js': 200 } })).code, 0);
+  const dir = tree({ 'package.json': manifest(), 'src/a.ts': [100], 'src/a.test.ts': [300], 'dist/a.js': [200] });
+  assert.equal(run(dir).code, 0);
 });
 
-test('reads nested directories on both sides', () => {
-  const r = run(pkg({ src: { 'a.ts': 100 }, dist: { 'a.js': 200 } }));
-  assert.equal(r.code, 0);
-  const nested = pkg({ dist: { 'a.js': 200 } });
-  mkdirSync(join(nested, 'src', 'deep'), { recursive: true });
-  writeFileSync(join(nested, 'src', 'deep', 'b.ts'), '');
-  utimesSync(join(nested, 'src', 'deep', 'b.ts'), 300, 300);
-  assert.equal(run(nested).code, 1);
+test('reads nested source directories', () => {
+  const dir = tree({ 'package.json': manifest(), 'src/deep/b.ts': [300], 'dist/a.js': [200] });
+  assert.equal(run(dir).code, 1);
+});
+
+test('counts build inputs at the package root, such as tsconfig.json', () => {
+  const r = run(tree({ 'package.json': manifest(), 'tsconfig.json': [300], 'src/a.ts': [100], 'dist/a.js': [200] }));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /tsconfig\.json/);
+});
+
+function workspace(depSrcMtime) {
+  return tree({
+    'pnpm-workspace.yaml': [50, "packages:\n  - 'packages/*'\n"],
+    'packages/dep/package.json': [50, { name: 'dep' }],
+    'packages/dep/src/d.ts': [depSrcMtime],
+    'packages/dep/dist/d.js': [150],
+    'packages/app/package.json': [50, { name: 'app', devDependencies: { dep: 'workspace:*' } }],
+    'packages/app/src/a.ts': [100],
+    'packages/app/dist/a.js': [200],
+  });
+}
+
+test('counts the sources of workspace dependencies, which a bundle inlines', () => {
+  assert.equal(run(join(workspace(120), 'packages', 'app')).code, 0);
+  const r = run(join(workspace(300), 'packages', 'app'));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /dep[/\\]src[/\\]d\.ts/);
+});
+
+test('fails loudly on a workspace dependency it cannot find', () => {
+  const dir = tree({
+    'pnpm-workspace.yaml': [50, "packages:\n  - 'packages/*'\n"],
+    'packages/app/package.json': [50, { name: 'app', dependencies: { gone: 'workspace:*' } }],
+    'packages/app/src/a.ts': [100],
+    'packages/app/dist/a.js': [200],
+  });
+  const r = run(join(dir, 'packages', 'app'));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /gone/);
 });
