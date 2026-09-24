@@ -5,10 +5,10 @@
 // tool call was rejected per event and vanished with no error anywhere.
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -19,11 +19,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const hooksRoot = join(here, '..', '..', 'aer-hooks');
 const hookCli = join(hooksRoot, 'dist', 'cli.js');
 
+// Tests never build. A sibling file spawning this dist would load it half
+// written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  execFileSync(join(here, '..', '..', '..', 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json'], {
-    cwd: hooksRoot, stdio: 'pipe',
-  });
-}, 60_000);
+  if (!existsSync(hookCli)) throw new Error('dist is missing: run pnpm -r build first');
+});
 
 async function emitted(args: string[], payloads: { args?: string[]; payload: unknown }[]): Promise<unknown[]> {
   const bodies: string[] = [];

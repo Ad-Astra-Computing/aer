@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, symlinkSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -67,9 +67,9 @@ describe('CLI entry point', () => {
   let linked: string;
 
   beforeAll(() => {
-    // Always rebuild. Testing whatever dist happened to be lying around is how
-    // a stale bundle passes a regression test for the bug it still contains.
-    execFileSync('node', ['bundle.mjs'], { cwd: pkgRoot, stdio: 'ignore' });
+    // Tests never build: a sibling file spawning this bundle would load it
+    // half written. `pnpm test` and CI build once, just before the tests.
+    if (!existsSync(built)) throw new Error('dist is missing: run pnpm -r build first');
     const dir = mkdtempSync(join(tmpdir(), 'aer-bin-'));
     mkdirSync(join(dir, '.bin'), { recursive: true });
     linked = join(dir, '.bin', 'aer');
@@ -146,8 +146,11 @@ describe('the packed tarball', () => {
   beforeAll(() => {
     const dir = mkdtempSync(join(tmpdir(), 'aer-pack-'));
     // pnpm, not npm: npm leaves `workspace:*` in the dependencies of a
-    // workspace package and the resulting tarball cannot be installed.
-    execFileSync('pnpm', ['pack', '--pack-destination', dir], { cwd: pkgRoot, stdio: 'ignore' });
+    // workspace package and the resulting tarball cannot be installed. No
+    // scripts: prepack would delete dist while sibling files are running it.
+    execFileSync('pnpm', ['--config.ignore-scripts=true', 'pack', '--pack-destination', dir], {
+      cwd: pkgRoot, stdio: 'ignore',
+    });
     const tarball = readdirSync(dir).find((f) => f.endsWith('.tgz'));
     if (!tarball) throw new Error('pnpm pack produced no tarball');
 
