@@ -10,7 +10,7 @@ await build({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node18',
+  target: 'node22',
   outfile: 'dist/main.js',
   // Node built-ins stay external automatically on platform:node; everything
   // else (the workspace packages) is inlined. The entry hashbang is preserved.

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { distProblem } from '../../../../scripts/require-dist.mjs';
 
 const dist = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist');
 
@@ -20,7 +21,8 @@ describe('nothing statically imports a Node API that may not exist', () => {
   const RECENT = ['registerHooks', 'getBuiltinModule', 'registerHooks as'];
 
   it('reads them off the module object instead', () => {
-    if (!existsSync(dist)) throw new Error('dist is missing: run pnpm -r build first');
+    const problem = distProblem(join(dist, '..'));
+    if (problem) throw new Error(problem);
     const offenders: string[] = [];
     for (const file of builtFiles(dist)) {
       const src = readFileSync(file, 'utf8');

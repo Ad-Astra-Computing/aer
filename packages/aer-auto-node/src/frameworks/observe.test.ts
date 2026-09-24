@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
 import { rank } from './observe.js';
+import { distProblem } from '../../../../scripts/require-dist.mjs';
 
 // Run as real `node` subprocesses against the BUILT collector, not mocks. A
 // loader hook only behaves like a loader hook in a process that is actually
@@ -31,9 +31,8 @@ function run(app: string): { observed: string[]; stderr: string } {
 }
 
 beforeAll(async () => {
-  if (!existsSync(join(dist, 'frameworks', 'observe.js'))) {
-    throw new Error('dist is missing: run pnpm -r build first');
-  }
+  const problem = distProblem(join(dist, '..'));
+  if (problem) throw new Error(problem);
   const { makeFixtureTree } = await import('./fixtures/tree.mjs');
   fixtures = makeFixtureTree(join(here, 'fixtures'));
   harness = join(fixtures, 'harness.mjs');

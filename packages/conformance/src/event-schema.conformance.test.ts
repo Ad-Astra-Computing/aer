@@ -8,12 +8,13 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { EventSchema } from '@aer/schemas';
 import { cleanEnv } from './env.js';
+import { distProblem } from '../../../scripts/require-dist.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const hooksRoot = join(here, '..', '..', 'aer-hooks');
@@ -22,7 +23,8 @@ const hookCli = join(hooksRoot, 'dist', 'cli.js');
 // Tests never build. A sibling file spawning this dist would load it half
 // written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  if (!existsSync(hookCli)) throw new Error('dist is missing: run pnpm -r build first');
+  const problem = distProblem(hooksRoot);
+  if (problem) throw new Error(problem);
 });
 
 async function emitted(args: string[], payloads: { args?: string[]; payload: unknown }[]): Promise<unknown[]> {

@@ -12,10 +12,12 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, execFile } from 'node:child_process';
-import { mkdtempSync, mkdirSync, symlinkSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
+import { distProblem } from '../../../scripts/require-dist.mjs';
 
 const execFileAsync = promisify(execFile);
 const pkgRoot = resolve(import.meta.dirname, '..');
@@ -69,7 +71,8 @@ describe('CLI entry point', () => {
   beforeAll(() => {
     // Tests never build: a sibling file spawning this bundle would load it
     // half written. `pnpm test` and CI build once, just before the tests.
-    if (!existsSync(built)) throw new Error('dist is missing: run pnpm -r build first');
+    const problem = distProblem(pkgRoot);
+    if (problem) throw new Error(problem);
     const dir = mkdtempSync(join(tmpdir(), 'aer-bin-'));
     mkdirSync(join(dir, '.bin'), { recursive: true });
     linked = join(dir, '.bin', 'aer');
@@ -90,9 +93,18 @@ describe('CLI entry point', () => {
     expect(code).not.toBe(0);
   });
 
+  const packageState = () => ({
+    files: readdirSync(pkgRoot).sort(),
+    manifest: createHash('sha256').update(readFileSync(join(pkgRoot, 'package.json'))).digest('hex'),
+  });
+  const before = packageState();
+
   it.each(SUBCOMMANDS)('recognises %s through a bin symlink', async (cmd) => {
-    const { out } = await run(linked, [cmd]);
+    const { out } = await run(linked, [cmd], mkdtempSync(join(tmpdir(), 'aer-sub-')));
     expect(out, `${cmd} produced no output at all`).not.toBe('');
+    // `init` writes wherever it runs. Run here, it rewired this package's own
+    // dev script and left its files in the repository.
+    expect(packageState(), `${cmd} changed the package directory`).toEqual(before);
   });
 
   // Nothing issues an environment id, so a placeholder left the reader with a
