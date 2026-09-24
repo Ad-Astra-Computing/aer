@@ -60,7 +60,7 @@
     "prepack": "pnpm build"
   },
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^22.20.4",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
