@@ -33,6 +33,32 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # A new nixpkgs brings a new pnpm, which changes the fixed-output hash of
+      # the dependency tree. Without this step the check below failed on every
+      # pnpm bump, so the update could never be proposed at all. Refresh the
+      # hash the way the comment in flake.nix describes, then prove it.
+      - if: steps.diff.outputs.changed == 'true'
+        name: Refresh the pnpm dependency hash
+        run: |
+          set +e
+          out=$(nix build .#node-modules --no-link 2>&1)
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "dependency hash unchanged"
+            exit 0
+          fi
+          got=$(printf '%s\n' "$out" | sed -n 's/.*got: *\(sha256-[A-Za-z0-9+/=]*\).*/\1/p' | head -n 1)
+          if [ -z "$got" ]; then
+            # Failed for some reason other than the hash. Surface it rather than
+            # guessing, and let the job fail.
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          old=$(sed -n 's/.*hash = "\(sha256-[A-Za-z0-9+/=]*\)";.*/\1/p' flake.nix | head -n 1)
+          sed -i "s|$old|$got|" flake.nix
+          echo "dependency hash refreshed: $old -> $got"
+
       # Prove the update before proposing it. An update that fails the checks is
       # worse than no update, because it looks routine.
       - if: steps.diff.outputs.changed == 'true'
@@ -46,10 +72,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add flake.lock
+          git add flake.lock flake.nix
           git commit -m "chore(nix): update flake.lock"
           git push --force origin "$branch"
           gh pr create --base main --head "$branch" \
             --title "chore(nix): update flake.lock" \
-            --body "Weekly flake input update. \`nix flake check\` passed on this lock before the pull request was opened." \
-            || gh pr edit "$branch" --body "Weekly flake input update. \`nix flake check\` passed on this lock before the pull request was opened."
+            --body "Weekly flake input update, with the pnpm dependency hash refreshed when it moved. \`nix flake check\` passed on this lock before the pull request was opened." \
+            || gh pr edit "$branch" --body "Weekly flake input update, with the pnpm dependency hash refreshed when it moved. \`nix flake check\` passed on this lock before the pull request was opened."
