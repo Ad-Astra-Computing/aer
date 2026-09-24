@@ -90,3 +90,65 @@ test('fails loudly on a workspace dependency it cannot find', () => {
   assert.equal(r.code, 1);
   assert.match(r.err, /gone/);
 });
+
+test('fails when a runtime dependency has a stale dist of its own', () => {
+  // The dependent's dist is newest of all, so only checking the dependency's
+  // own build catches that it still loads yesterday's code.
+  const dir = tree({
+    'pnpm-workspace.yaml': [50, "packages:\n  - 'packages/*'\n"],
+    'packages/dep/package.json': [50, { name: 'dep', exports: { '.': './dist/d.js' } }],
+    'packages/dep/src/d.ts': [160],
+    'packages/dep/dist/d.js': [150],
+    'packages/app/package.json': [50, { name: 'app', dependencies: { dep: 'workspace:*' } }],
+    'packages/app/src/a.ts': [100],
+    'packages/app/dist/a.js': [200],
+  });
+  const r = run(join(dir, 'packages', 'app'));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /^dep: dist is stale: src[/\\]d\.ts/);
+});
+
+test('fails loudly when the workspace file has no packages list', () => {
+  const dir = tree({
+    'pnpm-workspace.yaml': [50, 'allowBuilds:\n  esbuild: true\n'],
+    'packages/app/package.json': [50, { name: 'app' }],
+    'packages/app/src/a.ts': [100],
+    'packages/app/dist/a.js': [200],
+  });
+  const r = run(join(dir, 'packages', 'app'));
+  assert.equal(r.code, 1);
+  assert.match(r.err, /packages/);
+});
+
+test('reads past comments and blank lines inside the packages list', () => {
+  const dir = tree({
+    'pnpm-workspace.yaml': [50, "packages:\n  # libraries\n  - 'packages/*'\n\n  - apps/tool\n"],
+    'apps/tool/package.json': [50, { name: 'tool' }],
+    'apps/tool/src/t.ts': [100],
+    'packages/app/package.json': [50, { name: 'app', devDependencies: { tool: 'workspace:*' } }],
+    'packages/app/src/a.ts': [100],
+    'packages/app/dist/a.js': [200],
+  });
+  assert.equal(run(join(dir, 'packages', 'app')).code, 0);
+});
+
+test('does not count documentation at the package root as a build input', () => {
+  const dir = tree({
+    'package.json': manifest(), 'README.md': [300], 'LICENSE': [300], 'src/a.ts': [100], 'dist/a.js': [200],
+  });
+  assert.equal(run(dir).code, 0);
+});
+
+test('does not demand a dist from a dependency consumed from its sources', () => {
+  // A private helper whose exports point at src has no dist to be stale, even
+  // when it has a typecheck-only build script.
+  const dir = tree({
+    'pnpm-workspace.yaml': [50, "packages:\n  - 'packages/*'\n"],
+    'packages/helper/package.json': [50, { name: 'helper', exports: { '.': './src/h.ts' }, scripts: { build: 'tsc' } }],
+    'packages/helper/src/h.ts': [100],
+    'packages/app/package.json': [50, { name: 'app', devDependencies: { helper: 'workspace:*' } }],
+    'packages/app/src/a.ts': [100],
+    'packages/app/dist/a.js': [200],
+  });
+  assert.equal(run(join(dir, 'packages', 'app')).code, 0);
+});

@@ -33,7 +33,9 @@ function workspacePackages(root) {
   if (!root) return byName;
   const lines = readFileSync(join(root, 'pnpm-workspace.yaml'), 'utf8').split('\n');
   const start = lines.findIndex((l) => l.trim() === 'packages:');
+  if (start === -1) throw new Error('pnpm-workspace.yaml has no packages list');
   for (const line of lines.slice(start + 1)) {
+    if (line.trim() === '' || line.trim().startsWith('#')) continue;
     const m = /^\s+-\s+['"]?([^'"#]+?)['"]?\s*$/.exec(line);
     if (!m) break;
     const dirs = m[1].endsWith('/*')
@@ -49,38 +51,58 @@ function workspacePackages(root) {
   return byName;
 }
 
-function newestInput(dir, packages, seen = new Set()) {
-  seen.add(dir);
+const DOCS = /(\.md|^LICENSE)$/;
+
+function staleness(dir, input) {
+  const built = newestIn(join(dir, 'dist'), { recursive: true });
+  if (built.mtime === -Infinity) return 'dist is missing: run pnpm -r build first';
+  if (input.mtime > built.mtime) {
+    return `dist is stale: ${relative(dir, input.file)} changed after the last build, run pnpm -r build first`;
+  }
+  return null;
+}
+
+// A dependent runs a dependency's dist only when its entry points are there.
+function loadsDist(dir) {
+  const { main, exports, bin } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+  return /(^|["/])dist\//.test(JSON.stringify({ main, exports, bin }));
+}
+
+// One pass per package, memoised. A dependency with a build of its own must
+// be fresh too: a dependent that loads it at runtime runs that dist, and a
+// bundling dependent inlines it, so its sources count as inputs here as well.
+function analyse(dir, packages, memo, checkDist) {
+  if (memo.has(dir)) return memo.get(dir);
+  const result = { input: { mtime: -Infinity, file: null }, problem: null };
+  memo.set(dir, result);
+  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   const candidates = [
-    newestIn(dir, { recursive: false }),
+    newestIn(dir, { recursive: false, skip: (name) => DOCS.test(name) }),
     newestIn(join(dir, 'src'), { recursive: true, skip: (name) => TEST.test(name) }),
   ];
-  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+  let depProblem = null;
   const deps = { ...manifest.dependencies, ...manifest.devDependencies };
   for (const [name, spec] of Object.entries(deps)) {
     if (!String(spec).startsWith('workspace:')) continue;
     const depDir = packages.get(name);
     if (!depDir) throw new Error(`cannot find workspace dependency ${name}`);
-    if (!seen.has(depDir)) candidates.push(newestInput(depDir, packages, seen));
+    const dep = analyse(depDir, packages, memo, loadsDist(depDir));
+    candidates.push(dep.input);
+    depProblem ??= dep.problem && `${name}: ${dep.problem}`;
   }
-  return candidates.reduce((a, b) => (b.mtime > a.mtime ? b : a));
+  result.input = candidates.reduce((a, b) => (b.mtime > a.mtime ? b : a));
+  result.problem = (checkDist ? staleness(dir, result.input) : null) ?? depProblem;
+  return result;
 }
 
 // Returns why dist cannot be used, or null. Tests call this before they spawn
 // a dist, so a stale build fails the test instead of passing it.
 export function distProblem(pkgDir) {
-  const built = newestIn(join(pkgDir, 'dist'), { recursive: true });
-  if (built.mtime === -Infinity) return 'dist is missing: run pnpm -r build first';
-  let input;
   try {
-    input = newestInput(pkgDir, workspacePackages(workspaceRoot(pkgDir)));
+    return analyse(resolve(pkgDir), workspacePackages(workspaceRoot(resolve(pkgDir))), new Map(), true).problem;
   } catch (err) {
     return err.message;
   }
-  if (input.mtime > built.mtime) {
-    return `dist is stale: ${relative(pkgDir, input.file)} changed after the last build, run pnpm -r build first`;
-  }
-  return null;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
