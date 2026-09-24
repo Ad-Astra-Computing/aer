@@ -122,6 +122,10 @@ nix flake check --all-systems
 Write the failing test first. Any change to a published package needs a
 changeset (`pnpm changeset`), or it never ships.
 
+Tests never build: they read `dist` and fail when it is missing or older than
+its sources, so build first. Packages are published only by `release.yml`. A
+hand `pnpm publish` ships without provenance and without the test gate.
+
 These invariants hold everywhere and breaking one is a defect, not a tradeoff:
 
 - **Bodies-off.** Never record prompts, model output, tool arguments, tool

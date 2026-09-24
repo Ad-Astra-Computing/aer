@@ -6,10 +6,11 @@
 import { it, expect, beforeAll, afterAll, describe } from 'vitest';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { distProblem } from '../../../scripts/require-dist.mjs';
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hookBin = join(pkgRoot, 'dist', 'cli.js');
@@ -18,7 +19,8 @@ const dirs: string[] = [];
 // Tests never build. A sibling file spawning this dist would load it half
 // written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  if (!existsSync(hookBin)) throw new Error('dist is missing: run pnpm -r build first');
+  const problem = distProblem(pkgRoot);
+  if (problem) throw new Error(problem);
 });
 
 afterAll(() => {

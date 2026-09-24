@@ -8,11 +8,12 @@ import Ajv from 'ajv';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { cleanEnv } from './env.js';
+import { distProblem } from '../../../scripts/require-dist.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const hooksDist = join(here, '..', '..', 'aer-hooks', 'dist');
@@ -36,7 +37,8 @@ let baseUrl: string;
 let posted: Array<Record<string, unknown>> = [];
 
 beforeAll(async () => {
-  if (!existsSync(installCli)) throw new Error('dist is missing: run pnpm -r build first');
+  const problem = distProblem(join(hooksDist, '..'));
+  if (problem) throw new Error(problem);
   api = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));

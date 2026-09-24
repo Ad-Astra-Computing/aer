@@ -1,8 +1,9 @@
 import { it, expect, beforeAll, describe } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { distProblem } from '../../../scripts/require-dist.mjs';
 
 // Every binary has to be able to say what version it is. It is the first thing
 // asked when a record looks wrong, and a CLI that cannot answer it leaves a
@@ -20,7 +21,8 @@ const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
 // never self-invoke. Tests never build it: a sibling file spawning it would
 // load it half written, so `pnpm test` and CI build once beforehand.
 beforeAll(() => {
-  if (!existsSync(join(pkgRoot, 'dist', 'main.js'))) throw new Error('dist is missing: run pnpm -r build first');
+  const problem = distProblem(pkgRoot);
+  if (problem) throw new Error(problem);
 });
 
 function run(entry: string, args: string[]): { out: string; code: number } {
