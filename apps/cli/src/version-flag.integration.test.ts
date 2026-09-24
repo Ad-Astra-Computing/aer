@@ -1,6 +1,6 @@
 import { it, expect, beforeAll, describe } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,13 +16,12 @@ const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
   bin: Record<string, string>;
 };
 
-// The package's OWN build, not tsc: `aer` ships a bundle built from src/bin.ts
-// into dist/main.js, and a tsc artifact in the same place is a different
-// program that never self-invokes. Testing that one proves nothing about what
-// ships.
+// dist/main.js is the package's own bundle, not a tsc artifact, which would
+// never self-invoke. Tests never build it: a sibling file spawning it would
+// load it half written, so `pnpm test` and CI build once beforehand.
 beforeAll(() => {
-  execFileSync(process.execPath, [join(pkgRoot, 'bundle.mjs')], { cwd: pkgRoot, stdio: 'ignore' });
-}, 120_000);
+  if (!existsSync(join(pkgRoot, 'dist', 'main.js'))) throw new Error('dist is missing: run pnpm -r build first');
+});
 
 function run(entry: string, args: string[]): { out: string; code: number } {
   try {

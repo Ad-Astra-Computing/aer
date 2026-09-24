@@ -1,7 +1,7 @@
 import { it, expect, beforeAll, afterAll, describe } from 'vitest';
-import { execFileSync, spawnSync, spawn } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,16 +14,14 @@ import { install } from './install.js';
 // runs it, and holds both promises there.
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(pkgRoot, '../..');
 const hookBin = join(pkgRoot, 'dist', 'cli.js');
 const caches: string[] = [];
 
+// Tests never build. A sibling file spawning this dist would load it half
+// written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  const tsc = join(repoRoot, 'node_modules', '.bin', 'tsc');
-  // Do not swallow tsc output: a compile error must read as a compile error,
-  // not as a later ENOENT on dist/cli.js.
-  execFileSync(tsc, ['-p', 'tsconfig.json'], { cwd: pkgRoot, stdio: 'pipe' });
-}, 60_000);
+  if (!existsSync(hookBin)) throw new Error('dist is missing: run pnpm -r build first');
+});
 
 afterAll(() => {
   for (const c of caches) rmSync(c, { recursive: true, force: true });

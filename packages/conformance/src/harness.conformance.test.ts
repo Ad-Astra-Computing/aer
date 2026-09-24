@@ -36,7 +36,7 @@ let baseUrl: string;
 let posted: Array<Record<string, unknown>> = [];
 
 beforeAll(async () => {
-  if (!existsSync(installCli)) throw new Error('build aer-hooks first (pretest does)');
+  if (!existsSync(installCli)) throw new Error('dist is missing: run pnpm -r build first');
   api = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));

@@ -20,7 +20,7 @@ describe('nothing statically imports a Node API that may not exist', () => {
   const RECENT = ['registerHooks', 'getBuiltinModule', 'registerHooks as'];
 
   it('reads them off the module object instead', () => {
-    if (!existsSync(dist)) throw new Error('build the package first (pretest does)');
+    if (!existsSync(dist)) throw new Error('dist is missing: run pnpm -r build first');
     const offenders: string[] = [];
     for (const file of builtFiles(dist)) {
       const src = readFileSync(file, 'utf8');

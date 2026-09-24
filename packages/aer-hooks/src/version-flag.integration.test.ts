@@ -1,6 +1,6 @@
 import { it, expect, beforeAll, describe } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,17 +11,17 @@ import { fileURLToPath } from 'node:url';
 // this went out in a release.
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(pkgRoot, '../..');
 
 const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')) as {
   version: string;
   bin: Record<string, string>;
 };
 
+// Tests never build. A sibling file spawning this dist would load it half
+// written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  const tsc = join(repoRoot, 'node_modules', '.bin', 'tsc');
-  execFileSync(tsc, ['-p', 'tsconfig.json'], { cwd: pkgRoot, stdio: 'ignore' });
-}, 60_000);
+  if (!existsSync(join(pkgRoot, 'dist', 'cli.js'))) throw new Error('dist is missing: run pnpm -r build first');
+});
 
 function run(entry: string, args: string[]): { out: string; code: number } {
   try {

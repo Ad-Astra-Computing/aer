@@ -12,15 +12,13 @@ import { fileURLToPath } from 'node:url';
 // proves byte transparency end to end.
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(pkgRoot, '../..');
 const distCli = join(pkgRoot, 'dist', 'cli.js');
 
+// Tests never build. A sibling file spawning this dist would load it half
+// written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  // Ensure a fresh dist (prepublishOnly runs tests before build, so dist may be
-  // absent or stale here). Build with the workspace TypeScript compiler.
-  const tsc = join(repoRoot, 'node_modules', '.bin', 'tsc');
-  execFileSync(tsc, ['-p', 'tsconfig.json'], { cwd: pkgRoot, stdio: 'ignore' });
-}, 60_000);
+  if (!existsSync(distCli)) throw new Error('dist is missing: run pnpm -r build first');
+});
 
 it('forwards stdin to the wrapped command when invoked through a .bin symlink', () => {
   expect(existsSync(distCli)).toBe(true);
