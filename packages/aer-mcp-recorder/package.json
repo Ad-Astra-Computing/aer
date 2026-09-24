@@ -55,8 +55,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "prepublishOnly": "pnpm test",
-    "prepack": "pnpm build"
+    "prepack": "node ../../scripts/require-dist.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
