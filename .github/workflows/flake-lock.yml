@@ -23,6 +23,11 @@ jobs:
 
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
 
+      # The dependency hash is a function of the lockfile, nixpkgs' pnpm and the
+      # fetcher version. Record pnpm now so a moved hash can be explained later.
+      - id: before
+        run: echo "pnpm=$(nix eval --raw --inputs-from . nixpkgs#pnpm.version)" >> "$GITHUB_OUTPUT"
+
       - run: nix flake update
 
       - id: diff
@@ -33,6 +38,44 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # This job never touches pnpm-lock.yaml or fetcherVersion, so a new pnpm
+      # is the only legitimate reason for the hash to move. A move without one
+      # is the anomaly the hash exists to catch, so the job stops instead.
+      - if: steps.diff.outputs.changed == 'true'
+        id: refresh
+        name: Refresh the pnpm dependency hash
+        env:
+          PNPM_BEFORE: ${{ steps.before.outputs.pnpm }}
+        run: |
+          set +e
+          out=$(nix build .#node-modules --no-link 2>&1)
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "dependency hash unchanged"
+            exit 0
+          fi
+          specified=$(printf '%s\n' "$out" | sed -n 's/.*specified: *\(sha256-[A-Za-z0-9+/=]*\).*/\1/p' | head -n 1)
+          got=$(printf '%s\n' "$out" | sed -n 's/.*got: *\(sha256-[A-Za-z0-9+/=]*\).*/\1/p' | head -n 1)
+          if [ -z "$specified" ] || [ -z "$got" ]; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          count=$(grep -cF "\"$specified\"" flake.nix || true)
+          if [ "$count" -ne 1 ]; then
+            echo "expected $specified exactly once in flake.nix, found $count"
+            exit 1
+          fi
+          pnpm_after=$(nix eval --raw --inputs-from . nixpkgs#pnpm.version)
+          if [ "$pnpm_after" = "$PNPM_BEFORE" ]; then
+            echo "the dependency hash moved but pnpm stayed at $pnpm_after; refusing to refresh it"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          sed -i "s|\"$specified\"|\"$got\"|" flake.nix
+          echo "dependency hash refreshed for pnpm $PNPM_BEFORE -> $pnpm_after"
+          echo "note=The pnpm dependency hash moved because nixpkgs moved pnpm from $PNPM_BEFORE to $pnpm_after." >> "$GITHUB_OUTPUT"
+
       # Prove the update before proposing it. An update that fails the checks is
       # worse than no update, because it looks routine.
       - if: steps.diff.outputs.changed == 'true'
@@ -41,15 +84,27 @@ jobs:
       - if: steps.diff.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HASH_NOTE: ${{ steps.refresh.outputs.note }}
         run: |
+          # Nothing may ride along under a routine title: the lock, plus at
+          # most the one hash line in flake.nix.
+          changed=$(git status --porcelain | awk '{print $2}' | sort | tr '\n' ' ')
+          case "$changed" in
+            "flake.lock ") ;;
+            "flake.lock flake.nix ")
+              [ "$(git diff --numstat flake.nix)" = "$(printf '1\t1\tflake.nix')" ] \
+                || { git diff flake.nix; exit 1; } ;;
+            *) echo "unexpected changes: $changed"; exit 1 ;;
+          esac
+          body="Weekly flake input update. \`nix flake check\` passed on this lock before the pull request was opened."
+          if [ -n "$HASH_NOTE" ]; then body="$body $HASH_NOTE"; fi
           branch="flake-lock/$(date -u +%Y-%m-%d)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add flake.lock
+          git add flake.lock flake.nix
           git commit -m "chore(nix): update flake.lock"
           git push --force origin "$branch"
           gh pr create --base main --head "$branch" \
-            --title "chore(nix): update flake.lock" \
-            --body "Weekly flake input update. \`nix flake check\` passed on this lock before the pull request was opened." \
-            || gh pr edit "$branch" --body "Weekly flake input update. \`nix flake check\` passed on this lock before the pull request was opened."
+            --title "chore(nix): update flake.lock" --body "$body" \
+            || gh pr edit "$branch" --body "$body"
