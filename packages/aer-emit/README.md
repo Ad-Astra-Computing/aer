@@ -5,7 +5,7 @@ knows how to open an AER session, batch events to the ingest endpoint and comple
 the session on close. Both `@adastracomputing/aer-mcp-recorder` and
 `@adastracomputing/aer-hooks` build on it for consistent behavior between them.
 
-ESM only: use `import`, not `require`. Requires Node 20 or newer.
+ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## What it gives you
 

@@ -8,7 +8,7 @@ requests without a valid token are denied.
 Zero runtime dependencies. The Hono/Express middleware are optional subpath
 exports.
 
-ESM only: use `import`, not `require`. Requires Node 20 or newer.
+ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Install
 

@@ -11,7 +11,7 @@ SDK; a dependency snapshot and a signed coverage report; and three session
 strategies (`process`, `task`, `server`) plus `withAerSession` for explicit
 scoping. The fastest way in is the `register` hook shown below.
 
-ESM only: use `import`, not `require`. Requires Node 20 or newer.
+ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Use
 

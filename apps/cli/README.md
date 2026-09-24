@@ -107,7 +107,7 @@ Behavior:
 
 ## Requirements
 
-Node 20 or newer. The published binary is a single self-contained file with no
+Node 22 or newer. The published binary is a single self-contained file with no
 runtime dependencies.
 
 ## License

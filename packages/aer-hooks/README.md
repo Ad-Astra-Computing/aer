@@ -6,7 +6,7 @@ OpenAI Codex CLI both fire shell hooks that pass a JSON event on stdin
 the subagent boundaries). One binary normalizes both harnesses' payloads,
 along with Antigravity's, and emits the tool events into AER.
 
-ESM only: use `import`, not `require`. Requires Node 20 or newer.
+ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Install
 
