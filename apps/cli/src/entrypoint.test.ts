@@ -148,6 +148,8 @@ describe('the packed tarball', () => {
     // pnpm, not npm: npm leaves `workspace:*` in the dependencies of a
     // workspace package and the resulting tarball cannot be installed. No
     // scripts: prepack would delete dist while sibling files are running it.
+    // This also skips prepare and postpack, so if either ever changes the
+    // tarball, this test stops modelling what publish ships.
     execFileSync('pnpm', ['--config.ignore-scripts=true', 'pack', '--pack-destination', dir], {
       cwd: pkgRoot, stdio: 'ignore',
     });
