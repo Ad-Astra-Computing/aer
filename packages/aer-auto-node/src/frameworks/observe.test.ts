@@ -81,7 +81,7 @@ describe('it degrades to nothing, never to a broken agent', () => {
     });
 
   it('falls back to the require cache when the hooks API is missing', () => {
-    // Node 20 has no registerHooks. The CJS half must carry on alone, and the
+    // Node before 22.15 has no registerHooks. The CJS half must carry on alone, and the
     // ESM-only case must come back empty rather than wrong: [] is what proves
     // the hook really was absent instead of quietly still installed.
     expect(withHarness('harness-no-hooks.mjs', 'cjs')).toContain('OBSERVED:["langchain"]');
