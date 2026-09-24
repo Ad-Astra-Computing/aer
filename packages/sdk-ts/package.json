@@ -51,12 +51,12 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@types/node": "^26.1.2",
+    "@types/node": "^22.20.4",
     "msw": "^2.7.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

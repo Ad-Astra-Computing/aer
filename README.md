@@ -12,7 +12,7 @@
   <a href="https://github.com/Ad-Astra-Computing/aer/actions/workflows/ci.yml"><img src="https://github.com/Ad-Astra-Computing/aer/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://www.npmjs.com/package/@adastracomputing/aer"><img src="https://img.shields.io/npm/v/@adastracomputing/aer?label=cli" alt="Latest CLI version on npm"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Requires Node 20 or newer">
+  <img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen" alt="Requires Node 22 or newer">
 </p>
 
 ---
@@ -69,13 +69,13 @@ If you are a coding agent, or you are pointing one at this repository, read
 | [`aer-sdk-ts`](https://www.npmjs.com/package/@adastracomputing/aer-sdk-ts) | TypeScript SDK for emitting events directly. | ![npm](https://img.shields.io/npm/v/@adastracomputing/aer-sdk-ts?label=%20) |
 | [`aer_sdk`](./packages/sdk-py) | Python SDK. Installed from this repo, not npm or PyPI. | ![release](https://img.shields.io/github/v/release/Ad-Astra-Computing/aer?filter=sdk-py-v*&label=%20) |
 
-Every library package is ESM and ships its own types. All target Node 20 or newer.
+Every library package is ESM and ships its own types. All target Node 22 or newer.
 
 ## Install
 
 ### Requirements
 
-Node 20 or newer. An AER account for anything that records a run; nothing
+Node 22 or newer. An AER account for anything that records a run; nothing
 for verifying one.
 
 ### Set up a Node project
@@ -209,7 +209,7 @@ python3.withPackages (ps: [ aer.packages.${system}.sdk-py ])
 ## Development
 
 With [Nix](https://nixos.org), `nix develop` gives a shell with Node, pnpm,
-Python and pytest. Otherwise install Node 20 or newer and pnpm 11.
+Python and pytest. Otherwise install Node 22 or newer and pnpm 11.
 
 ```sh
 pnpm install --frozen-lockfile

@@ -132,7 +132,7 @@ These invariants hold everywhere and breaking one is a defect, not a tradeoff:
 - **Fail closed.** Admission control and token verification deny when they
   cannot decide. An unreachable JWKS is a denial.
 - **The Python SDK is stdlib-only** and is not published to PyPI.
-- **ESM only, Node 20 or newer**, and every library ships its own types.
+- **ESM only, Node 22 or newer**, and every library ships its own types.
 
 Treat all external input and model output as hostile until validated. No secret
 enters the repository, a commit, a log line or a test fixture. Pin every

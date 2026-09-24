@@ -21,7 +21,7 @@
     "@anthropic-ai/sdk": "^0.127.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@opencode-ai/plugin": "^1.18.31",
-    "@types/node": "^26.1.2",
+    "@types/node": "^22.20.4",
     "ai": "^7.0.107",
     "ajv": "^8.17.1",
     "openai": "^7.20.0",

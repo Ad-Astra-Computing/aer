@@ -16,7 +16,7 @@ is a fixed identifier that matches what AER mints into every token, not a
 fetchable URL, and `jwksUrl` points at `api.aer.run`, the canonical AER API
 host.
 
-ESM only: use `import`, not `require`. Requires Node 20 or newer.
+ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 > **Scope:** HTTP MCP transports only, meaning Streamable HTTP and SSE. `stdio` MCP
 > runs locally with no network admission point, so it is out of scope. This package

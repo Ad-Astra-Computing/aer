@@ -2,7 +2,7 @@
 
 Event-emission helper for apps and agents that want to send events to an AER gateway.
 
-ESM only: use `import`, not `require`. Requires Node 20 or newer.
+ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Install
 

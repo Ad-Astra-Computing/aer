@@ -14,7 +14,7 @@ This is the observation half. It is separate from
 which is the admission half (deny or allow). The recorder observes and emits, the
 guard denies and allows, and the two can run side by side.
 
-ESM only: use `import`, not `require`. Requires Node 20 or newer.
+ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Two properties this package is designed for
 
