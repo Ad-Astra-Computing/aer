@@ -22,8 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every package declares engines.node >=20, but Node 20 is past end of
-        # life. Test the oldest runtime we stand behind and the one CI ships on.
+        # The declared engines floor and the current Active LTS. The floor
+        # must stay in this matrix: a floor we do not test is a claim we have
+        # not checked. Raise both together when a line reaches end of life.
         node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
