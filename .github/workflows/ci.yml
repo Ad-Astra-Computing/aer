@@ -48,6 +48,8 @@ jobs:
 
       - run: pnpm -r test
 
+      - run: node --test scripts/*.test.mjs
+
   # Runs on its own so a broken CLAIM is distinguishable from a broken unit.
   # These tests install the real OpenAI, Anthropic, Vercel and MCP packages and
   # drive real subprocesses, so a vendor changing shape fails here.

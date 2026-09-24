@@ -43,8 +43,7 @@
     "build": "rm -rf dist && node bundle.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "prepublishOnly": "pnpm test",
-    "prepack": "pnpm build"
+    "prepack": "node ../../scripts/require-dist.mjs"
   },
   "devDependencies": {
     "@adastracomputing/aer-auto-node": "workspace:*",

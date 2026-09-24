@@ -46,8 +46,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src",
-    "prepublishOnly": "pnpm test",
-    "prepack": "pnpm build"
+    "prepack": "node ../../scripts/require-dist.mjs"
   },
   "dependencies": {},
   "devDependencies": {
