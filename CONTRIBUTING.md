@@ -11,7 +11,7 @@ Before submitting a change, run:
 
 ```sh
 pnpm install
-pnpm -r test
+pnpm test
 ```
 
 For anything security related, see [SECURITY.md](./SECURITY.md).

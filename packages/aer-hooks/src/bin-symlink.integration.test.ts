@@ -12,13 +12,13 @@ import { fileURLToPath } from 'node:url';
 // EXECUTES the installer bin through a real symlink and proves it actually runs.
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(pkgRoot, '../..');
 const distInstall = join(pkgRoot, 'dist', 'install-cli.js');
 
+// Tests never build. A sibling file spawning this dist would load it half
+// written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  const tsc = join(repoRoot, 'node_modules', '.bin', 'tsc');
-  execFileSync(tsc, ['-p', 'tsconfig.json'], { cwd: pkgRoot, stdio: 'ignore' });
-}, 60_000);
+  if (!existsSync(distInstall)) throw new Error('dist is missing: run pnpm -r build first');
+});
 
 it('runs the installer bin (prints usage) when invoked through a .bin symlink', () => {
   expect(existsSync(distInstall)).toBe(true);

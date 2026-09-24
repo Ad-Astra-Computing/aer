@@ -4,21 +4,22 @@
 // hook. The docs and the payloads disagree, so the payloads win.
 
 import { it, expect, beforeAll, afterAll, describe } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(pkgRoot, '../..');
 const hookBin = join(pkgRoot, 'dist', 'cli.js');
 const dirs: string[] = [];
 
+// Tests never build. A sibling file spawning this dist would load it half
+// written, so dist comes from one build that finishes before any test runs.
 beforeAll(() => {
-  execFileSync(join(repoRoot, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json'], { cwd: pkgRoot, stdio: 'pipe' });
-}, 60_000);
+  if (!existsSync(hookBin)) throw new Error('dist is missing: run pnpm -r build first');
+});
 
 afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });

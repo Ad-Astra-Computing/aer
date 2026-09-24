@@ -32,7 +32,7 @@ function run(app: string): { observed: string[]; stderr: string } {
 
 beforeAll(async () => {
   if (!existsSync(join(dist, 'frameworks', 'observe.js'))) {
-    throw new Error('build the package before running this suite (pretest does)');
+    throw new Error('dist is missing: run pnpm -r build first');
   }
   const { makeFixtureTree } = await import('./fixtures/tree.mjs');
   fixtures = makeFixtureTree(join(here, 'fixtures'));
