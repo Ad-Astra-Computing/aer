@@ -90,15 +90,21 @@ describe('cmdLogout', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('P3: --all revokes and removes every stored entry', async () => {
+  it('P3: --all revokes and removes every stored entry, each against its own base URL and key', async () => {
     setCredential(BASE_URL, CRED, env);
-    setCredential('https://other.test', { ...CRED, tenant_id: 't2' }, env);
+    const otherCred = { ...CRED, tenant_id: 't2', api_key: 'other-key' };
+    setCredential('https://other.test', otherCred, env);
     const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     const code = await cmdLogout({ baseUrl: BASE_URL, all: true }, deps(fetchImpl));
     expect(code).toBe(0);
     expect(getCredential(BASE_URL, env)).toBeUndefined();
     expect(getCredential('https://other.test', env)).toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    const calls = fetchImpl.mock.calls as Array<[string, RequestInit]>;
+    const byUrl = new Map(calls.map(([url, init]) => [url, (init.headers as Record<string, string>).authorization]));
+    expect(byUrl.get(`${BASE_URL}/v1/cli/logout`)).toBe(`Bearer ${CRED.api_key}`);
+    expect(byUrl.get('https://other.test/v1/cli/logout')).toBe(`Bearer ${otherCred.api_key}`);
   });
 
   it('P3: --all with nothing stored says so without any network call', async () => {
