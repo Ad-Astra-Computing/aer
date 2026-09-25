@@ -42,7 +42,7 @@ const USAGE_TEXT = [
   '  aer doctor [--json]                check config + live API reachability and tenant auth',
   '  aer smoke                          run a tiny instrumented workload end to end',
   '  aer login [--base-url <url>] [--no-browser]   sign in once per machine, save credentials',
-  '  aer logout [--base-url <url>]      revoke the CLI key aer login minted and forget it locally',
+  '  aer logout [--base-url <url> | --all]   revoke the CLI key aer login minted and forget it locally',
   '  aer whoami [--base-url <url>]      show what aer login stored (never the key itself)',
   '  aer link [--agent <id> | --create-agent <name>] [--env <id>] [--base-url <url>]',
   '           (writes aer.config.json for this project from your aer login session)',
@@ -183,10 +183,15 @@ function printHelp(): never {
   process.exit(0);
 }
 
+// P3: a flag with no value (or immediately followed by another flag, e.g.
+// `aer login --base-url --no-browser`) must not silently swallow the next
+// flag as its value.
 function readFlag(args: string[], name: string): string | undefined {
   const idx = args.indexOf(name);
   if (idx === -1) return undefined;
-  return args[idx + 1];
+  const value = args[idx + 1];
+  if (value === undefined || value.startsWith('--')) return undefined;
+  return value;
 }
 
 const realFs: FsLike = {
@@ -270,6 +275,13 @@ async function cmdDoctor(args: string[]): Promise<void> {
     try { return JSON.parse(realFs.readFile(`${process.cwd()}/aer.config.json`) ?? '{}') as { base_url?: string; agent_id?: string }; }
     catch { return {}; }
   })();
+  // Same helper as every tenant command (P1-1): refuse rather than send an
+  // env-sourced key toward a base URL a cloned repo's aer.config.json chose.
+  const auth = resolveAuth({ env, cfg, defaultBaseUrl: DEFAULT_BASE_URL });
+  if (auth.baseUrlMismatch) {
+    console.error(auth.baseUrlMismatch);
+    process.exit(64);
+  }
   const baseUrl = env['AER_BASE_URL'] ?? cfg.base_url;
   const live = await runLiveChecks({
     baseUrl,
@@ -320,6 +332,10 @@ async function cmdSmoke(): Promise<void> {
 function requireTenantAuth(commandLabel: string): { baseUrl: string; apiKey: string } {
   const cfg = projectConfig();
   const auth = resolveAuth({ env: process.env, cfg, defaultBaseUrl: DEFAULT_BASE_URL });
+  if (auth.baseUrlMismatch) {
+    console.error(auth.baseUrlMismatch);
+    process.exit(64);
+  }
   if (!auth.apiKey) {
     console.error(`${commandLabel} needs a tenant API key: set AER_TENANT_API_KEY (or AER_API_KEY), or run \`aer login\` and \`aer link\`.`);
     process.exit(64);
@@ -338,9 +354,18 @@ function hasDisplay(): boolean {
   return !!(process.env['DISPLAY'] || process.env['WAYLAND_DISPLAY']);
 }
 
+// P1-2: never shell out through `cmd /c start`. cmd.exe parses its whole
+// command line for & | < > ^ %, even when node passes the URL as a separate
+// argv entry, so a hostile verification_uri could inject a second command.
+// rundll32's FileProtocolHandler opens a URL without going through cmd.exe
+// at all. The URL itself is already validated (https-only, no userinfo) in
+// device-login.ts before this is ever called.
 function openBrowserBestEffort(url: string): void {
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
-  const args = process.platform === 'win32' ? ['/c', 'start', '""', url] : [url];
+  const [cmd, args] = process.platform === 'darwin'
+    ? ['open', [url]]
+    : process.platform === 'win32'
+      ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+      : ['xdg-open', [url]];
   const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
   child.on('error', () => { /* opening a browser is a convenience only */ });
   child.unref();
@@ -432,9 +457,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (command === 'logout') {
     const args = [sub, ...rest].filter((x): x is string => x !== undefined);
     const baseUrlFlag = readFlag(args, '--base-url');
+    const all = args.includes('--all');
     const resolvedBaseUrl = resolveBaseUrl({ env: process.env, cfg: projectConfig(), baseUrlFlag, defaultBaseUrl: DEFAULT_BASE_URL });
     const code = await cmdLogout(
-      { baseUrl: resolvedBaseUrl },
+      { baseUrl: resolvedBaseUrl, all },
       { env: process.env, print: (l) => console.log(l), printErr: (l) => console.error(l) },
     );
     if (code !== 0) process.exit(code);
@@ -526,6 +552,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
     const cfg = projectConfig();
     const auth = resolveAuth({ env: process.env, cfg, defaultBaseUrl: DEFAULT_BASE_URL });
+    if (auth.baseUrlMismatch) {
+      console.error(auth.baseUrlMismatch);
+      process.exit(64);
+    }
     const apiKey = auth.apiKey;
     const tenantId = auth.tenantId;
     const agentId = process.env['AER_AGENT_ID'] || cfg.agent_id;
