@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- [`958d73b`](https://github.com/Ad-Astra-Computing/aer/commit/958d73bf42c828d6d7067bd6851d962d2d632b24) - Subagent tool calls now join the lead's record instead of opening their
+  own. The hook finds the lead through `CLAUDE_CODE_SESSION_ID` in its
+  environment, with a process-alias fallback (up to three ancestor processes,
+  checked against start time, agent and base URL); `--root-session <id>`
+  overrides both. A subagent event that finds no lead is dropped rather than
+  opening a session of its own, and the drop is counted as
+  `subagent_events_unattached` on the closing record. Session opens carry a
+  derived `client_ref` and write a pending marker before the network call, so
+  a killed opener's next invocation reopens with the identical ref instead of
+  leaving an orphan; a tool event that loses the lock race polls briefly and
+  then drops (`events_dropped_budget`) rather than opening a duplicate. Every
+  event now also carries `harness_agent_id`. `aer-hooks status --json` and the
+  new `staleRegistrations()` export flag a registration missing
+  `--lifecycle v2`, an outdated installed release and an `aer-hook` shadowed
+  by a nix profile. Re-run `aer-hooks install claude-code` to pick up the
+  longer SessionStart timeout.
+- [`65e71eb`](https://github.com/Ad-Astra-Computing/aer/commit/65e71eb53a1f013a5cbc5362f458c247cfc41ab2) - Claude Code hook sessions now carry model and token counts.
+  `hook_event_name` payloads never include `model` or usage, so a
+  hooks-recorded session had tool events and no `llm.completed` at all. On
+  PostToolUse, Stop, SubagentStop and SessionEnd, the collector now reads the
+  Claude Code transcript (`transcript_path`, present on every payload)
+  incrementally from a persisted byte offset, extracts only `message.model`
+  and `message.usage` from newly-appeared assistant entries, and emits
+  `llm.completed`. Bodies-off throughout: no prompt, completion text or tool
+  content is read or emitted, streamed duplicate entries for the same message
+  are recorded once with their final usage, a missing or unreadable transcript
+  is silent, and the read is bounded per invocation. The updated read offset
+  and message-id dedup state are saved to the session store before the network
+  send that follows, the same way the event sequence counter already is, so a
+  slow or failed send never risks the next hook rescanning and double-reporting
+  what this one already claimed.
+
+### Patch Changes
+
+- [`958d73b`](https://github.com/Ad-Astra-Computing/aer/commit/958d73bf42c828d6d7067bd6851d962d2d632b24) - The installed `aer-hooks` version is baked in at build time, so a bundled
+  CLI reports it correctly. The session open is retried without `client_ref`
+  only when the server's 400 names that field, and a late write from a stalled
+  opener can no longer move the stored event position backwards.
+- Updated dependencies
+  - @adastracomputing/aer-emit@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
