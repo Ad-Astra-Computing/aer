@@ -58,6 +58,16 @@ export async function runClaudeCodeImport(opts: ImportRunOptions): Promise<Impor
     try { entries.push(JSON.parse(trimmed)); } catch { /* skip malformed line */ }
   }
 
+  // A file with nothing to record, such as the prompt history in
+  // history.jsonl, would otherwise produce a signed record of an empty session.
+  // Event ids depend on the session, so this probe maps with a stand-in.
+  if (claudeCodeTranscriptToEvents(entries, { sessionId: 'probe', now: nowIso, maxEvents: 1 }).events.length === 0) {
+    throw new Error(
+      'no Claude Code session activity in this file. Transcripts live under ' +
+      '~/.claude/projects/<project>/<session-id>.jsonl; ~/.claude/history.jsonl is prompt history.',
+    );
+  }
+
   // 2. Create the session (tenant auth).
   const createRes = await fetchImpl(`${baseUrl}/v1/sessions`, {
     method: 'POST',
