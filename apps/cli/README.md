@@ -51,13 +51,22 @@ or written anywhere else; `whoami` shows only its first twelve characters.
 `logout` revokes that key server-side and removes the local entry, even if
 the API is unreachable (it says so and removes the entry anyway). A stored
 key that `aer login` did not create is left alone server-side but still
-forgotten locally, with a note to revoke it in Settings if needed.
+forgotten locally, with a note to revoke it in Settings if needed. Pass
+`--all` to log out of every base URL you have ever run `aer login` against;
+plain `aer logout` in a directory pointed at a different host than the one
+you are logged into names the other host it found instead of doing nothing.
+Running `aer login` again for a host you are already logged into revokes the
+previous key first, so repeated logins do not pile up live keys server-side.
 
 Every tenant command, including `aer import claude-code`, resolves
 credentials in this order: an explicit flag, then the environment
 (`AER_TENANT_API_KEY` / `AER_API_KEY`, as before), then `aer.config.json`,
 then the credentials file `aer login` wrote for the base URL in use. An
-explicit environment key always wins over a stored one.
+explicit environment key always wins over a stored one, with one exception:
+if that key came from the environment (or a flag) and the base URL came only
+from `aer.config.json` in the current directory and differs from the
+default, the command refuses rather than send your key to a host a cloned
+repo chose. Set `AER_BASE_URL` yourself to confirm you mean it.
 
 ## Link a project: `aer link`
 
