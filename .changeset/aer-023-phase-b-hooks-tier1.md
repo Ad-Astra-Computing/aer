@@ -16,5 +16,5 @@ and then drops (`events_dropped_budget`) rather than opening a duplicate.
 Every event now also carries `harness_agent_id`, not only the subagent
 lifecycle markers. `aer-hooks status --json` and the new
 `staleRegistrations()` export flag a registration missing `--lifecycle v2`
-or `--root-session`, an outdated installed release, and an `aer-hook` shadowed
+or `--root-session`, an outdated installed release and an `aer-hook` shadowed
 by a nix profile.
