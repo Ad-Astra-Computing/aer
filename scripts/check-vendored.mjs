@@ -26,6 +26,13 @@ const VENDORED = new Map([
       'packages/aer-mcp-recorder/src/shared/ingest-allowlist.ts',
     ],
   ],
+  [
+    'shared/bodies-off/claude-code-usage.ts',
+    [
+      'apps/cli/src/shared/claude-code-usage.ts',
+      'packages/aer-hooks/src/shared/claude-code-usage.ts',
+    ],
+  ],
 ]);
 
 const sha = (path) => createHash('sha256').update(readFileSync(join(root, path))).digest('hex');

@@ -248,6 +248,191 @@ describe('aer-hook cross-invocation session correlation', () => {
   });
 });
 
+// The bug this section guards against: Claude Code sends no model on any hook
+// payload, so every hooks-recorded session had tool.* events and no llm.*
+// events at all. transcript_path is on every payload, and the transcript's
+// assistant entries carry message.model / message.usage, so PostToolUse/Stop/
+// SubagentStop/SessionEnd read it (bounded, incremental, bodies-off) and emit
+// llm.completed alongside the tool events.
+describe('aer-hook Claude Code transcript llm usage', () => {
+  let cacheDir: string;
+  let transcriptDir: string;
+  let postedEvents: Array<{ event_type: string; payload: Record<string, unknown> }>;
+  let fetchImpl: typeof fetch;
+
+  function envWith(): NodeJS.ProcessEnv {
+    return { ...CONFIGURED, XDG_CACHE_HOME: cacheDir } as NodeJS.ProcessEnv;
+  }
+
+  function assistantLine(id: string, uuid: string, model = 'claude-opus-4-8', inTok = 12, outTok = 340): string {
+    return JSON.stringify({
+      type: 'assistant',
+      uuid,
+      timestamp: '2026-09-01T00:00:00.000Z',
+      message: {
+        id,
+        role: 'assistant',
+        model,
+        usage: { input_tokens: inTok, output_tokens: outTok },
+        content: [{ type: 'text', text: 'SECRET-ASSISTANT-TEXT' }],
+      },
+    });
+  }
+
+  beforeEach(() => {
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-transcript-'));
+    transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-transcript-file-'));
+    postedEvents = [];
+    fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ id: 'sess-1', ingest_token: 'tok-1' });
+      if (url.endsWith('/complete')) return jsonResponse({ ok: true });
+      if (/\/v1\/sessions\/[^/]+\/events$/.test(url) && init?.body) {
+        for (const e of JSON.parse(String(init.body)) as Array<Record<string, unknown>>) {
+          postedEvents.push({ event_type: e['event_type'] as string, payload: e['payload'] as Record<string, unknown> });
+        }
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    fs.rmSync(transcriptDir, { recursive: true, force: true });
+  });
+
+  it('PostToolUse with a transcript_path emits llm.completed with model + token counts', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    const sid = 'harness-llm-1';
+
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({
+          hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath,
+          tool_name: 'Bash', tool_input: {}, tool_response: {},
+        }),
+    });
+
+    const llm = postedEvents.find((e) => e.event_type === 'llm.completed');
+    expect(llm).toBeDefined();
+    expect(llm!.payload).toMatchObject({ model: 'claude-opus-4-8', provider: 'anthropic', input_tokens: 12, output_tokens: 340 });
+  });
+
+  it('never puts the transcript assistant text on the wire', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 'hs-y', transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+    expect(JSON.stringify(postedEvents)).not.toContain('SECRET-ASSISTANT-TEXT');
+  });
+
+  it('is incremental across invocations: the second only reports the newly appended turn', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    const sid = 'harness-llm-2';
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+    expect(postedEvents.filter((e) => e.event_type === 'llm.completed')).toHaveLength(1);
+
+    fs.appendFileSync(transcriptPath, assistantLine('msg_2', 'a2', 'claude-opus-4-8', 1, 2) + '\n');
+    postedEvents = [];
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+    const second = postedEvents.filter((e) => e.event_type === 'llm.completed');
+    expect(second).toHaveLength(1);
+    expect(second[0]!.payload['output_tokens']).toBe(2);
+  });
+
+  it('does not re-emit on a re-run against the same unchanged transcript (session_end path)', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    const sid = 'harness-llm-3';
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+    postedEvents = [];
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'SessionEnd', session_id: sid, transcript_path: transcriptPath, reason: 'other' }),
+    });
+    expect(postedEvents.filter((e) => e.event_type === 'llm.completed')).toHaveLength(0);
+  });
+
+  it('a PreToolUse (not a settle point) never scans the transcript', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 'hs-z', transcript_path: transcriptPath, tool_name: 'Bash', tool_input: { command: 'ls' } }),
+    });
+    expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
+  });
+
+  it('a missing transcript file is silent: no throw, no llm.completed, tool event still recorded', async () => {
+    await expect(
+      runHook(['--harness', 'claude-code'], envWith(), {
+        fetch: fetchImpl,
+        readInput: async () =>
+          JSON.stringify({
+            hook_event_name: 'PostToolUse', session_id: 'hs-missing', transcript_path: path.join(transcriptDir, 'gone.jsonl'),
+            tool_name: 'Bash', tool_input: {}, tool_response: {},
+          }),
+      }),
+    ).resolves.toBeUndefined();
+    expect(postedEvents.some((e) => e.event_type === 'tool.completed')).toBe(true);
+    expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
+  });
+
+  // P2-2: with no session_id, every invocation is a fresh single-shot with no
+  // persisted offset, so scanning would replay the whole transcript on each
+  // call. Two calls against the same never-consumed transcript must not
+  // double-report it.
+  it('never scans the transcript on the no-session-id (!ref) single-shot path', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    for (let i = 0; i < 2; i++) {
+      await runHook(['--harness', 'claude-code'], envWith(), {
+        fetch: fetchImpl,
+        readInput: async () =>
+          JSON.stringify({ hook_event_name: 'PostToolUse', transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+      });
+    }
+    expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
+  });
+
+  // Same reasoning for the lock-contention degrade: an unwritable store means
+  // no persisted offset can be read or saved either.
+  it('never scans the transcript when the session lock cannot be acquired', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    const blocker = path.join(cacheDir, 'blocker-file');
+    fs.writeFileSync(blocker, 'x');
+    const badEnv = { ...CONFIGURED, XDG_CACHE_HOME: path.join(blocker, 'nope') } as NodeJS.ProcessEnv;
+    await runHook(['--harness', 'claude-code'], badEnv, {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 'hs-degraded', transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+    expect(postedEvents.some((e) => e.event_type === 'tool.completed')).toBe(true);
+    expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
+  });
+});
+
 describe('parseHardTimeoutMs', () => {
   it('returns undefined (use the default) when unset', () => {
     const warn = vi.fn();

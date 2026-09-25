@@ -66,6 +66,13 @@ export interface HookEvent {
    */
   cwd?: string | undefined;
   /**
+   * Claude Code's `transcript_path`: the JSONL transcript file for this
+   * harness session. Used ONLY to locate model + token counts for
+   * llm.completed (see claude-code-transcript.ts) - never emitted itself,
+   * and never read for anything but `message.model` / `message.usage`.
+   */
+  transcriptPath?: string | undefined;
+  /**
    * Harness metadata for the emitted payload. Only identifier-shaped values
    * that the ingest allowlist stores ever land here; see `identifier`.
    */
@@ -227,6 +234,10 @@ export function normalizeClaudeCode(payload: unknown, lifecycle: Lifecycle = 1):
 
   const cwd = asString(p['cwd']);
   if (cwd !== undefined) event.cwd = cwd;
+  // Not identifier()-restricted: this is a local filesystem path used only to
+  // open the transcript for reading, never put on the wire.
+  const transcriptPath = asString(p['transcript_path']);
+  if (transcriptPath !== undefined) event.transcriptPath = transcriptPath;
   const meta = commonMeta(p, 'claude-code', kind);
   // Reasoning effort is a Claude Code field and rides in a nested object. It
   // is recorded wherever it appears rather than held back because the other

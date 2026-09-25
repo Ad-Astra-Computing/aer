@@ -20,9 +20,20 @@ import type { Principal } from './principal.js';
 
 export type { Principal } from './principal.js';
 
+// What the API's Uuid schema accepts. A caller-supplied eventId that does
+// not fit this shape is treated as not supplied: the generator still runs
+// rather than sending a value ingest would reject the whole event over.
+const UUID_LOWER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 export interface EventSink {
-  /** Record one event. Must not throw; returns void or a Promise the caller may ignore. */
-  emit(eventType: string, payload: Record<string, unknown>): void | Promise<void>;
+  /**
+   * Record one event. Must not throw; returns void or a Promise the caller may
+   * ignore. `eventId` lets a caller that can derive a stable id for an event
+   * (e.g. one keyed off a transcript message id) make re-emitting it
+   * idempotent at ingest; omitted, the sink assigns a fresh random id as
+   * before.
+   */
+  emit(eventType: string, payload: Record<string, unknown>, eventId?: string): void | Promise<void>;
   /** Flush and, if the sink owns a session, complete it. Must not reject. */
   close(): Promise<void>;
 }
@@ -152,7 +163,7 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
   let openAttempted = attached;
   let openInFlight: Promise<OpenSession | null> | null = null;
   let disabled = false;
-  const pending: Array<{ eventType: string; payload: Record<string, unknown> }> = [];
+  const pending: Array<{ eventType: string; payload: Record<string, unknown>; eventId?: string }> = [];
   let droppedForCapacity = 0;
 
   // Every diagnostic kind (hard-disable, partial-accept, retry-exhausted,
@@ -371,7 +382,7 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
     // .strict(), so stray keys (an old seq/type/ts) are rejected - send none.
     const ts = clock().toISOString();
     const all = pending.splice(0, pending.length).map((e) => ({
-      event_id: genId(),
+      event_id: e.eventId ?? genId(),
       agent_session_id: s.sessionId,
       event_type: e.eventType,
       source_type: sourceType,
@@ -403,9 +414,10 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
   }
 
   return {
-    emit(eventType, payload): void {
+    emit(eventType, payload, eventId): void {
       if (disabled) return;
-      pending.push({ eventType, payload });
+      const validId = eventId !== undefined && UUID_LOWER.test(eventId) ? eventId : undefined;
+      pending.push(validId !== undefined ? { eventType, payload, eventId: validId } : { eventType, payload });
       if (pending.length > maxPending) {
         const overflow = pending.length - maxPending;
         pending.splice(0, overflow);
