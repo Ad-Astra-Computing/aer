@@ -1,9 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { createReadStream, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname as osHostname } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 import { planInit, applyInit, runDoctor, type FsLike, type InitOptions } from './init.js';
+import { cmdLogin } from './auth/login.js';
+import { cmdLogout } from './auth/logout.js';
+import { cmdWhoami } from './auth/whoami.js';
+import { cmdLink, type AgentSummary } from './auth/link.js';
+import { resolveAuth, resolveBaseUrl } from './auth/resolve.js';
 import { runLiveChecks } from './doctor-live.js';
 import { ingestJsonlStream } from './ingest.js';
 import { runClaudeCodeImport } from './import/run.js';
@@ -35,6 +41,11 @@ const USAGE_TEXT = [
   '           (wires @adastracomputing/aer-auto-node into this project: auto-instrumentation)',
   '  aer doctor [--json]                check config + live API reachability and tenant auth',
   '  aer smoke                          run a tiny instrumented workload end to end',
+  '  aer login [--base-url <url>] [--no-browser]   sign in once per machine, save credentials',
+  '  aer logout [--base-url <url> | --all]   revoke the CLI key aer login minted and forget it locally',
+  '  aer whoami [--base-url <url>]      show what aer login stored (never the key itself)',
+  '  aer link [--agent <id> | --create-agent <name>] [--env <id>] [--base-url <url>]',
+  '           (writes aer.config.json for this project from your aer login session)',
   '  aer ingest <file.jsonl | ->        (- = stdin)',
   '  aer import claude-code <file.jsonl | ->   (post-hoc; bodies-off; source_type=import)',
   '  aer verify <aer-id>',
@@ -115,6 +126,7 @@ function missingEnv(command: string, missing: string[]): never {
   console.error(`${command} needs ${missing.length === 1 ? 'this variable' : 'these variables'} set:`);
   for (const name of missing) console.error(`  ${name.padEnd(20)}${ENV_HELP[name] ?? ''}`);
   console.error('\nThe ids can also come from aer.config.json in this directory, which aer init writes.');
+  console.error('Or run `aer login` once per machine and `aer link` once per project instead of setting these.');
   process.exit(64);
 }
 
@@ -171,10 +183,15 @@ function printHelp(): never {
   process.exit(0);
 }
 
+// P3: a flag with no value (or immediately followed by another flag, e.g.
+// `aer login --base-url --no-browser`) must not silently swallow the next
+// flag as its value.
 function readFlag(args: string[], name: string): string | undefined {
   const idx = args.indexOf(name);
   if (idx === -1) return undefined;
-  return args[idx + 1];
+  const value = args[idx + 1];
+  if (value === undefined || value.startsWith('--')) return undefined;
+  return value;
 }
 
 const realFs: FsLike = {
@@ -258,6 +275,13 @@ async function cmdDoctor(args: string[]): Promise<void> {
     try { return JSON.parse(realFs.readFile(`${process.cwd()}/aer.config.json`) ?? '{}') as { base_url?: string; agent_id?: string }; }
     catch { return {}; }
   })();
+  // Same helper as every tenant command (P1-1): refuse rather than send an
+  // env-sourced key toward a base URL a cloned repo's aer.config.json chose.
+  const auth = resolveAuth({ env, cfg, defaultBaseUrl: DEFAULT_BASE_URL });
+  if (auth.baseUrlMismatch) {
+    console.error(auth.baseUrlMismatch);
+    process.exit(64);
+  }
   const baseUrl = env['AER_BASE_URL'] ?? cfg.base_url;
   const live = await runLiveChecks({
     baseUrl,
@@ -285,8 +309,16 @@ async function cmdSmoke(): Promise<void> {
     console.error('smoke: not configured, run `aer doctor` and fix the failing checks first.');
     process.exit(1);
   }
-  const cfg = JSON.parse(realFs.readFile(`${process.cwd()}/aer.config.json`) ?? '{}') as { base_url?: string };
-  const target = process.env['AER_BASE_URL'] ?? cfg.base_url ?? 'https://api.aer.run';
+  const cfg = projectConfig();
+  // Same helper as every tenant command (P1-1): refuse rather than hand
+  // AER_API_KEY to the collector against a base URL a cloned repo's
+  // aer.config.json chose.
+  const auth = resolveAuth({ env: process.env, cfg, defaultBaseUrl: DEFAULT_BASE_URL });
+  if (auth.baseUrlMismatch) {
+    console.error(auth.baseUrlMismatch);
+    process.exit(64);
+  }
+  const target = auth.baseUrl;
   const script = buildSmokeScript(target);
   const code: number = await new Promise((resolve) => {
     const child = spawn(process.execPath, ['--import', REGISTER, '-e', script], { stdio: 'inherit' });
@@ -299,11 +331,65 @@ async function cmdSmoke(): Promise<void> {
 
 // argv is the command's own arguments (no node/script path), so tests can
 // drive `main` directly without touching the real process.argv.
-// The collector and `aer doctor` read AER_API_KEY, the rest of the CLI read
-// AER_TENANT_API_KEY, and both name the same tenant key. Accept either
-// everywhere, so setting the documented name never fails to authenticate.
-function tenantKey(): string | undefined {
-  return process.env['AER_TENANT_API_KEY'] ?? process.env['AER_API_KEY'];
+
+// Resolution order for every tenant-authenticated command: flag (none of
+// these take one directly today), then AER_TENANT_API_KEY/AER_API_KEY, then
+// aer.config.json, then the credentials file aer login wrote. See
+// auth/resolve.ts. Exits with the same usage-error shape as before aer login
+// existed when nothing resolves.
+function requireTenantAuth(commandLabel: string): { baseUrl: string; apiKey: string } {
+  const cfg = projectConfig();
+  const auth = resolveAuth({ env: process.env, cfg, defaultBaseUrl: DEFAULT_BASE_URL });
+  if (auth.baseUrlMismatch) {
+    console.error(auth.baseUrlMismatch);
+    process.exit(64);
+  }
+  if (!auth.apiKey) {
+    console.error(`${commandLabel} needs a tenant API key: set AER_TENANT_API_KEY (or AER_API_KEY), or run \`aer login\` and \`aer link\`.`);
+    process.exit(64);
+  }
+  if (auth.expired) {
+    console.error('Stored credentials have expired; run `aer login` again.');
+    process.exit(1);
+  }
+  return { baseUrl: auth.baseUrl, apiKey: auth.apiKey };
+}
+
+// Best-effort display detection for `aer login`'s browser auto-open: never
+// required, since the flow must work headless over SSH.
+function hasDisplay(): boolean {
+  if (process.platform === 'darwin' || process.platform === 'win32') return true;
+  return !!(process.env['DISPLAY'] || process.env['WAYLAND_DISPLAY']);
+}
+
+// P1-2: never shell out through `cmd /c start`. cmd.exe parses its whole
+// command line for & | < > ^ %, even when node passes the URL as a separate
+// argv entry, so a hostile verification_uri could inject a second command.
+// rundll32's FileProtocolHandler opens a URL without going through cmd.exe
+// at all. The URL itself is already validated (https-only, no userinfo) in
+// device-login.ts before this is ever called.
+function openBrowserBestEffort(url: string): void {
+  const [cmd, args] = process.platform === 'darwin'
+    ? ['open', [url]]
+    : process.platform === 'win32'
+      ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+      : ['xdg-open', [url]];
+  const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+  child.on('error', () => { /* opening a browser is a convenience only */ });
+  child.unref();
+}
+
+async function promptAgentChoice(agents: AgentSummary[]): Promise<number> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log('Pick an agent:');
+    agents.forEach((a, i) => console.log(`  [${i}] ${a.name ?? a.agent_id} (${a.agent_id})`));
+    const answer = await rl.question('> ');
+    const idx = Number.parseInt(answer.trim(), 10);
+    return Number.isNaN(idx) ? -1 : idx;
+  } finally {
+    rl.close();
+  }
 }
 
 /**
@@ -355,6 +441,82 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
+  if (command === 'login') {
+    const args = [sub, ...rest].filter((x): x is string => x !== undefined);
+    const baseUrlFlag = readFlag(args, '--base-url');
+    const noBrowser = args.includes('--no-browser');
+    const code = await cmdLogin(
+      { baseUrlFlag, noBrowser },
+      {
+        env: process.env,
+        defaultBaseUrl: DEFAULT_BASE_URL,
+        clientVersion: ownVersion(),
+        hostname: () => osHostname(),
+        hasDisplay,
+        openBrowser: openBrowserBestEffort,
+        print: (l) => console.log(l),
+        printErr: (l) => console.error(l),
+      },
+    );
+    if (code !== 0) process.exit(code);
+    return;
+  }
+
+  if (command === 'logout') {
+    const args = [sub, ...rest].filter((x): x is string => x !== undefined);
+    const baseUrlFlag = readFlag(args, '--base-url');
+    const all = args.includes('--all');
+    const resolvedBaseUrl = resolveBaseUrl({ env: process.env, cfg: projectConfig(), baseUrlFlag, defaultBaseUrl: DEFAULT_BASE_URL });
+    const code = await cmdLogout(
+      { baseUrl: resolvedBaseUrl, all },
+      { env: process.env, print: (l) => console.log(l), printErr: (l) => console.error(l) },
+    );
+    if (code !== 0) process.exit(code);
+    return;
+  }
+
+  if (command === 'whoami') {
+    const args = [sub, ...rest].filter((x): x is string => x !== undefined);
+    const baseUrlFlag = readFlag(args, '--base-url');
+    const resolvedBaseUrl = resolveBaseUrl({ env: process.env, cfg: projectConfig(), baseUrlFlag, defaultBaseUrl: DEFAULT_BASE_URL });
+    const code = cmdWhoami(
+      { baseUrl: resolvedBaseUrl },
+      { env: process.env, print: (l) => console.log(l), printErr: (l) => console.error(l) },
+    );
+    if (code !== 0) process.exit(code);
+    return;
+  }
+
+  if (command === 'link') {
+    const args = [sub, ...rest].filter((x): x is string => x !== undefined);
+    const agentId = readFlag(args, '--agent');
+    const createAgentName = readFlag(args, '--create-agent');
+    const envIdFlag = readFlag(args, '--env');
+    const baseUrlFlag = readFlag(args, '--base-url');
+    const code = await cmdLink(
+      {
+        ...(agentId ? { agentId } : {}),
+        ...(createAgentName ? { createAgentName } : {}),
+        ...(envIdFlag ? { envId: envIdFlag } : {}),
+        ...(baseUrlFlag ? { baseUrlFlag } : {}),
+      },
+      {
+        cwd: process.cwd(),
+        env: process.env,
+        defaultBaseUrl: DEFAULT_BASE_URL,
+        isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY,
+        print: (l) => console.log(l),
+        printErr: (l) => console.error(l),
+        readFile: (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } },
+        writeFile: (p, c) => writeFileSync(p, c),
+        randomUUID,
+        promptChoice: promptAgentChoice,
+      },
+    );
+    if (code !== 0) process.exit(code);
+    return;
+  }
+
   if (command === 'ingest') {
     const file = sub;
     if (!file) usage();
@@ -397,8 +559,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exit(64);
     }
     const cfg = projectConfig();
-    const apiKey = tenantKey();
-    const tenantId = process.env['AER_TENANT_ID'] || cfg.tenant_id;
+    const auth = resolveAuth({ env: process.env, cfg, defaultBaseUrl: DEFAULT_BASE_URL });
+    if (auth.baseUrlMismatch) {
+      console.error(auth.baseUrlMismatch);
+      process.exit(64);
+    }
+    const apiKey = auth.apiKey;
+    const tenantId = auth.tenantId;
     const agentId = process.env['AER_AGENT_ID'] || cfg.agent_id;
     const environmentId = process.env['AER_ENV_ID'] || cfg.env_id;
     const agentVersion = process.env['AER_AGENT_VERSION'];
@@ -410,6 +577,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       AER_ENV_ID: environmentId,
     }).filter(([, value]) => !value).map(([name]) => name);
     if (!apiKey || !tenantId || !agentId || !environmentId) missingEnv('aer import claude-code', missing);
+    if (auth.expired) {
+      console.error('Stored credentials have expired; run `aer login` again.');
+      process.exit(1);
+    }
     if (file !== '-' && !existsSync(file)) {
       console.error(`cannot read ${file}: no such file`);
       process.exit(1);
@@ -418,7 +589,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const stream = file === '-' ? process.stdin : createReadStream(file);
     const summary = await runClaudeCodeImport({
       stream,
-      baseUrl: baseUrl || cfg.base_url || DEFAULT_BASE_URL,
+      baseUrl: auth.baseUrl,
       apiKey,
       tenantId,
       agentId,
@@ -512,9 +683,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.error(`aer ${command} needs a subcommand, for example: aer ${command} list\n`);
       usage();
     }
-    const apiKey = tenantKey();
-    if (!baseUrl || !apiKey) usage();
-    const opts = { baseUrl, apiKey };
+    const opts = requireTenantAuth(`aer ${command}`);
 
     if (command === 'agents' && sub === 'list') {
       console.log(JSON.stringify(await listAgents(opts), null, 2));
@@ -638,9 +807,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   if (command === 'webhooks') {
-    const apiKey = tenantKey();
-    if (!baseUrl || !apiKey) usage();
-    const opts = { baseUrl, apiKey };
+    const opts = requireTenantAuth('aer webhooks');
 
     if (sub === 'list') {
       console.log(JSON.stringify(await listWebhooks(opts), null, 2));

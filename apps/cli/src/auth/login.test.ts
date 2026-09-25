@@ -1,0 +1,255 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cmdLogin } from './login.js';
+import { getCredential, setCredential } from './credentials-store.js';
+
+const BASE_URL = 'https://api.test';
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+const START = {
+  device_code: 'dc-1',
+  user_code: 'ABCDEFGH',
+  verification_uri: 'https://aer.run/device',
+  verification_uri_complete: 'https://aer.run/device?user_code=ABCDEFGH',
+  expires_in: 600,
+  interval: 5,
+};
+
+const GRANT = {
+  api_key: 'aer_super_secret_value_xyz',
+  key_id: 'key-1',
+  tenant_id: '22222222-2222-2222-2222-222222222222',
+  role: 'write',
+  expires_at: '2099-01-01T00:00:00Z',
+};
+
+describe('cmdLogin', () => {
+  let root: string;
+  let env: Record<string, string | undefined>;
+  let out: string[];
+  let err: string[];
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aer-login-'));
+    env = { HOME: root, XDG_CONFIG_HOME: undefined };
+    out = [];
+    err = [];
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function baseDeps(fetchImpl: typeof fetch) {
+    return {
+      env,
+      defaultBaseUrl: 'https://api.aer.run',
+      clientVersion: '1.0.0',
+      fetchImpl,
+      sleep: () => Promise.resolve(),
+      print: (l: string) => out.push(l),
+      printErr: (l: string) => err.push(l),
+      hostname: () => 'my-machine',
+      hasDisplay: () => false,
+      openBrowser: vi.fn(),
+    };
+  }
+
+  it('completes the flow and saves the credential, keyed by the base URL used', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(0);
+    const cred = getCredential(BASE_URL, env);
+    expect(cred).toEqual({
+      tenant_id: '22222222-2222-2222-2222-222222222222', api_key: GRANT.api_key, key_id: 'key-1', role: 'write', expires_at: GRANT.expires_at,
+    });
+  });
+
+  it('never prints the api key, in stdout or stderr', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    const everything = [...out, ...err].join('\n');
+    expect(everything).not.toContain(GRANT.api_key);
+  });
+
+  it('prints the verification URL and a dashed user code', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    const everything = out.join('\n');
+    expect(everything).toContain('https://aer.run/device');
+    expect(everything).toContain('ABCD-EFGH');
+    // never the prefilled complete URL: the code must be typed
+    expect(everything).not.toContain('verification_uri_complete');
+    expect(everything).not.toContain('?user_code=');
+  });
+
+  it('opens the browser only when there is a display and --no-browser was not passed', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const deps = baseDeps(fetchImpl);
+    deps.hasDisplay = () => true;
+    await cmdLogin({ baseUrlFlag: BASE_URL }, deps);
+    expect(deps.openBrowser).toHaveBeenCalledWith('https://aer.run/device');
+  });
+
+  it('never opens the browser with --no-browser, even with a display', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const deps = baseDeps(fetchImpl);
+    deps.hasDisplay = () => true;
+    await cmdLogin({ baseUrlFlag: BASE_URL, noBrowser: true }, deps);
+    expect(deps.openBrowser).not.toHaveBeenCalled();
+  });
+
+  it('never requires a display: works with hasDisplay() false (SSH)', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(0);
+  });
+
+  it('a browser-open failure never fails the login', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const deps = baseDeps(fetchImpl);
+    deps.hasDisplay = () => true;
+    deps.openBrowser = vi.fn(() => { throw new Error('no browser available'); });
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, deps);
+    expect(code).toBe(0);
+  });
+
+  it('returns exit 1 and a clean message on denial, without saving a credential', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(400, { error: 'access_denied' }));
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(1);
+    expect(err.join('\n')).toContain('denied');
+    expect(getCredential(BASE_URL, env)).toBeUndefined();
+  });
+
+  it('sends the sanitized hostname to /v1/cli/device', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const deps = baseDeps(fetchImpl);
+    deps.hostname = () => 'weird\x07host\nname'.repeat(10);
+    await cmdLogin({ baseUrlFlag: BASE_URL }, deps);
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const sent = JSON.parse(init.body as string) as { hostname: string };
+    expect(sent.hostname).toHaveLength(64);
+    expect(sent.hostname).not.toMatch(/[\x00-\x1f\x7f]/);
+  });
+
+  it('falls back to AER_BASE_URL then the default base URL', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const deps = baseDeps(fetchImpl);
+    deps.env = { ...env, AER_BASE_URL: 'https://env.test' };
+    await cmdLogin({}, deps);
+    expect(getCredential('https://env.test', deps.env)).toBeDefined();
+  });
+
+  it('P1-2: sanitizes the verification URL and user code before printing', async () => {
+    const dirtyStart = { ...START, verification_uri: 'https://aer.run/device', user_code: 'ab\x07cd-ef\ngh' };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, dirtyStart))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(out.join('\n')).not.toMatch(/[\x00-\x08\x0B-\x1F\x7F]/);
+  });
+
+  it('P2-3: revokes an existing entry for this base URL only after the new one is stored', async () => {
+    setCredential(BASE_URL, {
+      tenant_id: '33333333-3333-3333-3333-333333333333', api_key: 'old-key', key_id: 'old-key-id', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+    }, env);
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT))
+      .mockResolvedValueOnce(new Response(null, { status: 204 })); // best-effort revoke of the old key, last
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(0);
+    // the new credential is already on disk by the time the old key is revoked
+    expect(getCredential(BASE_URL, env)?.api_key).toBe(GRANT.api_key);
+    const [thirdUrl, thirdInit] = fetchImpl.mock.calls[2] as [string, RequestInit];
+    expect(thirdUrl).toBe(`${BASE_URL}/v1/cli/logout`);
+    expect((thirdInit.headers as Record<string, string>).authorization).toBe('Bearer old-key');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('P2-3: a failed revoke of the old key never fails the (already-complete) new login', async () => {
+    setCredential(BASE_URL, {
+      tenant_id: '33333333-3333-3333-3333-333333333333', api_key: 'old-key', key_id: 'old-key-id', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+    }, env);
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT))
+      .mockRejectedValueOnce(new Error('network down')); // revoke of the old key fails, last
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(0);
+    expect(getCredential(BASE_URL, env)?.api_key).toBe(GRANT.api_key);
+  });
+
+  it('P2-3: the old key survives untouched if the device flow itself is denied', async () => {
+    setCredential(BASE_URL, {
+      tenant_id: '33333333-3333-3333-3333-333333333333', api_key: 'old-key', key_id: 'old-key-id', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+    }, env);
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(400, { error: 'access_denied' }));
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(1);
+    // no logout call was ever made: the old key is left exactly as it was
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(getCredential(BASE_URL, env)?.api_key).toBe('old-key');
+  });
+
+  it('P2-2: a store failure after the 201 revokes the newly minted key rather than orphaning it', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT))
+      .mockResolvedValueOnce(new Response(null, { status: 204 })); // revoke of the new key
+    const deps = baseDeps(fetchImpl);
+    // Force the store to fail: point HOME at a path that is actually a file,
+    // so mkdirSync for the aer/ directory fails.
+    const blockerFile = join(root, 'not-a-directory');
+    writeFileSync(blockerFile, 'x');
+    deps.env = { HOME: blockerFile, XDG_CONFIG_HOME: undefined };
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, deps);
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/revoked/i);
+    const [, , thirdCall] = fetchImpl.mock.calls;
+    expect(thirdCall?.[0]).toBe(`${BASE_URL}/v1/cli/logout`);
+    const revokeInit = thirdCall?.[1] as RequestInit;
+    expect((revokeInit.headers as Record<string, string>).authorization).toBe(`Bearer ${GRANT.api_key}`);
+  });
+
+  it('P2-2: never prints the api key even when the store fails and it must be revoked', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const deps = baseDeps(fetchImpl);
+    const blockerFile = join(root, 'not-a-directory-2');
+    writeFileSync(blockerFile, 'x');
+    deps.env = { HOME: blockerFile, XDG_CONFIG_HOME: undefined };
+    await cmdLogin({ baseUrlFlag: BASE_URL }, deps);
+    expect([...out, ...err].join('\n')).not.toContain(GRANT.api_key);
+  });
+});
