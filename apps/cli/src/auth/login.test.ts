@@ -175,33 +175,49 @@ describe('cmdLogin', () => {
     expect(out.join('\n')).not.toMatch(/[\x00-\x08\x0B-\x1F\x7F]/);
   });
 
-  it('P2-3: revokes an existing entry for this base URL before starting a new login', async () => {
+  it('P2-3: revokes an existing entry for this base URL only after the new one is stored', async () => {
     setCredential(BASE_URL, {
       tenant_id: '33333333-3333-3333-3333-333333333333', api_key: 'old-key', key_id: 'old-key-id', role: 'write', expires_at: '2099-01-01T00:00:00Z',
     }, env);
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response(null, { status: 204 })) // best-effort revoke of the old key
       .mockResolvedValueOnce(jsonResponse(200, START))
-      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+      .mockResolvedValueOnce(jsonResponse(201, GRANT))
+      .mockResolvedValueOnce(new Response(null, { status: 204 })); // best-effort revoke of the old key, last
     const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
     expect(code).toBe(0);
-    const [firstUrl, firstInit] = fetchImpl.mock.calls[0] as [string, RequestInit];
-    expect(firstUrl).toBe(`${BASE_URL}/v1/cli/logout`);
-    expect((firstInit.headers as Record<string, string>).authorization).toBe('Bearer old-key');
+    // the new credential is already on disk by the time the old key is revoked
+    expect(getCredential(BASE_URL, env)?.api_key).toBe(GRANT.api_key);
+    const [thirdUrl, thirdInit] = fetchImpl.mock.calls[2] as [string, RequestInit];
+    expect(thirdUrl).toBe(`${BASE_URL}/v1/cli/logout`);
+    expect((thirdInit.headers as Record<string, string>).authorization).toBe('Bearer old-key');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('P2-3: a failed revoke of the old key never fails the (already-complete) new login', async () => {
+    setCredential(BASE_URL, {
+      tenant_id: '33333333-3333-3333-3333-333333333333', api_key: 'old-key', key_id: 'old-key-id', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+    }, env);
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT))
+      .mockRejectedValueOnce(new Error('network down')); // revoke of the old key fails, last
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(0);
     expect(getCredential(BASE_URL, env)?.api_key).toBe(GRANT.api_key);
   });
 
-  it('P2-3: a failed revoke of the old key never blocks the new login', async () => {
+  it('P2-3: the old key survives untouched if the device flow itself is denied', async () => {
     setCredential(BASE_URL, {
       tenant_id: '33333333-3333-3333-3333-333333333333', api_key: 'old-key', key_id: 'old-key-id', role: 'write', expires_at: '2099-01-01T00:00:00Z',
     }, env);
     const fetchImpl = vi.fn()
-      .mockRejectedValueOnce(new Error('network down')) // revoke of the old key fails
       .mockResolvedValueOnce(jsonResponse(200, START))
-      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+      .mockResolvedValueOnce(jsonResponse(400, { error: 'access_denied' }));
     const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
-    expect(code).toBe(0);
-    expect(getCredential(BASE_URL, env)?.api_key).toBe(GRANT.api_key);
+    expect(code).toBe(1);
+    // no logout call was ever made: the old key is left exactly as it was
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(getCredential(BASE_URL, env)?.api_key).toBe('old-key');
   });
 
   it('P2-2: a store failure after the 201 revokes the newly minted key rather than orphaning it', async () => {
