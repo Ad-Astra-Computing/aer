@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,8 +10,11 @@ import {
   getCredential,
   setCredential,
   removeCredential,
+  listCredentialBaseUrls,
   isExpired,
+  isValidStoredCredential,
   CredentialsSymlinkError,
+  CredentialsCorruptError,
   type StoredCredential,
 } from './credentials-store.js';
 
@@ -138,5 +141,167 @@ describe('credentials-store', () => {
 
   it('isExpired treats an unparsable date as not expired rather than always-expired', () => {
     expect(isExpired({ ...CRED, expires_at: 'not-a-date' })).toBe(false);
+  });
+});
+
+describe('corrupt credentials file is never silently clobbered', () => {
+  let root: string;
+  let env: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aer-cred-corrupt-'));
+    env = { HOME: root, XDG_CONFIG_HOME: undefined };
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('invalid JSON is moved aside to .corrupt and refused, not overwritten', () => {
+    const paths = credentialsPaths(env);
+    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    writeFileSync(paths.file, 'not json at all {{{');
+    expect(() => readCredentialsFile(paths)).toThrow(CredentialsCorruptError);
+    expect(existsSync(paths.file)).toBe(false);
+    expect(readFileSync(`${paths.file}.corrupt`, 'utf8')).toBe('not json at all {{{');
+  });
+
+  it('valid JSON that is not an object (array, string, number) is also refused', () => {
+    const paths = credentialsPaths(env);
+    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    writeFileSync(paths.file, JSON.stringify([1, 2, 3]));
+    expect(() => readCredentialsFile(paths)).toThrow(CredentialsCorruptError);
+    expect(existsSync(`${paths.file}.corrupt`)).toBe(true);
+  });
+
+  it('getCredential propagates the corruption instead of returning undefined', () => {
+    const paths = credentialsPaths(env);
+    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    writeFileSync(paths.file, '{ broken');
+    expect(() => getCredential('https://api.aer.run', env)).toThrow(CredentialsCorruptError);
+  });
+
+  it('setCredential never overwrites a corrupt file silently', () => {
+    const paths = credentialsPaths(env);
+    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    writeFileSync(paths.file, '{ broken');
+    expect(() => setCredential('https://api.aer.run', CRED, env)).toThrow(CredentialsCorruptError);
+    // the corrupt content was moved aside, not replaced with the new entry
+    expect(existsSync(paths.file)).toBe(false);
+    expect(readFileSync(`${paths.file}.corrupt`, 'utf8')).toBe('{ broken');
+  });
+});
+
+describe('normalizeBaseUrl via URL', () => {
+  it('lowercases the host', () => {
+    expect(normalizeBaseUrl('https://API.AER.RUN')).toBe('https://api.aer.run');
+  });
+
+  it('drops a trailing slash', () => {
+    expect(normalizeBaseUrl('https://api.aer.run/')).toBe('https://api.aer.run');
+  });
+
+  it('preserves a non-root path', () => {
+    expect(normalizeBaseUrl('https://gateway.example/aer/')).toBe('https://gateway.example/aer');
+  });
+
+  it('refuses a base URL with embedded credentials rather than silently dropping them', () => {
+    expect(() => normalizeBaseUrl('https://user:pass@api.aer.run')).toThrow(/embedded credentials/);
+  });
+
+  it('falls back to a trailing-slash strip for a value new URL() cannot parse', () => {
+    expect(normalizeBaseUrl('not-a-url/')).toBe('not-a-url');
+  });
+});
+
+describe('isValidStoredCredential', () => {
+  it('accepts a well-formed entry', () => {
+    expect(isValidStoredCredential(CRED)).toBe(true);
+  });
+
+  it('rejects an entry missing api_key, instead of letting a caller crash on it', () => {
+    const { api_key: _drop, ...rest } = CRED;
+    expect(isValidStoredCredential(rest)).toBe(false);
+  });
+
+  it('rejects a non-object', () => {
+    expect(isValidStoredCredential('just a string')).toBe(false);
+    expect(isValidStoredCredential(null)).toBe(false);
+  });
+
+  it('rejects an unparsable expires_at', () => {
+    expect(isValidStoredCredential({ ...CRED, expires_at: 'whenever' })).toBe(false);
+  });
+
+  it('getCredential treats a shape-invalid stored entry as absent, not a crash', () => {
+    const root = mkdtempSync(join(tmpdir(), 'aer-cred-shape-'));
+    const env = { HOME: root, XDG_CONFIG_HOME: undefined };
+    try {
+      const paths = credentialsPaths(env);
+      writeCredentialsFile(paths, { 'https://api.aer.run': { role: 'write' } as unknown as StoredCredential });
+      expect(getCredential('https://api.aer.run', env)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('listCredentialBaseUrls', () => {
+  it('lists only structurally valid entries', () => {
+    const root = mkdtempSync(join(tmpdir(), 'aer-cred-list-'));
+    const env = { HOME: root, XDG_CONFIG_HOME: undefined };
+    try {
+      const paths = credentialsPaths(env);
+      writeCredentialsFile(paths, {
+        'https://api.aer.run': CRED,
+        'https://staging.aer.run': { role: 'write' } as unknown as StoredCredential,
+      });
+      expect(listCredentialBaseUrls(env)).toEqual(['https://api.aer.run']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is empty when nothing is stored', () => {
+    const root = mkdtempSync(join(tmpdir(), 'aer-cred-list2-'));
+    const env = { HOME: root, XDG_CONFIG_HOME: undefined };
+    try {
+      expect(listCredentialBaseUrls(env)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('warns on read when the file is more permissive than 0600 (POSIX only)', () => {
+  it('calls warn() with the path when the mode is loose', () => {
+    if (process.platform === 'win32') return; // no POSIX mode bits to check
+    const root = mkdtempSync(join(tmpdir(), 'aer-cred-mode-'));
+    const env = { HOME: root, XDG_CONFIG_HOME: undefined };
+    try {
+      const paths = credentialsPaths(env);
+      writeCredentialsFile(paths, { 'https://api.aer.run': CRED });
+      chmodSync(paths.file, 0o644);
+      const warnings: string[] = [];
+      readCredentialsFile(paths, { warn: (m) => warnings.push(m) });
+      expect(warnings.some((w) => w.includes(paths.file))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not warn when the mode is already 0600', () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(join(tmpdir(), 'aer-cred-mode-ok-'));
+    const env = { HOME: root, XDG_CONFIG_HOME: undefined };
+    try {
+      const paths = credentialsPaths(env);
+      writeCredentialsFile(paths, { 'https://api.aer.run': CRED });
+      const warnings: string[] = [];
+      readCredentialsFile(paths, { warn: (m) => warnings.push(m) });
+      expect(warnings).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
