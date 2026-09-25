@@ -53,3 +53,14 @@ export type {
   UninstallResult,
   StatusEntry,
 } from './install.js';
+
+export {
+  diagnoseCommand,
+  diagnoseRegistrations,
+  diagnoseVersion,
+  diagnoseNixShadow,
+  isOlderVersion,
+} from './doctor.js';
+export type { StaleRegistration, StaleReason } from './doctor.js';
+export { HOOKS_VERSION } from './evidence.js';
+export { staleRegistrations } from './hooks-doctor.js';

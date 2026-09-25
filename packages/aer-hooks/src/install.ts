@@ -506,6 +506,8 @@ export interface StatusEntry {
   // wired hook whose command cannot be found records nothing and reads to the
   // user as AER silently not working, which is the failure worth surfacing.
   resolves: boolean;
+  /** The exact AER commands found wired in, deduplicated. Feeds `aer doctor`'s staleness checks. */
+  commands: string[];
 }
 
 /** Report which events currently carry an AER hook entry, per harness. */
@@ -521,15 +523,15 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
       await fs.access(file);
       exists = true;
     } catch {
-      out.push({ harness, path: file, exists: false, wiredEvents, resolves: true });
+      out.push({ harness, path: file, exists: false, wiredEvents, resolves: true, commands: [] });
       continue;
     }
+    let commands: string[] = [];
     try {
       const config = await readJsonOrAbort(file);
       // Antigravity's groups sit at the root under our own key, with no wrapper.
       const hooks = harness === 'antigravity' ? config[AER_GROUP_NAME] : config['hooks'];
       if (typeof hooks === 'object' && hooks !== null && !Array.isArray(hooks)) {
-        const commands: string[] = [];
         for (const [ev, groups] of Object.entries(hooks as HooksMap)) {
           if (!Array.isArray(groups) || !groups.some(groupHasAer)) continue;
           wiredEvents.push(ev);
@@ -539,13 +541,14 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
             }
           }
         }
+        commands = [...new Set(commands)];
         resolves = commands.length === 0 || commands.every(hookCommandResolves);
       }
     } catch {
       // Malformed config: the file exists but yields no readable AER wiring.
       wiredEvents = [];
     }
-    out.push({ harness, path: file, exists, wiredEvents, resolves });
+    out.push({ harness, path: file, exists, wiredEvents, resolves, commands });
   }
   return out;
 }
