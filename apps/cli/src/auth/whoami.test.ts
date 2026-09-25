@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdWhoami } from './whoami.js';
-import { setCredential } from './credentials-store.js';
+import { setCredential, credentialsPaths, writeCredentialsFile, type StoredCredential } from './credentials-store.js';
 
 const BASE_URL = 'https://api.test';
 const CRED = { tenant_id: 't1', api_key: 'aer_secret_key_value_0123', key_id: 'k1', role: 'write', expires_at: '2099-01-01T00:00:00Z' };
@@ -57,5 +57,13 @@ describe('cmdWhoami', () => {
     const code = cmdWhoami({ baseUrl: BASE_URL }, deps());
     expect(code).toBe(0);
     expect(out.join('\n')).toMatch(/expired/i);
+  });
+
+  it('P3: a stored entry missing api_key is treated as not logged in, not a crash', () => {
+    const paths = credentialsPaths(env);
+    writeCredentialsFile(paths, { [BASE_URL]: { role: 'write' } as unknown as StoredCredential });
+    expect(() => cmdWhoami({ baseUrl: BASE_URL }, deps())).not.toThrow();
+    const code = cmdWhoami({ baseUrl: BASE_URL }, deps());
+    expect(code).toBe(1);
   });
 });
