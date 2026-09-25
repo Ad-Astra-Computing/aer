@@ -157,13 +157,21 @@ describe('corrupt credentials file is never silently clobbered', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('invalid JSON is moved aside to .corrupt and refused, not overwritten', () => {
+  it('invalid JSON is moved aside to a timestamped .corrupt-<suffix> file and refused, not overwritten', () => {
     const paths = credentialsPaths(env);
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
     writeFileSync(paths.file, 'not json at all {{{');
-    expect(() => readCredentialsFile(paths)).toThrow(CredentialsCorruptError);
+    let caught: unknown;
+    try {
+      readCredentialsFile(paths);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CredentialsCorruptError);
+    const err = caught as InstanceType<typeof CredentialsCorruptError>;
+    expect(err.movedTo).toMatch(/\.corrupt-\d{8}T\d{6}Z$/);
     expect(existsSync(paths.file)).toBe(false);
-    expect(readFileSync(`${paths.file}.corrupt`, 'utf8')).toBe('not json at all {{{');
+    expect(readFileSync(err.movedTo, 'utf8')).toBe('not json at all {{{');
   });
 
   it('valid JSON that is not an object (array, string, number) is also refused', () => {
@@ -171,7 +179,6 @@ describe('corrupt credentials file is never silently clobbered', () => {
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
     writeFileSync(paths.file, JSON.stringify([1, 2, 3]));
     expect(() => readCredentialsFile(paths)).toThrow(CredentialsCorruptError);
-    expect(existsSync(`${paths.file}.corrupt`)).toBe(true);
   });
 
   it('getCredential propagates the corruption instead of returning undefined', () => {
@@ -185,10 +192,46 @@ describe('corrupt credentials file is never silently clobbered', () => {
     const paths = credentialsPaths(env);
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
     writeFileSync(paths.file, '{ broken');
-    expect(() => setCredential('https://api.aer.run', CRED, env)).toThrow(CredentialsCorruptError);
+    let caught: unknown;
+    try {
+      setCredential('https://api.aer.run', CRED, env);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(CredentialsCorruptError);
+    const err = caught as InstanceType<typeof CredentialsCorruptError>;
     // the corrupt content was moved aside, not replaced with the new entry
     expect(existsSync(paths.file)).toBe(false);
-    expect(readFileSync(`${paths.file}.corrupt`, 'utf8')).toBe('{ broken');
+    expect(readFileSync(err.movedTo, 'utf8')).toBe('{ broken');
+  });
+
+  it('never overwrites an earlier quarantined file: a second corruption gets its own name', () => {
+    const paths = credentialsPaths(env);
+    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+
+    writeFileSync(paths.file, 'first corrupt content');
+    let firstErr: InstanceType<typeof CredentialsCorruptError> | undefined;
+    try {
+      readCredentialsFile(paths);
+    } catch (e) {
+      firstErr = e as InstanceType<typeof CredentialsCorruptError>;
+    }
+    expect(firstErr).toBeDefined();
+
+    // a fresh corrupt file lands at the same path again
+    writeFileSync(paths.file, 'second corrupt content');
+    let secondErr: InstanceType<typeof CredentialsCorruptError> | undefined;
+    try {
+      readCredentialsFile(paths);
+    } catch (e) {
+      secondErr = e as InstanceType<typeof CredentialsCorruptError>;
+    }
+    expect(secondErr).toBeDefined();
+
+    expect(secondErr!.movedTo).not.toBe(firstErr!.movedTo);
+    // the first quarantined file was never touched by the second quarantine
+    expect(readFileSync(firstErr!.movedTo, 'utf8')).toBe('first corrupt content');
+    expect(readFileSync(secondErr!.movedTo, 'utf8')).toBe('second corrupt content');
   });
 });
 
