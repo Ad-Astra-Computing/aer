@@ -12,4 +12,8 @@ and `message.usage` from newly-appeared assistant entries, and emits
 `llm.completed`. Bodies-off throughout: no prompt, completion text or tool
 content is read or emitted, streamed duplicate entries for the same message
 are recorded once with their final usage, a missing or unreadable transcript
-is silent, and the read is bounded per invocation.
+is silent, and the read is bounded per invocation. The updated read offset
+and message-id dedup state are saved to the session store before the network
+send that follows, the same way the event sequence counter already is, so a
+slow or failed send never risks the next hook rescanning and double-reporting
+what this one already claimed.

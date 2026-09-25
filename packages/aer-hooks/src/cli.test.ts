@@ -397,6 +397,40 @@ describe('aer-hook Claude Code transcript llm usage', () => {
     expect(postedEvents.some((e) => e.event_type === 'tool.completed')).toBe(true);
     expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
   });
+
+  // P2-2: with no session_id, every invocation is a fresh single-shot with no
+  // persisted offset, so scanning would replay the whole transcript on each
+  // call. Two calls against the same never-consumed transcript must not
+  // double-report it.
+  it('never scans the transcript on the no-session-id (!ref) single-shot path', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    for (let i = 0; i < 2; i++) {
+      await runHook(['--harness', 'claude-code'], envWith(), {
+        fetch: fetchImpl,
+        readInput: async () =>
+          JSON.stringify({ hook_event_name: 'PostToolUse', transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+      });
+    }
+    expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
+  });
+
+  // Same reasoning for the lock-contention degrade: an unwritable store means
+  // no persisted offset can be read or saved either.
+  it('never scans the transcript when the session lock cannot be acquired', async () => {
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    const blocker = path.join(cacheDir, 'blocker-file');
+    fs.writeFileSync(blocker, 'x');
+    const badEnv = { ...CONFIGURED, XDG_CACHE_HOME: path.join(blocker, 'nope') } as NodeJS.ProcessEnv;
+    await runHook(['--harness', 'claude-code'], badEnv, {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 'hs-degraded', transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+    expect(postedEvents.some((e) => e.event_type === 'tool.completed')).toBe(true);
+    expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
+  });
 });
 
 describe('parseHardTimeoutMs', () => {

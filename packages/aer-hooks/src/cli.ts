@@ -217,11 +217,10 @@ async function orchestrateAndEmit(
   const ref = event.sessionRef;
   if (!ref) {
     // No correlation id: single-shot session (open + emit + complete on close).
-    // No persisted store to read prior transcript progress from either, so
-    // this scans from byte 0 every time; the deterministic event id still
-    // makes a repeat scan idempotent at ingest.
-    const scan = scanTranscriptForLlmUsage(event, {});
-    await emitThrough(event, createHttpSink(base), scan.events);
+    // No persisted store means no known offset either, so a transcript scan
+    // here would restart from byte 0 and replay everything the transcript
+    // has ever held on every such call. Skip it rather than double-count.
+    await emitThrough(event, createHttpSink(base));
     return;
   }
 
@@ -229,9 +228,10 @@ async function orchestrateAndEmit(
   if (!lock) {
     // Could not converge with a concurrent hook for this harness session in
     // time (or the store is unwritable): degrade to single-shot rather than
-    // risk reading a half-written entry or waiting indefinitely.
-    const scan = scanTranscriptForLlmUsage(event, {});
-    await emitThrough(event, createHttpSink(base), scan.events);
+    // risk reading a half-written entry or waiting indefinitely. Same reason
+    // as above: no persisted offset here either, so the transcript is not
+    // scanned on this degraded path.
+    await emitThrough(event, createHttpSink(base));
     return;
   }
 
