@@ -760,4 +760,101 @@ describe('collector identity on session open', () => {
   it('sends nothing when the caller declares nothing', async () => {
     expect(await openBody({})).not.toHaveProperty('collector');
   });
+
+  it('sends client_ref when the caller declares one', async () => {
+    const body = await openBody({ clientRef: 'v1:' + '0'.repeat(48) });
+    expect(body['client_ref']).toBe('v1:' + '0'.repeat(48));
+  });
+
+  it('sends nothing when the caller declares no client_ref', async () => {
+    expect(await openBody({})).not.toHaveProperty('client_ref');
+  });
+});
+
+describe('createHttpSink: client_ref reused + strict-old-server retry', () => {
+  it('passes reused:true from the response through to onOpen', async () => {
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/v1/sessions')) {
+        return jsonResponse({ agent_session_id: 's', ingest_token: 't', status: 'running', reused: true }, 200);
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+    let opened: { id: string; ingestToken: string; reused?: boolean } | undefined;
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetch: fakeFetch,
+      batchSize: 1,
+      clientRef: 'v1:' + '1'.repeat(48),
+      onOpen: (info) => { opened = info; },
+    });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(opened?.reused).toBe(true);
+  });
+
+  it('retries once without client_ref when a strict old server 400s', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/v1/sessions')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        calls.push(body);
+        if ('client_ref' in body) return jsonResponse({ error: 'expected_object' }, 400);
+        return jsonResponse({ agent_session_id: 's', ingest_token: 't', status: 'running' }, 201);
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetch: fakeFetch,
+      batchSize: 1,
+      clientRef: 'v1:' + '2'.repeat(48),
+    });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toHaveProperty('client_ref');
+    expect(calls[1]).not.toHaveProperty('client_ref');
+  });
+
+  it('does not retry a 400 when no client_ref was sent in the first place', async () => {
+    let attempts = 0;
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/v1/sessions')) {
+        attempts++;
+        return jsonResponse({ error: 'bad_request' }, 400);
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+    const sink = createHttpSink({ baseUrl: 'https://api.test', apiKey: 'k', fetch: fakeFetch, batchSize: 1 });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(attempts).toBe(1);
+  });
+
+  it('does not loop forever when the retry-without-client_ref also 400s', async () => {
+    let attempts = 0;
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/v1/sessions')) {
+        attempts++;
+        return jsonResponse({ error: 'still_bad' }, 400);
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetch: fakeFetch,
+      batchSize: 1,
+      clientRef: 'v1:' + '3'.repeat(48),
+    });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(attempts).toBe(2);
+  });
 });
