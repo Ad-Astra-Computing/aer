@@ -9,6 +9,7 @@
 // it prints to stdout and exits non-zero on a usage error or an aborted write.
 
 import { install, uninstall, status, duplicateLayerWarning, type Harness } from './install.js';
+import { staleRegistrations } from './hooks-doctor.js';
 import { HOOKS_VERSION } from './evidence.js';
 import { homedir } from 'node:os';
 import { isInvokedDirectly } from './invoked-directly.js';
@@ -64,7 +65,7 @@ const USAGE = `aer-hooks: wire AER recording into a coding harness
 Usage:
   aer-hooks install <claude-code|codex|antigravity> [--dir <path>]
   aer-hooks uninstall <claude-code|codex|antigravity> [--dir <path>]
-  aer-hooks status [--dir <path>]
+  aer-hooks status [--dir <path>] [--json]
   aer-hooks --version
 `;
 
@@ -120,6 +121,13 @@ export async function run(
 
     if (cmd === 'status') {
       const entries = await status(opts);
+      const stale = await staleRegistrations(opts);
+
+      if (argv.includes('--json')) {
+        out(JSON.stringify({ hooks: { entries, stale_registrations: stale } }, null, 2));
+        return 0;
+      }
+
       for (const e of entries) {
         const state = !e.exists
           ? 'no config'
@@ -130,6 +138,9 @@ export async function run(
               : `wired: ${e.wiredEvents.join(', ')} - but the hook command is not on PATH, so nothing is recorded; re-run install`;
         out(`${e.harness.padEnd(12)} ${e.path}  (${state})`);
         if (e.harness === 'codex' && e.wiredEvents.length > 0) out(CODEX_TRUST_NOTE);
+      }
+      for (const finding of stale) {
+        out(`WARN: ${finding.detail} - fix: ${finding.fix}`);
       }
       return 0;
     }

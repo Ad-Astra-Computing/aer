@@ -10,3 +10,4 @@ export { resolvePrincipal } from './principal.js';
 export type { PrincipalKind } from './principal.js';
 export { sinkFromEnv, resolveSinkOptionsFromEnv } from './env.js';
 export type { SinkEnvOverrides } from './env.js';
+export { deriveClientRef, CLIENT_REF_PATTERN } from './client-ref.js';

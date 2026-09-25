@@ -191,20 +191,38 @@ describe('aer-hook cross-invocation session correlation', () => {
     expect(new Set(eventSessionIds)).toEqual(new Set(['sess-1', 'sess-2']));
   });
 
-  it('store failure (unwritable cache dir) still emits and never throws', async () => {
+  it('store failure (unwritable cache dir) still resolves and never throws', async () => {
     // Point the store at a path UNDER a regular file, so every mkdir/read/write
     // fails with ENOTDIR. cacheDir (the real temp dir) is left for afterEach.
     const blocker = path.join(cacheDir, 'blocker-file');
     fs.writeFileSync(blocker, 'x');
     const badEnv = { ...CONFIGURED, XDG_CACHE_HOME: path.join(blocker, 'nope') } as NodeJS.ProcessEnv;
+    // A tool event that cannot get the lock polls the (unwritable) store until
+    // the budget's poll deadline, then drops rather than opens (ADR-023 B2). A
+    // short hardTimeoutMs keeps that poll from taking the real 10s default.
     await expect(
       runHook(['--harness', 'claude-code'], badEnv, {
         readInput: async () => cc({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, session_id: 'hs-x' }),
         fetch: fetchImpl,
+        hardTimeoutMs: 700,
       }),
     ).resolves.toBeUndefined();
-    // Degrades to opening a session; the point is it did not throw.
-    expect(opens).toBeGreaterThanOrEqual(1);
+    // Never opens on a lock-loss for a tool event; it did not throw either.
+    expect(opens).toBe(0);
+  });
+
+  // A lock-lost lead Stop degrades to single-shot with client_ref, which the
+  // server dedupes onto the lead's RUNNING record; it must never complete it.
+  it('a lock-lost lead Stop never completes the session it reached', async () => {
+    const blocker = path.join(cacheDir, 'blocker-file');
+    fs.writeFileSync(blocker, 'x');
+    const badEnv = { ...CONFIGURED, XDG_CACHE_HOME: path.join(blocker, 'nope') } as NodeJS.ProcessEnv;
+    await runHook(['--harness', 'claude-code', '--lifecycle', 'v2'], badEnv, {
+      readInput: async () => cc({ hook_event_name: 'Stop', session_id: 'hs-stop' }),
+      fetch: fetchImpl,
+      hardTimeoutMs: 700,
+    });
+    expect(completes).toBe(0);
   });
 
   // The TOCTOU bug this guards against: two hook processes for the SAME harness
@@ -415,8 +433,9 @@ describe('aer-hook Claude Code transcript llm usage', () => {
     expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
   });
 
-  // Same reasoning for the lock-contention degrade: an unwritable store means
-  // no persisted offset can be read or saved either.
+  // Same reasoning for the lock-contention case: an unwritable store means no
+  // persisted offset can be read or saved either, and a tool event that
+  // cannot converge on a lock is dropped rather than scanned (ADR-023 B2).
   it('never scans the transcript when the session lock cannot be acquired', async () => {
     const transcriptPath = path.join(transcriptDir, 't.jsonl');
     fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
@@ -427,8 +446,9 @@ describe('aer-hook Claude Code transcript llm usage', () => {
       fetch: fetchImpl,
       readInput: async () =>
         JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 'hs-degraded', transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+      hardTimeoutMs: 700,
     });
-    expect(postedEvents.some((e) => e.event_type === 'tool.completed')).toBe(true);
+    expect(postedEvents.some((e) => e.event_type === 'tool.completed')).toBe(false);
     expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
   });
 });
