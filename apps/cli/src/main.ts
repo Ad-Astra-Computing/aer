@@ -309,8 +309,16 @@ async function cmdSmoke(): Promise<void> {
     console.error('smoke: not configured, run `aer doctor` and fix the failing checks first.');
     process.exit(1);
   }
-  const cfg = JSON.parse(realFs.readFile(`${process.cwd()}/aer.config.json`) ?? '{}') as { base_url?: string };
-  const target = process.env['AER_BASE_URL'] ?? cfg.base_url ?? 'https://api.aer.run';
+  const cfg = projectConfig();
+  // Same helper as every tenant command (P1-1): refuse rather than hand
+  // AER_API_KEY to the collector against a base URL a cloned repo's
+  // aer.config.json chose.
+  const auth = resolveAuth({ env: process.env, cfg, defaultBaseUrl: DEFAULT_BASE_URL });
+  if (auth.baseUrlMismatch) {
+    console.error(auth.baseUrlMismatch);
+    process.exit(64);
+  }
+  const target = auth.baseUrl;
   const script = buildSmokeScript(target);
   const code: number = await new Promise((resolve) => {
     const child = spawn(process.execPath, ['--import', REGISTER, '-e', script], { stdio: 'inherit' });
