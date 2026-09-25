@@ -34,6 +34,23 @@ export interface StoredSession {
    * recorder that missed the end of the call.
    */
   toolsOpen?: number;
+  /**
+   * The Claude Code transcript this harness session has been read from so
+   * far, for incremental llm.completed capture (model + token counts read
+   * from the transcript, since no Claude Code hook payload carries them).
+   * `transcriptOffset` is a BYTE offset into `transcriptPath`; a mismatch
+   * between the stored path and the one on the current event means a fresh
+   * transcript, so the offset resets to 0.
+   */
+  transcriptPath?: string;
+  transcriptOffset?: number;
+  /**
+   * Assistant message ids already turned into an llm.completed, bounded so
+   * the store never grows unbounded across a long session. Kept even across
+   * a transcript offset reset (truncation/rotation) so a message already
+   * recorded is never recorded twice.
+   */
+  emittedLlmMessageIds?: string[];
 }
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h; a stale entry means a crashed harness
@@ -81,6 +98,26 @@ export function loadSession(
     // live session over a missing counter.
     if (typeof parsed.seq !== 'number' || !Number.isInteger(parsed.seq) || parsed.seq < 0) {
       parsed.seq = 0;
+    }
+    // Transcript-tracking fields are newer than the store format and may be
+    // absent or, from a corrupted write, malformed. A bad value here degrades
+    // to "no transcript progress yet" rather than discarding the whole
+    // session entry.
+    if (typeof parsed.transcriptPath !== 'string' || parsed.transcriptPath.length === 0) {
+      delete parsed.transcriptPath;
+      delete parsed.transcriptOffset;
+    } else if (
+      typeof parsed.transcriptOffset !== 'number' ||
+      !Number.isInteger(parsed.transcriptOffset) ||
+      parsed.transcriptOffset < 0
+    ) {
+      parsed.transcriptOffset = 0;
+    }
+    if (
+      !Array.isArray(parsed.emittedLlmMessageIds) ||
+      !parsed.emittedLlmMessageIds.every((id) => typeof id === 'string')
+    ) {
+      delete parsed.emittedLlmMessageIds;
     }
     return parsed as StoredSession;
   } catch {

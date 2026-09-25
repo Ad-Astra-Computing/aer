@@ -112,6 +112,18 @@ describe('normalizeClaudeCode', () => {
     expect(normalizeClaudeCode(42).kind).toBe('other');
     expect(normalizeClaudeCode({}).kind).toBe('other');
   });
+
+  it('carries transcript_path for locating llm usage, never as identifier-shaped meta', () => {
+    const e = normalizeClaudeCode(ccPreToolUse);
+    expect(e.transcriptPath).toBe('/x/t.jsonl');
+    // Never lands in meta: meta only ever holds ingest-allowlisted values.
+    expect(e.meta).not.toHaveProperty('transcript_path');
+    expect(e.meta).not.toHaveProperty('transcriptPath');
+  });
+
+  it('leaves transcriptPath undefined when the payload has none', () => {
+    expect(normalizeClaudeCode(ccPostToolUse).transcriptPath).toBeUndefined();
+  });
 });
 
 describe('redaction', () => {
