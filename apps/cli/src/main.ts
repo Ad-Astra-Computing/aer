@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { createReadStream, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createReadStream, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { planInit, applyInit, runDoctor, type FsLike, type InitOptions } from './init.js';
 import { runLiveChecks } from './doctor-live.js';
@@ -66,12 +68,12 @@ const USAGE_TEXT = [
   '  AER_SESSION_ID        uuid of the target session',
   '  AER_INGEST_TOKEN      bearer token returned by POST /v1/sessions',
   '',
-  'aer import claude-code - required env:',
-  '  AER_BASE_URL          e.g. https://api.aer.run',
+  'aer import claude-code - required env (the ids fall back to aer.config.json):',
   '  AER_TENANT_API_KEY    tenant key, write role (or AER_API_KEY)',
   '  AER_TENANT_ID         tenant uuid',
   '  AER_AGENT_ID          agent uuid the imported session belongs to',
   '  AER_ENV_ID            environment uuid',
+  '  AER_BASE_URL          optional; default https://api.aer.run',
   '  AER_AGENT_VERSION     optional; default "transcript-import"',
   '',
   'aer verify - required env:',
@@ -97,6 +99,64 @@ const USAGE_TEXT = [
   'Optional:',
   '  AER_BATCH_SIZE        (ingest) default 500',
 ].join('\n');
+
+const DEFAULT_BASE_URL = 'https://api.aer.run';
+
+// Printed when a variable a command needs is unset, in place of the whole
+// usage text, which never said which one was missing.
+const ENV_HELP: Record<string, string> = {
+  AER_TENANT_API_KEY: 'an API key with the write role, created at https://aer.run/settings (or AER_API_KEY)',
+  AER_TENANT_ID: 'your tenant id, shown at https://aer.run/settings',
+  AER_AGENT_ID: 'the agent the session belongs to, shown on its page at https://aer.run/agents',
+  AER_ENV_ID: 'any lowercase UUID naming where the agent runs; aer init generates one',
+};
+
+function missingEnv(command: string, missing: string[]): never {
+  console.error(`${command} needs ${missing.length === 1 ? 'this variable' : 'these variables'} set:`);
+  for (const name of missing) console.error(`  ${name.padEnd(20)}${ENV_HELP[name] ?? ''}`);
+  console.error('\nThe ids can also come from aer.config.json in this directory, which aer init writes.');
+  process.exit(64);
+}
+
+interface ProjectConfig { tenant_id?: string; agent_id?: string; env_id?: string; base_url?: string }
+
+// The identity aer init wrote for this project. A value it left as a
+// placeholder counts as unset, so the error names it rather than the server.
+function projectConfig(): ProjectConfig {
+  let raw: unknown;
+  try { raw = JSON.parse(readFileSync(join(process.cwd(), 'aer.config.json'), 'utf8')); } catch { return {}; }
+  if (!raw || typeof raw !== 'object') return {};
+  const out: ProjectConfig = {};
+  for (const key of ['tenant_id', 'agent_id', 'env_id', 'base_url'] as const) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value !== '' && !value.startsWith('REPLACE_WITH_')) out[key] = value;
+  }
+  return out;
+}
+
+// Claude Code keeps one transcript per session in a folder named for the
+// project directory, every character outside [A-Za-z0-9] turned into '-'.
+// history.jsonl beside it is prompt history, not a transcript.
+function transcriptHint(cwd: string): string {
+  const lines = [
+    'aer import claude-code needs a transcript file.',
+    'Claude Code keeps one per session under ~/.claude/projects/<project>/<session-id>.jsonl,',
+    'where <project> is the project directory with each / replaced by -.',
+  ];
+  const slug = cwd.replace(/[^A-Za-z0-9]/g, '-');
+  const dir = join(homedir(), '.claude', 'projects', slug);
+  let newest: string[] = [];
+  try {
+    newest = readdirSync(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => ({ f, t: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+      .slice(0, 3)
+      .map(({ f }) => `  ~/.claude/projects/${slug}/${f}`);
+  } catch { /* no transcripts for this directory */ }
+  if (newest.length > 0) lines.push('', 'The newest for this directory:', ...newest);
+  return lines.join('\n');
+}
 
 function usage(): never {
   console.error(USAGE_TEXT);
@@ -327,21 +387,38 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   if (command === 'import') {
     // Only Claude Code transcripts today; `sub` is the format selector.
-    if (sub !== 'claude-code') usage();
+    if (sub !== 'claude-code') {
+      console.error('aer import needs the format before the file: aer import claude-code <file.jsonl>');
+      process.exit(64);
+    }
     const file = rest[0];
-    if (!file) usage();
+    if (!file) {
+      console.error(transcriptHint(process.cwd()));
+      process.exit(64);
+    }
+    const cfg = projectConfig();
     const apiKey = tenantKey();
-    const tenantId = process.env['AER_TENANT_ID'];
-    const agentId = process.env['AER_AGENT_ID'];
-    const environmentId = process.env['AER_ENV_ID'];
+    const tenantId = process.env['AER_TENANT_ID'] || cfg.tenant_id;
+    const agentId = process.env['AER_AGENT_ID'] || cfg.agent_id;
+    const environmentId = process.env['AER_ENV_ID'] || cfg.env_id;
     const agentVersion = process.env['AER_AGENT_VERSION'];
     const batchSize = process.env['AER_BATCH_SIZE'] ? Number(process.env['AER_BATCH_SIZE']) : undefined;
-    if (!baseUrl || !apiKey || !tenantId || !agentId || !environmentId) usage();
+    const missing = Object.entries({
+      AER_TENANT_API_KEY: apiKey,
+      AER_TENANT_ID: tenantId,
+      AER_AGENT_ID: agentId,
+      AER_ENV_ID: environmentId,
+    }).filter(([, value]) => !value).map(([name]) => name);
+    if (!apiKey || !tenantId || !agentId || !environmentId) missingEnv('aer import claude-code', missing);
+    if (file !== '-' && !existsSync(file)) {
+      console.error(`cannot read ${file}: no such file`);
+      process.exit(1);
+    }
 
     const stream = file === '-' ? process.stdin : createReadStream(file);
     const summary = await runClaudeCodeImport({
       stream,
-      baseUrl,
+      baseUrl: baseUrl || cfg.base_url || DEFAULT_BASE_URL,
       apiKey,
       tenantId,
       agentId,

@@ -86,4 +86,19 @@ describe('runClaudeCodeImport', () => {
       tenantId: TENANT, agentId: AGENT, environmentId: ENV, fetchImpl,
     })).rejects.toThrow(/session create failed: 403/);
   });
+
+  it('refuses a file with no session activity before creating a session', async () => {
+    // ~/.claude/history.jsonl: prompt history, one line per prompt typed.
+    const history = Readable.from([
+      JSON.stringify({ display: 'fix the flaky test', pastedContents: {}, timestamp: 1758758400000, project: '/home/me/code' }),
+      JSON.stringify({ display: '/compact', pastedContents: {}, timestamp: 1758758460000, project: '/home/me/code' }),
+    ].join('\n'));
+    let called = 0;
+    const fetchImpl = (async () => { called += 1; return new Response('{}', { status: 201 }); }) as unknown as typeof fetch;
+    await expect(runClaudeCodeImport({
+      stream: history, baseUrl: 'https://api.test', apiKey: 'k',
+      tenantId: TENANT, agentId: AGENT, environmentId: ENV, fetchImpl,
+    })).rejects.toThrow(/no Claude Code session activity.*~\/\.claude\/projects/s);
+    expect(called).toBe(0);
+  });
 });
