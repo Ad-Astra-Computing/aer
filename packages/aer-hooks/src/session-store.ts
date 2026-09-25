@@ -53,6 +53,27 @@ export interface StoredSession {
   emittedLlmMessageIds?: string[];
 }
 
+/**
+ * A store slot before the upstream session is known: written by the lock
+ * holder immediately before POST /v1/sessions so a concurrent reader sees
+ * "opening" rather than "nothing yet". Carries the client_ref so a reopen
+ * after a stale pending entry sends the identical value (ADR-023 B2).
+ */
+export interface PendingSession {
+  pending: true;
+  clientRef: string;
+  createdAt: number;
+}
+
+export type SessionEntry = StoredSession | PendingSession;
+
+export function isPending(entry: SessionEntry | null): entry is PendingSession {
+  return entry !== null && (entry as PendingSession).pending === true;
+}
+
+/** A pending entry older than this is presumed abandoned by a killed opener. */
+export const PENDING_STALE_MS = 15_000;
+
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h; a stale entry means a crashed harness
 
 /** Cache dir root, honoring XDG_CACHE_HOME, else ~/.cache. */
@@ -67,16 +88,26 @@ function fileFor(env: NodeJS.ProcessEnv, harnessSessionId: string): string {
   return path.join(cacheRoot(env), `${digest}.json`);
 }
 
-/** Look up the AER session for a harness session id, or null. Best-effort. */
+/** Look up the AER session (or a still-opening pending marker) for a harness session id, or null. Best-effort. */
 export function loadSession(
   harnessSessionId: string,
   env: NodeJS.ProcessEnv = process.env,
   now: number = Date.now(),
-): StoredSession | null {
+): SessionEntry | null {
   try {
     const file = fileFor(env, harnessSessionId);
     const text = fs.readFileSync(file, 'utf8');
-    const parsed = JSON.parse(text) as Partial<StoredSession>;
+    const parsed = JSON.parse(text) as Partial<StoredSession> & Partial<PendingSession>;
+
+    if (parsed.pending === true) {
+      if (typeof parsed.clientRef !== 'string' || typeof parsed.createdAt !== 'number') return null;
+      if (now - parsed.createdAt > TTL_MS) {
+        try { fs.unlinkSync(file); } catch { /* best-effort */ }
+        return null;
+      }
+      return { pending: true, clientRef: parsed.clientRef, createdAt: parsed.createdAt };
+    }
+
     if (
       typeof parsed.aerSessionId !== 'string' ||
       typeof parsed.ingestToken !== 'string' ||
@@ -125,6 +156,29 @@ export function loadSession(
   }
 }
 
+function writeEntry(file: string, env: NodeJS.ProcessEnv, data: unknown): void {
+  const dir = cacheRoot(env);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Refuse a symlinked or non-directory cache dir: it could redirect the
+  // token write. Degrade rather than follow it.
+  const dirStat = fs.lstatSync(dir);
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
+  // Tighten perms defensively in case the dir pre-existed under a loose umask.
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    /* best-effort */
+  }
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    /* best-effort */
+  }
+}
+
 /** Persist the AER session for a harness session id. Best-effort, 0600, atomic. */
 export function saveSession(
   harnessSessionId: string,
@@ -132,29 +186,27 @@ export function saveSession(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   try {
-    const dir = cacheRoot(env);
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // Refuse a symlinked or non-directory cache dir: it could redirect the
-    // token write. Degrade rather than follow it.
-    const dirStat = fs.lstatSync(dir);
-    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
-    // Tighten perms defensively in case the dir pre-existed under a loose umask.
-    try {
-      fs.chmodSync(dir, 0o700);
-    } catch {
-      /* best-effort */
-    }
-    const file = fileFor(env, harnessSessionId);
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(session), { mode: 0o600 });
-    fs.renameSync(tmp, file);
-    try {
-      fs.chmodSync(file, 0o600);
-    } catch {
-      /* best-effort */
-    }
+    writeEntry(fileFor(env, harnessSessionId), env, session);
   } catch {
     /* best-effort: a store failure degrades to per-event sessions, never throws */
+  }
+}
+
+/**
+ * Write the pending marker for a harness session id BEFORE the upstream open
+ * call (ADR-023 B2), so a concurrent reader sees "opening" instead of
+ * "nothing yet" and does not also try to open. Best-effort, 0600, atomic.
+ */
+export function savePendingSession(
+  harnessSessionId: string,
+  clientRef: string,
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): void {
+  try {
+    writeEntry(fileFor(env, harnessSessionId), env, { pending: true, clientRef, createdAt: now });
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -167,6 +219,120 @@ export function deleteSession(
     fs.unlinkSync(fileFor(env, harnessSessionId));
   } catch {
     /* best-effort */
+  }
+}
+
+const PID_ALIAS_TTL_MS = 24 * 60 * 60 * 1000; // 24h, same as a session entry
+
+function pidAliasFile(env: NodeJS.ProcessEnv, pid: string): string {
+  return path.join(cacheRoot(env), `pid-${pid}.json`);
+}
+
+/**
+ * Alias the harness process (identified by `pid`) to the store key it opened,
+ * so a subagent hook fired from the same harness process can find the lead's
+ * session even with no --root-session flag (ADR-023 B1 fallback). Written by
+ * SessionStart, keyed on the hook's own PARENT pid (the harness process).
+ */
+export function savePidAlias(
+  pid: string,
+  storeKey: string,
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): void {
+  try {
+    writeEntry(pidAliasFile(env, pid), env, { ref: storeKey, createdAt: now });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Look up the store key aliased to a harness process pid, or null. Best-effort. */
+export function loadPidAlias(
+  pid: string,
+  env: NodeJS.ProcessEnv = process.env,
+  now: number = Date.now(),
+): string | null {
+  try {
+    const file = pidAliasFile(env, pid);
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { ref?: unknown; createdAt?: unknown };
+    if (typeof parsed.ref !== 'string' || typeof parsed.createdAt !== 'number') return null;
+    if (now - parsed.createdAt > PID_ALIAS_TTL_MS) {
+      try { fs.unlinkSync(file); } catch { /* best-effort */ }
+      return null;
+    }
+    return parsed.ref;
+  } catch {
+    return null;
+  }
+}
+
+/** Remove a pid alias (called on session end, mirroring the pid it was written under). */
+export function deletePidAlias(pid: string, env: NodeJS.ProcessEnv = process.env): void {
+  try {
+    fs.unlinkSync(pidAliasFile(env, pid));
+  } catch {
+    /* best-effort */
+  }
+}
+
+interface DropCounters {
+  subagentEventsUnattached: number;
+  eventsDroppedBudget: number;
+  createdAt: number;
+}
+
+function dropCountersFile(env: NodeJS.ProcessEnv, storeKey: string): string {
+  const digest = createHash('sha256').update(storeKey).digest('hex').slice(0, 32);
+  return path.join(cacheRoot(env), `drop-${digest}.json`);
+}
+
+function bumpDropCounter(
+  storeKey: string,
+  field: 'subagentEventsUnattached' | 'eventsDroppedBudget',
+  env: NodeJS.ProcessEnv,
+  now: number,
+): void {
+  try {
+    const file = dropCountersFile(env, storeKey);
+    const counters: DropCounters = { subagentEventsUnattached: 0, eventsDroppedBudget: 0, createdAt: now };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DropCounters>;
+      if (typeof parsed.subagentEventsUnattached === 'number') counters.subagentEventsUnattached = parsed.subagentEventsUnattached;
+      if (typeof parsed.eventsDroppedBudget === 'number') counters.eventsDroppedBudget = parsed.eventsDroppedBudget;
+      if (typeof parsed.createdAt === 'number') counters.createdAt = parsed.createdAt;
+    } catch {
+      /* no prior counter file: start fresh */
+    }
+    counters[field] += 1;
+    writeEntry(file, env, counters);
+  } catch {
+    /* best-effort: an uncounted drop is still a dropped event, never a thrown one */
+  }
+}
+
+/** A subagent event found no lead to attach to and was dropped without opening a session. */
+export function noteSubagentEventUnattached(storeKey: string, env: NodeJS.ProcessEnv = process.env, now: number = Date.now()): void {
+  bumpDropCounter(storeKey, 'subagentEventsUnattached', env, now);
+}
+
+/** A tool event lost the budget race for the lock and was dropped without opening a session. */
+export function noteEventDroppedBudget(storeKey: string, env: NodeJS.ProcessEnv = process.env, now: number = Date.now()): void {
+  bumpDropCounter(storeKey, 'eventsDroppedBudget', env, now);
+}
+
+/** Read and clear the drop counters for a store key, for folding into the closing collector.report. */
+export function takeDropCounters(storeKey: string, env: NodeJS.ProcessEnv = process.env): { subagentEventsUnattached: number; eventsDroppedBudget: number } {
+  const file = dropCountersFile(env, storeKey);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DropCounters>;
+    try { fs.unlinkSync(file); } catch { /* best-effort */ }
+    return {
+      subagentEventsUnattached: typeof parsed.subagentEventsUnattached === 'number' ? parsed.subagentEventsUnattached : 0,
+      eventsDroppedBudget: typeof parsed.eventsDroppedBudget === 'number' ? parsed.eventsDroppedBudget : 0,
+    };
+  } catch {
+    return { subagentEventsUnattached: 0, eventsDroppedBudget: 0 };
   }
 }
 

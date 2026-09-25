@@ -32,13 +32,13 @@ const CODEX_EVENTS = LIFECYCLE_EVENTS;
 // tool events accept a matcher.
 const ANTIGRAVITY_EVENTS = ['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop'] as const;
 
-// Claude Code gives ALL SessionEnd hooks 1.5s between them, and opening a
-// session against the API takes 3-4s, so the entry that completes the record
-// needs its own budget or it is killed before it finishes. Seconds, per the
-// harness config. Codex caps its own SessionEnd at 3s whatever we ask, so it
-// gets no key: an unrecognised one in its config buys nothing and risks the
-// whole file.
-const CLAUDE_SESSION_END_TIMEOUT_S = 15;
+// Claude Code gives ALL SessionEnd hooks 1.5s between them, and opening or
+// completing a session against the API takes 3-4s, so the entries that open
+// and close the record need their own budget or they are killed before they
+// finish. Seconds, per the harness config. Codex caps its own SessionEnd at
+// 3s whatever we ask, so it gets no key: an unrecognised one in its config
+// buys nothing and risks the whole file.
+const CLAUDE_HEADROOM_TIMEOUT_S = 15;
 const ANTIGRAVITY_MATCHED = new Set<string>(['PreToolUse', 'PostToolUse']);
 /** Our key in Antigravity's named-group root. We own it outright. */
 const AER_GROUP_NAME = 'aer';
@@ -142,8 +142,16 @@ export function hookCommandResolves(command: string): boolean {
  */
 const LIFECYCLE_FLAG = '--lifecycle v2';
 
+// Joins a subagent's hook calls into the lead's record (ADR-023 B1). Claude
+// Code runs hook commands through a shell, so this expands at invocation; a
+// harness that never exports the variable, or invokes without a shell, leaves
+// it unexpanded, which cli.ts treats as absent and falls back to the pid-alias
+// walk.
+const ROOT_SESSION_FLAG = '--root-session "${CLAUDE_SESSION_ID}"';
+
 function harnessCommand(harness: Harness, event?: string): string {
-  const base = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
+  let base = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
+  if (harness === 'claude-code') base += ` ${ROOT_SESSION_FLAG}`;
   // Antigravity omits the event name from the payload, so each registration
   // has to carry it.
   return event === undefined ? base : `${base} --event ${event}`;
@@ -329,7 +337,12 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
   const upgraded: string[] = [];
 
   for (const ev of events) {
-    const timeout = harness === 'claude-code' && ev === 'SessionEnd' ? CLAUDE_SESSION_END_TIMEOUT_S : undefined;
+    // SessionStart now also opens the upstream session (writing the pending
+    // marker + pid alias before the POST), so it needs the same headroom
+    // SessionEnd already had, rather than the harness's default hook budget.
+    const timeout = harness === 'claude-code' && (ev === 'SessionEnd' || ev === 'SessionStart')
+      ? CLAUDE_HEADROOM_TIMEOUT_S
+      : undefined;
     const { groups, added: didAdd, upgraded: didUpgrade } = mergeEvent(existingHooks[ev], command, timeout);
     existingHooks[ev] = groups;
     if (didAdd) added.push(ev);

@@ -10,15 +10,34 @@
 // try/catch, total runtime is capped by a hard timeout after which we exit 0
 // regardless, and we NEVER write to stdout (some harnesses interpret hook stdout).
 
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import {
   createHttpSink,
   resolveSinkOptionsFromEnv,
+  deriveClientRef,
   type EventSink,
   type HttpSinkOptions,
 } from '@adastracomputing/aer-emit';
 import { normalize, type Harness, type HookEvent, type Lifecycle } from './normalize.js';
 import { emitHookEvent } from './core.js';
-import { loadSession, saveSession, deleteSession, acquireSessionLock, type StoredSession } from './session-store.js';
+import {
+  loadSession,
+  saveSession,
+  savePendingSession,
+  deleteSession,
+  acquireSessionLock,
+  isPending,
+  savePidAlias,
+  loadPidAlias,
+  deletePidAlias,
+  noteSubagentEventUnattached,
+  noteEventDroppedBudget,
+  takeDropCounters,
+  PENDING_STALE_MS,
+  type StoredSession,
+  type SessionEntry,
+} from './session-store.js';
 import {
   scanTranscriptForLlmUsage,
   emitLlmUsageEvents,
@@ -32,6 +51,14 @@ import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
 // and the tenant-key Argon2id verification cost noted in the project docs), so
 // the default budget needs headroom over that, not just over a fast local call.
 const DEFAULT_HARD_TIMEOUT_MS = 10000;
+
+// Budget constants (ADR-023 B2). One deadline is computed per invocation; the
+// lock wait and the polling cutoffs are all measured against it so a slow open
+// never leaves a tool event stranded past the harness's own hook timeout.
+const LOCK_WAIT_CAP_MS = 3000;
+const LOCK_WAIT_DEADLINE_MARGIN_MS = 4500;
+const POLL_DEADLINE_MARGIN_MS = 500;
+const POLL_INTERVAL_MS = 100;
 
 /**
  * Parse AER_HOOK_TIMEOUT_MS: a positive integer, in ms, or unset. An unset or
@@ -96,6 +123,32 @@ export function parseLifecycleFlag(argv: string[]): Lifecycle {
   return 1;
 }
 
+// The literal string a shell that never expanded the substitution would pass
+// through verbatim - happens when the harness invokes the command without a
+// shell, or on a platform whose shell quotes differently. Treated as absent
+// rather than used as a session key everyone's subagents would collide on.
+const UNEXPANDED_ROOT_SESSION = '${CLAUDE_SESSION_ID}';
+
+/**
+ * The lead harness session id (ADR-023 B1), when the installer's
+ * `--root-session` flag carried a real value. Absent, empty, or still the
+ * unexpanded placeholder all mean "no root session named"; the caller falls
+ * back to the event's own session id.
+ */
+export function parseRootSessionFlag(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    let raw: string | undefined;
+    if (a === '--root-session') raw = argv[i + 1];
+    else if (a !== undefined && a.startsWith('--root-session=')) raw = a.slice('--root-session='.length);
+    if (raw !== undefined) {
+      if (raw.length === 0 || raw === UNEXPANDED_ROOT_SESSION) return undefined;
+      return raw;
+    }
+  }
+  return undefined;
+}
+
 async function readStdin(): Promise<string> {
   // If stdin is a TTY there is no piped payload; return empty rather than hang.
   if (process.stdin.isTTY) return '';
@@ -121,6 +174,16 @@ export interface RunHookDeps {
   fetch?: typeof fetch;
   /** Injectable clock for the session-store TTL / createdAt. */
   now?: () => number;
+  /** Injectable hard-timeout budget (ms), so the deadline math is testable without real waits. */
+  hardTimeoutMs?: number;
+  /**
+   * Injectable ancestor-pid walk for the subagent fallback (ADR-023 B1),
+   * so tests never touch a real /proc or spawn `ps`. Given a pid, returns
+   * its parent pid or undefined when it cannot be determined.
+   */
+  parentPidOf?: (pid: number) => number | undefined;
+  /** Injectable "own parent pid" for tests, in place of the real process.ppid. */
+  ownPpid?: number;
 }
 
 /**
@@ -142,13 +205,15 @@ async function openingEvidence(event: HookEvent): Promise<void> {
 }
 
 /** What actually arrived, attached to the closing marker. */
-function closingEvidence(event: HookEvent, toolsOpen: number): void {
+function closingEvidence(event: HookEvent, toolsOpen: number, drops: { subagentEventsUnattached: number; eventsDroppedBudget: number }): void {
   const meta = event.meta ?? (event.meta = {});
   meta['collector'] = 'aer-hooks';
   meta['version'] = HOOKS_VERSION;
   // Counting the closing marker itself, which is about to go out.
   meta['events_emitted'] = event.seq ?? 1;
   meta['tools_unresolved'] = toolsOpen;
+  if (drops.subagentEventsUnattached > 0) meta['subagent_events_unattached'] = drops.subagentEventsUnattached;
+  if (drops.eventsDroppedBudget > 0) meta['events_dropped_budget'] = drops.eventsDroppedBudget;
 }
 
 /**
@@ -176,22 +241,6 @@ function transcriptStateOf(stored: StoredSession | null): TranscriptUsageState {
 }
 
 /**
- * Emit one hook event, correlating all invocations within a harness session into
- * ONE AER session via the cross-process session store. A harness runs this once
- * per event as a separate process, so:
- *  - session_start opens the AER session and persists it (does not complete);
- *  - tool/prompt events attach to the stored session (open+persist if none yet);
- *  - session_end attaches, completes the AER session, and clears the store.
- * A missing sessionRef falls back to a single-shot open-emit-complete.
- *
- * The read (loadSession) - decide - write (saveSession) sequence for "is there
- * already a session for this harness session id" is guarded by a per-id lock
- * (acquireSessionLock), held across the open + persist so a concurrent hook for
- * the SAME harness session id waits and then attaches instead of also opening a
- * new upstream session. Lock contention (or an unwritable store) degrades to a
- * single-shot session for this event, never to a thrown error.
- */
-/**
  * How many events this invocation will emit. The position has to be reserved
  * before the network call, so it cannot be counted after one.
  */
@@ -208,43 +257,199 @@ function nextToolsOpen(open: number, kind: HookEvent['kind']): number {
   return open;
 }
 
+function isSubagentEvent(event: HookEvent): boolean {
+  return typeof event.meta?.['harness_agent_id'] === 'string';
+}
+
+// ── ancestor-pid walk (ADR-023 B1 fallback) ─────────────────────────────────
+
+function ppidViaProc(pid: number): number | undefined {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const close = stat.lastIndexOf(')');
+    const fields = stat.slice(close + 2).trim().split(/\s+/);
+    const ppid = Number(fields[1]);
+    return Number.isInteger(ppid) && ppid > 0 ? ppid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function ppidViaPs(pid: number): number | undefined {
+  try {
+    const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 500 });
+    const ppid = Number(out.trim());
+    return Number.isInteger(ppid) && ppid > 0 ? ppid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function defaultParentPidOf(pid: number): number | undefined {
+  return process.platform === 'linux' ? ppidViaProc(pid) : ppidViaPs(pid);
+}
+
+/** Up to `maxCount` pids, starting at `startPid` and walking up through its ancestors. Fail-soft. */
+function ancestorPids(startPid: number, maxCount: number, parentPidOf: (pid: number) => number | undefined): number[] {
+  const pids: number[] = [];
+  let pid = startPid;
+  for (let i = 0; i < maxCount; i++) {
+    pids.push(pid);
+    const parent = parentPidOf(pid);
+    if (parent === undefined) break;
+    pid = parent;
+  }
+  return pids;
+}
+
+/**
+ * A subagent event with no --root-session and no entry under its own session
+ * id: find the lead's store key by walking up to three ancestor pids and
+ * checking each for a SessionStart pid alias. Fail-soft at every step.
+ */
+function walkPidAliasForLead(env: NodeJS.ProcessEnv, now: number, deps: RunHookDeps): string | undefined {
+  const ownPpid = deps.ownPpid ?? process.ppid;
+  const parentPidOf = deps.parentPidOf ?? defaultParentPidOf;
+  for (const pid of ancestorPids(ownPpid, 3, parentPidOf)) {
+    const alias = loadPidAlias(String(pid), env, now);
+    if (alias !== null) return alias;
+  }
+  return undefined;
+}
+
+// ── budget: polling helpers (ADR-023 B2) ────────────────────────────────────
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll the store until a REAL (non-pending) session appears under `storeKey`,
+ * or `pollDeadline` (an absolute ms timestamp) passes. Never holds a lock;
+ * a caller that gets a hit still has to attach without one, best-effort.
+ */
+async function pollForRealSession(
+  storeKey: string,
+  env: NodeJS.ProcessEnv,
+  pollDeadline: number,
+  clock: () => number,
+): Promise<StoredSession | null> {
+  for (;;) {
+    const entry = loadSession(storeKey, env, clock());
+    if (entry !== null && !isPending(entry)) return entry;
+    if (clock() >= pollDeadline) return null;
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+/** Attach one event to an already-open session, best-effort. Reserves seq under `lockHeld`. */
+async function attachToStored(
+  event: HookEvent,
+  stored: StoredSession,
+  base: HttpSinkOptions,
+  storeKey: string,
+  env: NodeJS.ProcessEnv,
+  now: number,
+  lockHeld: boolean,
+): Promise<void> {
+  event.seq = (stored.seq ?? 0) + 1;
+  const toolsOpen = nextToolsOpen(stored.toolsOpen ?? 0, event.kind);
+  const scan = scanTranscriptForLlmUsage(event, transcriptStateOf(stored));
+  // Persisting the advanced seq/toolsOpen without the lock risks clobbering a
+  // concurrent writer; a caller that reached here without the lock (the
+  // budget-poll paths) skips the write and accepts an approximate position,
+  // which is honest (a gap, never a duplicate) rather than silently wrong.
+  if (lockHeld) {
+    saveSession(storeKey, { ...stored, seq: (stored.seq ?? 0) + plannedEventCount(event), toolsOpen, ...scan.state }, env);
+  }
+  const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
+  await emitThrough(event, sink, scan.events);
+  void now;
+}
+
+/** A tool event that lost the lock race: poll for the lead's session and attach, or give up. */
+async function pollAndAttach(
+  storeKey: string,
+  event: HookEvent,
+  base: HttpSinkOptions,
+  env: NodeJS.ProcessEnv,
+  now: number,
+  deadline: number,
+): Promise<boolean> {
+  const pollDeadline = deadline - POLL_DEADLINE_MARGIN_MS;
+  const stored = await pollForRealSession(storeKey, env, pollDeadline, Date.now);
+  if (stored === null) return false;
+  await attachToStored(event, stored, base, storeKey, env, now, false);
+  return true;
+}
+
 async function orchestrateAndEmit(
   event: HookEvent,
   base: HttpSinkOptions,
   env: NodeJS.ProcessEnv,
   now: number,
+  opts: { rootSession: string | undefined; deadline: number; deps: RunHookDeps },
 ): Promise<void> {
   const ref = event.sessionRef;
   if (!ref) {
     // No correlation id: single-shot session (open + emit + complete on close).
-    // No persisted store means no known offset either, so a transcript scan
-    // here would restart from byte 0 and replay everything the transcript
-    // has ever held on every such call. Skip it rather than double-count.
     await emitThrough(event, createHttpSink(base));
     return;
   }
 
-  const lock = await acquireSessionLock(ref, env);
+  const isSubagent = isSubagentEvent(event);
+  let storeKey = opts.rootSession ?? ref;
+
+  // No root-session named for this invocation, and this is a subagent event:
+  // find the lead by its own session id first, then the pid-alias fallback.
+  // A subagent event that finds no lead here or after opening the lock below
+  // MUST NOT open a session (ADR-023 B1).
+  if (opts.rootSession === undefined && isSubagent && loadSession(storeKey, env, now) === null) {
+    const alias = walkPidAliasForLead(env, now, opts.deps);
+    if (alias === undefined) {
+      noteSubagentEventUnattached(storeKey, env, now);
+      return;
+    }
+    storeKey = alias;
+  }
+
+  const lockWaitMs = Math.max(0, Math.min(LOCK_WAIT_CAP_MS, opts.deadline - now - LOCK_WAIT_DEADLINE_MARGIN_MS));
+  const lock = await acquireSessionLock(storeKey, env, { maxWaitMs: lockWaitMs });
   if (!lock) {
+    if (event.kind === 'tool_start' || event.kind === 'tool_end') {
+      const attached = await pollAndAttach(storeKey, event, base, env, now, opts.deadline);
+      if (!attached) noteEventDroppedBudget(storeKey, env, now);
+      return;
+    }
     // Could not converge with a concurrent hook for this harness session in
     // time (or the store is unwritable): degrade to single-shot rather than
-    // risk reading a half-written entry or waiting indefinitely. Same reason
-    // as above: no persisted offset here either, so the transcript is not
-    // scanned on this degraded path.
+    // risk reading a half-written entry or waiting indefinitely.
     await emitThrough(event, createHttpSink(base));
     return;
   }
 
   try {
-    const stored = loadSession(ref, env, now);
+    let entry: SessionEntry | null = loadSession(storeKey, env, now);
+
+    // A pending marker left by a concurrent opener: wait for it to resolve
+    // rather than duplicate the open, unless it is stale (the opener was
+    // killed), in which case fall through and reopen with the same client_ref.
+    if (entry !== null && isPending(entry)) {
+      const age = now - entry.createdAt;
+      if (age < PENDING_STALE_MS) {
+        const resolved = await pollForRealSession(storeKey, env, opts.deadline - POLL_DEADLINE_MARGIN_MS, Date.now);
+        if (resolved !== null) entry = resolved;
+        else entry = null; // give up waiting; open below (client_ref dedupes if the stuck opener finishes)
+      } else {
+        entry = null;
+      }
+    }
+
+    const stored: StoredSession | null = entry !== null && !isPending(entry) ? entry : null;
 
     if (event.kind === 'session_end') {
-      // Drop the stored session only once the record is actually closed.
-      // Dropping it first meant a failed or killed completion took the
-      // ingest token with it, leaving the session open forever with nothing
-      // pointing back to it. Codex kills SessionEnd at three seconds, so
-      // this is a routine case rather than a rare one.
       let completed = false;
+      const drops = takeDropCounters(storeKey, env);
       const sink = stored
         ? createHttpSink({
             ...base,
@@ -254,51 +459,50 @@ async function orchestrateAndEmit(
           })
         : createHttpSink(base); // never saw a start; single-shot
       if (stored) event.seq = (stored.seq ?? 0) + 1;
-      closingEvidence(event, stored?.toolsOpen ?? 0);
-      // The stored entry is dropped below once complete, so there is nothing
-      // to persist this scan's offset/ids into; a failed complete leaves the
-      // old state in place, and the deterministic event id keeps a rescan of
-      // the same window idempotent at ingest either way.
+      closingEvidence(event, stored?.toolsOpen ?? 0, drops);
       const scan = scanTranscriptForLlmUsage(event, transcriptStateOf(stored));
       await emitThrough(event, sink, scan.events);
-      if (stored && completed) deleteSession(ref, env);
+      if (stored && completed) {
+        deleteSession(storeKey, env);
+        if (!isSubagent) deletePidAlias(String(opts.deps.ownPpid ?? process.ppid), env);
+      }
       return;
     }
 
     if (stored) {
-      // Attach to the running AER session; do not complete it here. A turn
-      // ending is not the run ending: `Stop` fires once per assistant turn,
-      // and completing here is what split one conversation across records.
-      // Reserve the positions BEFORE emitting. The lock is stolen after a
-      // few seconds and a network call can outlast it, so saving afterwards
-      // let two invocations take the same number. A gap left by a failed
-      // send is honest; a repeat is not. The transcript scan itself is a
-      // local fs read (no network), so its result is known before this save
-      // too, and the offset/ids it advances to are reserved the same way.
-      event.seq = (stored.seq ?? 0) + 1;
-      const toolsOpen = nextToolsOpen(stored.toolsOpen ?? 0, event.kind);
-      const scan = scanTranscriptForLlmUsage(event, transcriptStateOf(stored));
-      saveSession(ref, { ...stored, seq: (stored.seq ?? 0) + plannedEventCount(event), toolsOpen, ...scan.state }, env);
-      const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
-      await emitThrough(event, sink, scan.events);
+      await attachToStored(event, stored, base, storeKey, env, now, true);
+      return;
+    }
+
+    // No open session found for this store key after the pending check.
+    if (isSubagent) {
+      // Either the probe above found nothing under the alias either, or the
+      // lead's session vanished between the probe and now: never open on a
+      // subagent's behalf.
+      noteSubagentEventUnattached(storeKey, env, now);
       return;
     }
 
     // First event for this harness session (session_start, or a tool event
     // that arrived before any start): open one, persist it as soon as it is
-    // known, then emit, all while still holding the lock so a concurrent
-    // caller waiting on it sees the saved session once we release.
+    // known, then emit, all while still holding the lock.
     event.seq = 1;
-    if (event.kind === 'session_start') await openingEvidence(event);
+    if (event.kind === 'session_start') {
+      await openingEvidence(event);
+      savePidAlias(String(opts.deps.ownPpid ?? process.ppid), storeKey, env, now);
+    }
     const scan = scanTranscriptForLlmUsage(event, {});
+    const harnessName = typeof event.meta?.['harness'] === 'string' ? (event.meta['harness'] as string) : '';
+    const clientRef = deriveClientRef(harnessName, storeKey, base.agentId ?? '');
+    savePendingSession(storeKey, clientRef, env, now);
     const persist = (info: { id: string; ingestToken: string }): void => {
       saveSession(
-        ref,
+        storeKey,
         { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: plannedEventCount(event), toolsOpen: nextToolsOpen(0, event.kind), ...scan.state },
         env,
       );
     };
-    const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
+    const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist, clientRef });
     await emitThrough(event, sink, scan.events);
   } finally {
     lock.release();
@@ -326,8 +530,8 @@ export async function runHook(
     const base = {
       ...resolved,
       sourceType: 'harness' as const,
-      // Declare who is recording, so a reader can tell a harness session from
-      // a wrapped process without inferring it from the events.
+      // Declare who is recording, so a reader can tell a harness recording
+      // from a wrapped process without inferring it from the events.
       collector: { name: 'aer-hooks', version: HOOKS_VERSION },
     };
 
@@ -342,7 +546,9 @@ export async function runHook(
     }
     const now = (deps.now ?? Date.now)();
     const event = normalize(payload, harness, parseEventFlag(argv), parseLifecycleFlag(argv));
-    await orchestrateAndEmit(event, base, env, now);
+    const hardTimeoutMs = deps.hardTimeoutMs ?? parseHardTimeoutMs(env, () => undefined) ?? DEFAULT_HARD_TIMEOUT_MS;
+    const rootSession = parseRootSessionFlag(argv);
+    await orchestrateAndEmit(event, base, env, now, { rootSession, deadline: now + hardTimeoutMs, deps });
   } catch {
     /* fail open: never surface an error to the harness */
   }
@@ -389,7 +595,7 @@ export async function main(
     if (typeof t.unref === 'function') t.unref();
   });
   try {
-    await Promise.race([runHook(argv, env, deps), timeout]);
+    await Promise.race([runHook(argv, env, { ...deps, hardTimeoutMs: deps.hardTimeoutMs ?? hardTimeoutMs }), timeout]);
   } catch {
     /* fail open */
   }

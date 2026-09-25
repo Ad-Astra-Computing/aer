@@ -63,6 +63,31 @@ describe('the SessionEnd budget', () => {
     expect(entry).toBeDefined();
     expect(entry).not.toHaveProperty('timeout');
   });
+
+  it('gives the Claude Code SessionStart hook the same headroom', async () => {
+    // SessionStart now opens the upstream session too (writing the pending
+    // marker before the POST), the same budget SessionEnd needed.
+    await install('claude-code', { dir });
+    const [entry] = aerEntries(hooksOf('claude-code')['SessionStart']);
+    expect(entry?.timeout).toBeGreaterThanOrEqual(10);
+  });
+});
+
+describe('root-session join (ADR-023 B1)', () => {
+  it('stamps --root-session on every Claude Code registration', async () => {
+    await install('claude-code', { dir });
+    const hooks = hooksOf('claude-code');
+    const commands = Object.values(hooks).flatMap((g) => aerEntries(g)).map((h) => h.command);
+    expect(commands.length).toBeGreaterThan(0);
+    for (const c of commands) expect(c, c).toContain('--root-session "${CLAUDE_SESSION_ID}"');
+  });
+
+  it('does not stamp --root-session for Codex or Antigravity', async () => {
+    await install('codex', { dir });
+    const codexCommands = Object.values(hooksOf('codex')).flatMap((g) => aerEntries(g)).map((h) => h.command);
+    expect(codexCommands.length).toBeGreaterThan(0);
+    for (const c of codexCommands) expect(c).not.toContain('--root-session');
+  });
 });
 
 describe('antigravity registration', () => {
