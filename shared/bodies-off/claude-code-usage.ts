@@ -3,8 +3,11 @@
 //
 // SOURCE OF TRUTH; scripts/check-vendored.mjs fails the build on drift.
 
-// Mirror of @aer/schemas event.ts MAX_FIELD_LEN.
-const MAX_FIELD_LEN = 512;
+// Mirror of normalize.ts's identifier(): closed charset, length-capped. A
+// model name or agent type that does not fit this shape is unrecognized, not
+// truncated to fit.
+const IDENTIFIER_MAX_LEN = 128;
+const IDENTIFIER_RE = /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]*$/;
 
 export interface ClaudeCodeUsage {
   model: string;
@@ -17,8 +20,10 @@ function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function field(v: unknown): string | undefined {
-  return typeof v === 'string' && v.length > 0 && v.length <= MAX_FIELD_LEN ? v : undefined;
+// Shared by this file (model) and transcript-tail.ts (agentType).
+export function identifierField(v: unknown): string | undefined {
+  if (typeof v !== 'string' || v.length === 0 || v.length > IDENTIFIER_MAX_LEN) return undefined;
+  return IDENTIFIER_RE.test(v) ? v : undefined;
 }
 
 function tokenCount(v: unknown): number | undefined {
@@ -38,7 +43,7 @@ function providerOf(model: string): string | undefined {
 export function extractClaudeCodeUsage(message: unknown): ClaudeCodeUsage | undefined {
   const msg = isObj(message) ? message : undefined;
   if (!msg) return undefined;
-  const model = field(msg['model']);
+  const model = identifierField(msg['model']);
   if (!model) return undefined;
   const usage = isObj(msg['usage']) ? msg['usage'] : undefined;
   const usageOut: ClaudeCodeUsage = { model };
