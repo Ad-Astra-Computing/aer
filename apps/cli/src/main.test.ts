@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from './main.js';
@@ -104,5 +104,118 @@ describe('init --session validation', () => {
       await main(['init', '--yes', '--session', value]);
     }
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('import names what is missing instead of printing all of usage', () => {
+  let dir: string;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  const IMPORT_ENV = ['AER_BASE_URL', 'AER_TENANT_API_KEY', 'AER_API_KEY', 'AER_TENANT_ID', 'AER_AGENT_ID', 'AER_ENV_ID'];
+
+  const stderr = (): string => errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aer-cli-import-'));
+    for (const name of IMPORT_ENV) vi.stubEnv(name, '');
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitCalled(code ?? 0);
+    }) as never);
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('lists every unset variable, and only those', async () => {
+    vi.stubEnv('AER_BASE_URL', 'https://api.test');
+    vi.stubEnv('AER_TENANT_API_KEY', 'k');
+    await expect(main(['import', 'claude-code', join(dir, 's.jsonl')])).rejects.toThrow(ProcessExitCalled);
+    expect(exitSpy).toHaveBeenCalledWith(64);
+    const out = stderr();
+    for (const name of ['AER_TENANT_ID', 'AER_AGENT_ID', 'AER_ENV_ID']) expect(out).toContain(name);
+    expect(out).not.toContain('AER_BASE_URL');
+    expect(out).not.toContain('aer webhooks deliveries');
+  });
+
+  it('says a format is needed when the file comes first', async () => {
+    await expect(main(['import', 'history.jsonl'])).rejects.toThrow(ProcessExitCalled);
+    expect(exitSpy).toHaveBeenCalledWith(64);
+    expect(stderr()).toContain('aer import claude-code <file.jsonl>');
+    expect(stderr()).not.toContain('aer webhooks deliveries');
+  });
+
+  it('says where Claude Code keeps transcripts when no file is given', async () => {
+    await expect(main(['import', 'claude-code'])).rejects.toThrow(ProcessExitCalled);
+    expect(exitSpy).toHaveBeenCalledWith(64);
+    expect(stderr()).toContain('~/.claude/projects');
+  });
+
+  it('takes the identity from aer.config.json, where aer init writes it', async () => {
+    writeFileSync(join(dir, 'aer.config.json'), JSON.stringify({
+      schema: 'aer.config.v1', tenant_id: 't', agent_id: 'a', env_id: 'e', base_url: 'https://api.test',
+    }));
+    vi.stubEnv('AER_TENANT_API_KEY', 'k');
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      await expect(main(['import', 'claude-code', join(dir, 'nope.jsonl')])).rejects.toThrow(ProcessExitCalled);
+    } finally {
+      process.chdir(cwd);
+    }
+    // Past the variable check: it is the file that is refused now.
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(stderr()).toContain('nope.jsonl');
+  });
+
+  it('treats a placeholder in aer.config.json as unset', async () => {
+    writeFileSync(join(dir, 'aer.config.json'), JSON.stringify({
+      schema: 'aer.config.v1', tenant_id: 'REPLACE_WITH_TENANT_ID', agent_id: 'a', env_id: 'e',
+    }));
+    vi.stubEnv('AER_TENANT_API_KEY', 'k');
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      await expect(main(['import', 'claude-code', join(dir, 's.jsonl')])).rejects.toThrow(ProcessExitCalled);
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(exitSpy).toHaveBeenCalledWith(64);
+    expect(stderr()).toContain('AER_TENANT_ID');
+    expect(stderr()).not.toContain('AER_AGENT_ID');
+  });
+
+  it('lists the newest transcripts for this directory when no file is given', async () => {
+    const project = join(dir, 'work', 'my.app');
+    const slug = project.replace(/[^A-Za-z0-9]/g, '-');
+    mkdirSync(project, { recursive: true });
+    mkdirSync(join(dir, '.claude', 'projects', slug), { recursive: true });
+    writeFileSync(join(dir, '.claude', 'projects', slug, 'aaaa.jsonl'), '{}');
+    vi.stubEnv('HOME', dir);
+    const cwd = process.cwd();
+    process.chdir(project);
+    try {
+      await expect(main(['import', 'claude-code'])).rejects.toThrow(ProcessExitCalled);
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(stderr()).toContain(`~/.claude/projects/${slug}/aaaa.jsonl`);
+  });
+
+  it('names a file that cannot be read before any network call', async () => {
+    for (const [name, value] of [['AER_BASE_URL', 'https://api.test'], ['AER_TENANT_API_KEY', 'k'], ['AER_TENANT_ID', 't'], ['AER_AGENT_ID', 'a'], ['AER_ENV_ID', 'e']]) {
+      vi.stubEnv(name!, value!);
+    }
+    const missing = join(dir, 'nope.jsonl');
+    await expect(main(['import', 'claude-code', missing])).rejects.toThrow(ProcessExitCalled);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(stderr()).toContain(missing);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
