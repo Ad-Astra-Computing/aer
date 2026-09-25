@@ -20,6 +20,11 @@ import type { Principal } from './principal.js';
 
 export type { Principal } from './principal.js';
 
+// What the API's Uuid schema accepts. A caller-supplied eventId that does
+// not fit this shape is treated as not supplied: the generator still runs
+// rather than sending a value ingest would reject the whole event over.
+const UUID_LOWER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 export interface EventSink {
   /**
    * Record one event. Must not throw; returns void or a Promise the caller may
@@ -411,7 +416,8 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
   return {
     emit(eventType, payload, eventId): void {
       if (disabled) return;
-      pending.push(eventId !== undefined ? { eventType, payload, eventId } : { eventType, payload });
+      const validId = eventId !== undefined && UUID_LOWER.test(eventId) ? eventId : undefined;
+      pending.push(validId !== undefined ? { eventType, payload, eventId: validId } : { eventType, payload });
       if (pending.length > maxPending) {
         const overflow = pending.length - maxPending;
         pending.splice(0, overflow);

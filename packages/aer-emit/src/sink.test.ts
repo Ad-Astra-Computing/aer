@@ -127,6 +127,30 @@ describe('createHttpSink', () => {
     expect(arr[1]!['event_id']).toBe('generated-id-not-supplied');
   });
 
+  it('falls back to the generator for an eventId that is not a lowercase UUID', async () => {
+    let eventsBody: unknown;
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 'sess-1', ingest_token: 'tok', status: 'running' }, 201);
+      if (url.endsWith('/events')) eventsBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+      return jsonResponse({ accepted: 3, rejected: 0, errors: [] }, 202);
+    }) as unknown as typeof fetch;
+
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test', apiKey: 'k', tenantId: 't', agentId: 'a',
+      fetch: fakeFetch, batchSize: 3,
+      newId: () => 'generated-fallback-id',
+    });
+    sink.emit('llm.completed', { model: 'a' }, 'not-a-uuid-at-all');
+    sink.emit('llm.completed', { model: 'b' }, 'DEADBEEF-DEAD-4EEF-8EEF-DEADBEEFDEAD'); // uppercase: refused
+    sink.emit('llm.completed', { model: 'c' }, '11111111-1111-4111-8111-11111111111'); // one hex digit short
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+
+    const arr = eventsBody as Array<Record<string, unknown>>;
+    expect(arr.every((e) => e['event_id'] === 'generated-fallback-id')).toBe(true);
+  });
+
   it('batches multiple events into a single POST', async () => {
     let eventPosts = 0;
     const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
