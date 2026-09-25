@@ -162,6 +162,10 @@ describe('import names what is missing instead of printing all of usage', () => 
       schema: 'aer.config.v1', tenant_id: 't', agent_id: 'a', env_id: 'e', base_url: 'https://api.test',
     }));
     vi.stubEnv('AER_TENANT_API_KEY', 'k');
+    // An env key paired with a base URL that came only from aer.config.json
+    // and differs from the default is refused (P1-1); confirm intent the
+    // same way a real user would, by also setting AER_BASE_URL.
+    vi.stubEnv('AER_BASE_URL', 'https://api.test');
     const cwd = process.cwd();
     process.chdir(dir);
     try {
@@ -172,6 +176,23 @@ describe('import names what is missing instead of printing all of usage', () => 
     // Past the variable check: it is the file that is refused now.
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(stderr()).toContain('nope.jsonl');
+  });
+
+  it('P1-1: refuses an env key toward a cfg-only base URL that differs from the default', async () => {
+    writeFileSync(join(dir, 'aer.config.json'), JSON.stringify({
+      schema: 'aer.config.v1', tenant_id: 't', agent_id: 'a', env_id: 'e', base_url: 'https://cloned-repo.example',
+    }));
+    vi.stubEnv('AER_TENANT_API_KEY', 'k');
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      await expect(main(['import', 'claude-code', join(dir, 's.jsonl')])).rejects.toThrow(ProcessExitCalled);
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(exitSpy).toHaveBeenCalledWith(64);
+    expect(stderr()).toMatch(/AER_BASE_URL/);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('treats a placeholder in aer.config.json as unset', async () => {
