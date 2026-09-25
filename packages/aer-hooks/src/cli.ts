@@ -18,7 +18,13 @@ import {
 } from '@adastracomputing/aer-emit';
 import { normalize, type Harness, type HookEvent, type Lifecycle } from './normalize.js';
 import { emitHookEvent } from './core.js';
-import { loadSession, saveSession, deleteSession, acquireSessionLock } from './session-store.js';
+import { loadSession, saveSession, deleteSession, acquireSessionLock, type StoredSession } from './session-store.js';
+import {
+  scanTranscriptForLlmUsage,
+  emitLlmUsageEvents,
+  type TranscriptUsageState,
+} from './claude-code-transcript.js';
+import type { LlmUsageEvent } from './transcript-tail.js';
 import { isInvokedDirectly } from './invoked-directly.js';
 import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
 
@@ -145,11 +151,28 @@ function closingEvidence(event: HookEvent, toolsOpen: number): void {
   meta['tools_unresolved'] = toolsOpen;
 }
 
-/** Build the sink for one already-decided branch, emit the event, and close it. */
-async function emitThrough(event: HookEvent, sink: EventSink): Promise<number> {
+/**
+ * Build the sink for one already-decided branch, emit the event plus any
+ * already-scanned Claude Code transcript usage events, and close it. The
+ * usage events are pre-scanned (rather than scanned here) so a caller that
+ * must reserve session-store state before the network call, the way `seq`
+ * already is, can do so.
+ */
+async function emitThrough(event: HookEvent, sink: EventSink, llmUsageEvents: LlmUsageEvent[] = []): Promise<number> {
   const count = emitHookEvent(event, sink);
+  emitLlmUsageEvents(llmUsageEvents, sink, event.sessionRef);
   await sink.close();
   return count;
+}
+
+/** The transcript-tracking fields a stored session carries, or none for a fresh one. */
+function transcriptStateOf(stored: StoredSession | null): TranscriptUsageState {
+  if (!stored) return {};
+  const state: TranscriptUsageState = {};
+  if (stored.transcriptPath !== undefined) state.transcriptPath = stored.transcriptPath;
+  if (stored.transcriptOffset !== undefined) state.transcriptOffset = stored.transcriptOffset;
+  if (stored.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = stored.emittedLlmMessageIds;
+  return state;
 }
 
 /**
@@ -194,6 +217,9 @@ async function orchestrateAndEmit(
   const ref = event.sessionRef;
   if (!ref) {
     // No correlation id: single-shot session (open + emit + complete on close).
+    // No persisted store means no known offset either, so a transcript scan
+    // here would restart from byte 0 and replay everything the transcript
+    // has ever held on every such call. Skip it rather than double-count.
     await emitThrough(event, createHttpSink(base));
     return;
   }
@@ -202,7 +228,9 @@ async function orchestrateAndEmit(
   if (!lock) {
     // Could not converge with a concurrent hook for this harness session in
     // time (or the store is unwritable): degrade to single-shot rather than
-    // risk reading a half-written entry or waiting indefinitely.
+    // risk reading a half-written entry or waiting indefinitely. Same reason
+    // as above: no persisted offset here either, so the transcript is not
+    // scanned on this degraded path.
     await emitThrough(event, createHttpSink(base));
     return;
   }
@@ -227,7 +255,12 @@ async function orchestrateAndEmit(
         : createHttpSink(base); // never saw a start; single-shot
       if (stored) event.seq = (stored.seq ?? 0) + 1;
       closingEvidence(event, stored?.toolsOpen ?? 0);
-      await emitThrough(event, sink);
+      // The stored entry is dropped below once complete, so there is nothing
+      // to persist this scan's offset/ids into; a failed complete leaves the
+      // old state in place, and the deterministic event id keeps a rescan of
+      // the same window idempotent at ingest either way.
+      const scan = scanTranscriptForLlmUsage(event, transcriptStateOf(stored));
+      await emitThrough(event, sink, scan.events);
       if (stored && completed) deleteSession(ref, env);
       return;
     }
@@ -239,12 +272,15 @@ async function orchestrateAndEmit(
       // Reserve the positions BEFORE emitting. The lock is stolen after a
       // few seconds and a network call can outlast it, so saving afterwards
       // let two invocations take the same number. A gap left by a failed
-      // send is honest; a repeat is not.
+      // send is honest; a repeat is not. The transcript scan itself is a
+      // local fs read (no network), so its result is known before this save
+      // too, and the offset/ids it advances to are reserved the same way.
       event.seq = (stored.seq ?? 0) + 1;
       const toolsOpen = nextToolsOpen(stored.toolsOpen ?? 0, event.kind);
-      saveSession(ref, { ...stored, seq: (stored.seq ?? 0) + plannedEventCount(event), toolsOpen }, env);
+      const scan = scanTranscriptForLlmUsage(event, transcriptStateOf(stored));
+      saveSession(ref, { ...stored, seq: (stored.seq ?? 0) + plannedEventCount(event), toolsOpen, ...scan.state }, env);
       const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
-      await emitThrough(event, sink);
+      await emitThrough(event, sink, scan.events);
       return;
     }
 
@@ -254,11 +290,16 @@ async function orchestrateAndEmit(
     // caller waiting on it sees the saved session once we release.
     event.seq = 1;
     if (event.kind === 'session_start') await openingEvidence(event);
+    const scan = scanTranscriptForLlmUsage(event, {});
     const persist = (info: { id: string; ingestToken: string }): void => {
-      saveSession(ref, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: plannedEventCount(event), toolsOpen: nextToolsOpen(0, event.kind) }, env);
+      saveSession(
+        ref,
+        { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq: plannedEventCount(event), toolsOpen: nextToolsOpen(0, event.kind), ...scan.state },
+        env,
+      );
     };
     const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist });
-    await emitThrough(event, sink);
+    await emitThrough(event, sink, scan.events);
   } finally {
     lock.release();
   }

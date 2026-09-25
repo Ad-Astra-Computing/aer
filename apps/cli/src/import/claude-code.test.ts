@@ -67,6 +67,12 @@ describe('claudeCodeTranscriptToEvents', () => {
     expect(llm!.payload.output_tokens).toBe(340);
   });
 
+  it('skips llm.completed when the model does not fit the shared identifier shape', () => {
+    const badModel = { ...ASSISTANT, message: { ...ASSISTANT.message, model: '<synthetic>' } };
+    const { events } = claudeCodeTranscriptToEvents([badModel], CTX);
+    expect(events.some((e) => e.event_type === 'llm.completed')).toBe(false);
+  });
+
   it('reduces a Bash command to the executable name only (never argv/secrets)', () => {
     const { events } = claudeCodeTranscriptToEvents([ASSISTANT], CTX);
     const proc = events.find((e) => e.event_type === 'process.exec');
