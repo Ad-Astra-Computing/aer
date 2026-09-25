@@ -103,6 +103,30 @@ describe('createHttpSink', () => {
     expect(ev).not.toHaveProperty('ts');
   });
 
+  it('uses a caller-supplied eventId instead of the generator, and still generates one when omitted', async () => {
+    let eventsBody: unknown;
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ agent_session_id: 'sess-1', ingest_token: 'tok', status: 'running' }, 201);
+      if (url.endsWith('/events')) eventsBody = init?.body ? JSON.parse(String(init.body)) : undefined;
+      return jsonResponse({ accepted: 2, rejected: 0, errors: [] }, 202);
+    }) as unknown as typeof fetch;
+
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test', apiKey: 'k', tenantId: 't', agentId: 'a',
+      fetch: fakeFetch, batchSize: 2,
+      newId: () => 'generated-id-not-supplied',
+    });
+    sink.emit('llm.completed', { model: 'claude-x' }, 'deadbeef-dead-4eef-8eef-deadbeefdead');
+    sink.emit('tool.started', { tool: 'search' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+
+    const arr = eventsBody as Array<Record<string, unknown>>;
+    expect(arr[0]!['event_id']).toBe('deadbeef-dead-4eef-8eef-deadbeefdead');
+    expect(arr[1]!['event_id']).toBe('generated-id-not-supplied');
+  });
+
   it('batches multiple events into a single POST', async () => {
     let eventPosts = 0;
     const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
