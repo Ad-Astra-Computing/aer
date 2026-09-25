@@ -73,11 +73,11 @@ describe('cmdLink', () => {
 
   it('--create-agent posts to /v1/agents and uses the returned id', async () => {
     setCredential(BASE_URL, CRED, env);
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, { agent_id: 'agent-new' }));
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, { agent_id: '44444444-4444-4444-4444-444444444444' }));
     const code = await cmdLink({ createAgentName: 'my-agent' }, deps({ fetchImpl }));
     expect(code).toBe(0);
     const written = JSON.parse(files['/project/aer.config.json']!);
-    expect(written.agent_id).toBe('agent-new');
+    expect(written.agent_id).toBe('44444444-4444-4444-4444-444444444444');
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${BASE_URL}/v1/agents`);
     expect(JSON.parse(init.body as string)).toEqual({ name: 'my-agent' });
@@ -135,5 +135,24 @@ describe('cmdLink', () => {
     const code = await cmdLink({}, deps({ isTTY: true, fetchImpl }));
     expect(code).toBe(1);
     expect(err.join('\n')).toMatch(/--create-agent/);
+  });
+
+  it('P2-5: an error body from --create-agent is capped and cleaned before printing', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const huge = `\x07${'y'.repeat(5000)}`;
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(huge, { status: 500 }));
+    const code = await cmdLink({ createAgentName: 'x' }, deps({ fetchImpl }));
+    expect(code).toBe(1);
+    const message = err.join('\n');
+    expect(message.length).toBeLessThan(500);
+    expect(message).not.toMatch(/[\x00-\x08\x0B-\x1F\x7F]/);
+  });
+
+  it('P3: refuses a create-agent response whose agent_id is not a UUID', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, { agent_id: 'not-a-uuid' }));
+    const code = await cmdLink({ createAgentName: 'x' }, deps({ fetchImpl }));
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/agent_id/);
   });
 });
