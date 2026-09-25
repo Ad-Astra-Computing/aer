@@ -527,12 +527,11 @@ async function orchestrateAndEmit(
       noteSubagentEventUnattached(storeKey, env, now);
       return;
     }
-    // Could not converge with a concurrent hook for this harness session in
-    // time (or the store is unwritable): degrade to single-shot rather than
-    // risk reading a half-written entry or waiting indefinitely. Still
-    // carries client_ref, so a genuine duplicate is deduped server-side.
+    // Could not converge with a concurrent hook in time (or the store is
+    // unwritable): emit single-shot with client_ref, so the server dedupes it
+    // onto the lead's running record. Never complete: that record is live.
     const clientRef = deriveClientRef(harnessOf(event), storeKey, base.agentId ?? '');
-    await emitThrough(event, createHttpSink({ ...base, clientRef }));
+    await emitThrough(event, createHttpSink({ ...base, clientRef, completeOnClose: false }));
     return;
   }
 

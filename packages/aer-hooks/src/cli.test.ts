@@ -211,6 +211,20 @@ describe('aer-hook cross-invocation session correlation', () => {
     expect(opens).toBe(0);
   });
 
+  // A lock-lost lead Stop degrades to single-shot with client_ref, which the
+  // server dedupes onto the lead's RUNNING record; it must never complete it.
+  it('a lock-lost lead Stop never completes the session it reached', async () => {
+    const blocker = path.join(cacheDir, 'blocker-file');
+    fs.writeFileSync(blocker, 'x');
+    const badEnv = { ...CONFIGURED, XDG_CACHE_HOME: path.join(blocker, 'nope') } as NodeJS.ProcessEnv;
+    await runHook(['--harness', 'claude-code', '--lifecycle', 'v2'], badEnv, {
+      readInput: async () => cc({ hook_event_name: 'Stop', session_id: 'hs-stop' }),
+      fetch: fetchImpl,
+      hardTimeoutMs: 700,
+    });
+    expect(completes).toBe(0);
+  });
+
   // The TOCTOU bug this guards against: two hook processes for the SAME harness
   // session, launched together, both see no stored session and each open their
   // own upstream AER session, orphaning one. A slow (delayed) fetch widens the
