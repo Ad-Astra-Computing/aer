@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { reduceShellCommand, UNKNOWN_COMMAND } from '../shared/shell-reduce.js';
+import { extractClaudeCodeUsage } from '../shared/claude-code-usage.js';
 
 // Mirror of @aer/schemas event.ts MAX_FIELD_LEN (host/path/tool/model field cap).
 // Inlined rather than imported so the published CLI bundle stays free of the
@@ -74,18 +75,6 @@ function isoTs(v: unknown, fallback: string): string {
   return fallback;
 }
 
-function provinceOf(model: string): string | undefined {
-  const m = model.toLowerCase();
-  if (m.startsWith('claude')) return 'anthropic';
-  if (m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) return 'openai';
-  if (m.startsWith('gemini')) return 'google';
-  return undefined;
-}
-
-function tokenCount(v: unknown): number | undefined {
-  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : undefined;
-}
-
 // The executable name, never argv. '' when the line was not understood, and
 // the caller then records a generic tool event rather than naming a program
 // that may not have run.
@@ -148,18 +137,16 @@ export function claudeCodeTranscriptToEvents(
     if (type === 'assistant' && msg) {
       // Model inference turn → llm.completed (metadata only). We emit the
       // *completed* form since the transcript is post-hoc; token counts are the
-      // observed usage, not the prompt.
-      const model = field(msg.model);
-      const usage = isObj(msg.usage) ? msg.usage : undefined;
-      if (model) {
-        const provider = provinceOf(model);
-        const inTok = tokenCount(usage?.['input_tokens']);
-        const outTok = tokenCount(usage?.['output_tokens']);
+      // observed usage, not the prompt. Shared with the aer-hooks live-collector
+      // path (shared/bodies-off/claude-code-usage.ts) so the two never diverge
+      // on what counts as bodies-off here.
+      const usage = extractClaudeCodeUsage(msg);
+      if (usage) {
         push(`llm|${uuid}`, ts, 'llm.completed', {
-          model, ok: true,
-          ...(provider ? { provider } : {}),
-          ...(inTok != null ? { input_tokens: inTok } : {}),
-          ...(outTok != null ? { output_tokens: outTok } : {}),
+          model: usage.model, ok: true,
+          ...(usage.provider !== undefined ? { provider: usage.provider } : {}),
+          ...(usage.inputTokens !== undefined ? { input_tokens: usage.inputTokens } : {}),
+          ...(usage.outputTokens !== undefined ? { output_tokens: usage.outputTokens } : {}),
           source: 'transcript',
         });
       }
