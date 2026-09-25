@@ -4,11 +4,8 @@
 // BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
 //
 // harness_agent_id, subagent_events_unattached and events_dropped_budget are
-// a KNOWN GAP as of ADR-023 Phase B: the server allowlist does not accept
-// them yet, so a client that sends them is stripped server-side and counted,
-// not stored. They stay on this list anyway (see normalize.ts and cli.ts) so
-// the fields ship the moment the server allowlist catches up, rather than
-// needing a second client release.
+// listed ahead of the server allowlist, which strips and counts them until it
+// accepts them; listing them now avoids a second client release.
 
 export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'provider', 'model', 'agent', 'name', 'source', 'status', 'streaming', 'tools_available',
