@@ -800,7 +800,7 @@ describe('createHttpSink: client_ref reused + strict-old-server retry', () => {
       if (String(input).endsWith('/v1/sessions')) {
         const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
         calls.push(body);
-        if ('client_ref' in body) return jsonResponse({ error: 'expected_object' }, 400);
+        if ('client_ref' in body) return jsonResponse({ error: 'strict_schema', unrecognized_key: 'client_ref' }, 400);
         return jsonResponse({ agent_session_id: 's', ingest_token: 't', status: 'running' }, 201);
       }
       return jsonResponse({ ok: true });
@@ -836,12 +836,38 @@ describe('createHttpSink: client_ref reused + strict-old-server retry', () => {
     expect(attempts).toBe(1);
   });
 
+  // Review P3: gate the retry on the error body actually naming client_ref,
+  // so a 400 for an unrelated reason (a bad tenant_id, an oversized field)
+  // does not double the Argon2id cost of a rejection client_ref had nothing
+  // to do with.
+  it('does not retry a 400 that names something other than client_ref', async () => {
+    let attempts = 0;
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/v1/sessions')) {
+        attempts++;
+        return jsonResponse({ error: 'invalid_tenant_id' }, 400);
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetch: fakeFetch,
+      batchSize: 1,
+      clientRef: 'v1:' + '4'.repeat(48),
+    });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(attempts).toBe(1);
+  });
+
   it('does not loop forever when the retry-without-client_ref also 400s', async () => {
     let attempts = 0;
     const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/v1/sessions')) {
         attempts++;
-        return jsonResponse({ error: 'still_bad' }, 400);
+        return jsonResponse({ error: 'strict_schema', unrecognized_key: 'client_ref' }, 400);
       }
       return jsonResponse({ ok: true });
     }) as unknown as typeof fetch;

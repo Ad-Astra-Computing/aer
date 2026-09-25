@@ -267,8 +267,15 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
         // strict-schema 400 rather than ignoring the unknown field. Retry
         // exactly once without it, so an old server degrades to the
         // pre-idempotency behaviour instead of failing the open outright.
+        // Gated on the error body actually naming client_ref: a 400 for any
+        // OTHER reason (a bad tenant_id, an oversized field) would otherwise
+        // retry too, doubling the Argon2id cost of a rejection that client_ref
+        // had nothing to do with.
         if (!res.ok && res.status === 400 && opts.clientRef !== undefined) {
-          res = await post(bodyOf(false));
+          const bodyText = await res.text().catch(() => '');
+          if (/client_ref/i.test(bodyText)) {
+            res = await post(bodyOf(false));
+          }
         }
         if (!res.ok) {
           noteFatal('session open', new Error(`HTTP ${res.status}`));
