@@ -2,7 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { loadSession, saveSession, deleteSession, acquireSessionLock, type StoredSession } from './session-store.js';
+import {
+  loadSession,
+  saveSession,
+  deleteSession,
+  acquireSessionLock,
+  savePidAlias,
+  loadPidAlias,
+  type StoredSession,
+} from './session-store.js';
 
 describe('session-store', () => {
   let dir: string;
@@ -139,4 +147,42 @@ describe('session-store', () => {
       acquired[0]!.release();
     });
   });
+
+  // Review P2: pid recycling and identity across agents/tenants.
+  describe('pid alias identity guard', () => {
+    it('round-trips with no identity check', () => {
+      savePidAlias('123', 'store-key-1', env, 1000);
+      expect(loadPidAlias('123', env, 2000)).toBe('store-key-1');
+    });
+
+    it('refuses an alias whose recorded process start time does not match (a recycled pid)', () => {
+      savePidAlias('123', 'store-key-1', env, 1000, { startTime: '1111' });
+      expect(loadPidAlias('123', env, 2000, { startTime: '1111' })).toBe('store-key-1');
+      expect(loadPidAlias('123', env, 2000, { startTime: '9999' })).toBeNull();
+    });
+
+    it('refuses an alias written for a different agent', () => {
+      savePidAlias('123', 'store-key-1', env, 1000, { agentId: 'agent-a' });
+      expect(loadPidAlias('123', env, 2000, { agentId: 'agent-a' })).toBe('store-key-1');
+      expect(loadPidAlias('123', env, 2000, { agentId: 'agent-b' })).toBeNull();
+    });
+
+    it('refuses an alias written for a different base URL (a different tenant/deployment)', () => {
+      savePidAlias('123', 'store-key-1', env, 1000, { baseUrl: 'https://a.test' });
+      expect(loadPidAlias('123', env, 2000, { baseUrl: 'https://a.test' })).toBe('store-key-1');
+      expect(loadPidAlias('123', env, 2000, { baseUrl: 'https://b.test' })).toBeNull();
+    });
+
+    it('does not refuse an older alias that carries no identity at all', () => {
+      // Written before this fix shipped: no startTime/agentId/baseUrl fields.
+      saveRawPidAlias(dir, '123', { ref: 'store-key-1', createdAt: 1000 });
+      expect(loadPidAlias('123', env, 2000, { startTime: 'anything', agentId: 'agent-a' })).toBe('store-key-1');
+    });
+  });
 });
+
+function saveRawPidAlias(dir: string, pid: string, data: Record<string, unknown>): void {
+  const sub = path.join(dir, 'aer-hooks');
+  fs.mkdirSync(sub, { recursive: true });
+  fs.writeFileSync(path.join(sub, `pid-${pid}.json`), JSON.stringify(data));
+}

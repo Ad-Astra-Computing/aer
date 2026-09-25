@@ -229,6 +229,20 @@ function pidAliasFile(env: NodeJS.ProcessEnv, pid: string): string {
 }
 
 /**
+ * The identity a pid alias is checked against on read. `startTime` guards a
+ * recycled pid (a dead process's id reused by an unrelated one within the TTL
+ * window); `agentId`/`baseUrl` guard attaching a subagent to a different
+ * agent's or tenant's session. All optional: an absent field on either side
+ * of the comparison is not checked, so an alias written before this fix still
+ * degrades gracefully rather than being rejected outright.
+ */
+export interface PidAliasIdentity {
+  startTime?: string | undefined;
+  agentId?: string | undefined;
+  baseUrl?: string | undefined;
+}
+
+/**
  * Alias the harness process (identified by `pid`) to the store key it opened,
  * so a subagent hook fired from the same harness process can find the lead's
  * session even with no --root-session flag (ADR-023 B1 fallback). Written by
@@ -239,26 +253,39 @@ export function savePidAlias(
   storeKey: string,
   env: NodeJS.ProcessEnv = process.env,
   now: number = Date.now(),
+  identity: PidAliasIdentity = {},
 ): void {
   try {
-    writeEntry(pidAliasFile(env, pid), env, { ref: storeKey, createdAt: now });
+    writeEntry(pidAliasFile(env, pid), env, { ref: storeKey, createdAt: now, ...identity });
   } catch {
     /* best-effort */
   }
 }
 
-/** Look up the store key aliased to a harness process pid, or null. Best-effort. */
+/**
+ * Look up the store key aliased to a harness process pid, or null. Best-effort.
+ * `expected` is this invocation's OWN identity; a stored alias that disagrees
+ * with any field the caller can check is refused rather than trusted.
+ */
 export function loadPidAlias(
   pid: string,
   env: NodeJS.ProcessEnv = process.env,
   now: number = Date.now(),
+  expected: PidAliasIdentity = {},
 ): string | null {
   try {
     const file = pidAliasFile(env, pid);
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { ref?: unknown; createdAt?: unknown };
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<PidAliasIdentity> & { ref?: unknown; createdAt?: unknown };
     if (typeof parsed.ref !== 'string' || typeof parsed.createdAt !== 'number') return null;
     if (now - parsed.createdAt > PID_ALIAS_TTL_MS) {
       try { fs.unlinkSync(file); } catch { /* best-effort */ }
+      return null;
+    }
+    if (
+      (expected.startTime !== undefined && parsed.startTime !== undefined && parsed.startTime !== expected.startTime) ||
+      (expected.agentId !== undefined && parsed.agentId !== undefined && parsed.agentId !== expected.agentId) ||
+      (expected.baseUrl !== undefined && parsed.baseUrl !== undefined && parsed.baseUrl !== expected.baseUrl)
+    ) {
       return null;
     }
     return parsed.ref;
@@ -354,7 +381,10 @@ export interface AcquireLockOptions {
 
 const LOCK_MAX_WAIT_MS = 8000;
 const LOCK_POLL_MS = 25;
-const LOCK_STALE_MS = 5000;
+// A holder can now legitimately hold the lock for close to the whole budget
+// (open the session, save, emit): the default 10s hook budget plus margin,
+// so a live opener is never mistaken for a crashed one and stolen mid-open.
+const LOCK_STALE_MS = 12000;
 
 function lockFileFor(env: NodeJS.ProcessEnv, harnessSessionId: string): string {
   return `${fileFor(env, harnessSessionId)}.lock`;

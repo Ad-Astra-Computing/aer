@@ -28,15 +28,14 @@ describe('plannedEventCount', () => {
 
 describe('a lock is released only by the process that holds it', () => {
   it('does not unlink a lock another holder took after a steal', async () => {
-    // A lock older than 5s is stolen. The original holder then finishes and
-    // its release() used to unlink the NEW holder's file, letting a third in
-    // while the second was still working. The clock is offset from the real
-    // one so the file mtimes it is compared against stay meaningful.
+    // A lock older than staleMs is stolen; release() used to unlink the NEW
+    // holder's file too, letting a third in early. staleMs is explicit here
+    // since a caller's own budget can now raise the module default past it.
     const base = Date.now();
     const first = await acquireSessionLock('s', env);
     expect(first).not.toBeNull();
 
-    const second = await acquireSessionLock('s', env, { now: () => base + 6000, maxWaitMs: 500 });
+    const second = await acquireSessionLock('s', env, { now: () => base + 6000, maxWaitMs: 500, staleMs: 1000 });
     expect(second, 'the stale lock was not stolen').not.toBeNull();
 
     first!.release();
