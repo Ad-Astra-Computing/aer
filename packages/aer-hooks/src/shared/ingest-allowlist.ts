@@ -2,6 +2,12 @@
 // at POST /v1/sessions/:id/events, so a client that sends one pays the privacy
 // cost and gets nothing in the record. Source of truth is
 // BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
+//
+// harness_agent_id is a KNOWN GAP as of ADR-023 Phase B: the server allowlist
+// does not accept it yet, so a client that sends it is stripped server-side
+// and counted, not stored. It stays on this list anyway (see normalize.ts)
+// so the field ships the moment the server allowlist catches up, rather than
+// needing a second client release.
 
 export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'provider', 'model', 'agent', 'name', 'source', 'status', 'streaming', 'tools_available',
@@ -21,7 +27,7 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'session_ref', 'frameworks', 'providers', 'adapters', 'calls_recorded', 'provider_requests',
   'coverage', 'harness', 'permission_mode', 'effort', 'repo_head', 'seq', 'turn_id',
   'tool_use_id', 'parent_tool_use_id', 'agent_type', 'events_registered', 'events_emitted', 'tools_unresolved',
-  'run_id', 'thread_id', 'main_thread'
+  'run_id', 'thread_id', 'main_thread', 'harness_agent_id'
 ]);
 
 export interface StripResult {

@@ -111,9 +111,9 @@ export function asString(v: unknown): string | undefined {
  * and recording whatever text the harness had to hand, so anything else is
  * dropped rather than trimmed.
  */
-export function identifier(v: unknown): string | undefined {
+export function identifier(v: unknown, maxLength = 128): string | undefined {
   const s = asString(v);
-  if (s === undefined || s.length > 128) return undefined;
+  if (s === undefined || s.length > maxLength) return undefined;
   return /^[A-Za-z0-9][A-Za-z0-9._:/[\]-]*$/.test(s) ? s : undefined;
 }
 
@@ -188,9 +188,13 @@ function commonMeta(p: Record<string, unknown>, harness: Harness, kind: HookKind
     // PreCompact names it `trigger`; both are the same closed-set label.
     put(meta, 'reason', identifier(p['reason'] ?? p['trigger']));
   }
-  if (kind === 'subagent_start' || kind === 'subagent_end') {
-    put(meta, 'agent_type', identifier(p['agent_type']));
-  }
+  // The harness's own subagent id/type, read on every event (not just the
+  // subagent lifecycle markers): a tool call fired inside a subagent carries
+  // it too, and that is what lets a reader put the call in its lane. An
+  // agent_type with no agent_id is the main thread running under a named
+  // mode, not a lane of its own.
+  put(meta, 'harness_agent_id', identifier(p['agent_id'], 128));
+  put(meta, 'agent_type', identifier(p['agent_type'], 64));
   // No harness documents this today. Recorded only where one sends it: it is
   // what attributes a subagent's work back to the call that spawned it.
   put(meta, 'parent_tool_use_id', identifier(p['parent_tool_use_id']));
