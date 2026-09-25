@@ -30,13 +30,11 @@ export async function cmdLogin(opts: LoginOptions, deps: LoginDeps): Promise<num
   const baseUrl = opts.baseUrlFlag || deps.env['AER_BASE_URL'] || deps.defaultBaseUrl;
   const hostname = sanitizeHostname(deps.hostname());
 
-  // P2-3: a repeated `aer login` for the same host otherwise piles up live
-  // CLI keys server-side (eventually hitting cli_device_key_limit_reached).
-  // Best-effort: a failure here never blocks the new login.
+  // P2-3: read only, before starting the flow. The revoke itself happens
+  // AFTER the new credential is safely stored below: revoking it up front
+  // would leave the person with no working key at all if the new device
+  // flow is then denied, times out, or fails to save.
   const existing = getCredential(baseUrl, deps.env);
-  if (existing) {
-    await revokeCliKey(baseUrl, existing.api_key, deps.fetchImpl);
-  }
 
   const onPrompt = (start: DeviceStartResponse): void => {
     deps.print('To finish signing in, open this page:');
@@ -84,6 +82,12 @@ export async function cmdLogin(opts: LoginOptions, deps: LoginDeps): Promise<num
         ? 'The newly minted key was revoked.'
         : 'Could not revoke the newly minted key either; revoke it manually in Settings.');
       return 1;
+    }
+
+    // P2-3: now that the new credential is stored and usable, clean up the
+    // old one. Best-effort: a failure here never undoes the login above.
+    if (existing) {
+      await revokeCliKey(baseUrl, existing.api_key, deps.fetchImpl);
     }
 
     const { file } = credentialsPaths(deps.env);
