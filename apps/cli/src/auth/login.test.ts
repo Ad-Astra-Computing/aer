@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cmdLogin } from './login.js';
-import { getCredential } from './credentials-store.js';
+import { getCredential, setCredential } from './credentials-store.js';
 
 const BASE_URL = 'https://api.test';
 
@@ -23,7 +23,7 @@ const START = {
 const GRANT = {
   api_key: 'aer_super_secret_value_xyz',
   key_id: 'key-1',
-  tenant_id: 'tenant-1',
+  tenant_id: '22222222-2222-2222-2222-222222222222',
   role: 'write',
   expires_at: '2099-01-01T00:00:00Z',
 };
@@ -68,7 +68,7 @@ describe('cmdLogin', () => {
     expect(code).toBe(0);
     const cred = getCredential(BASE_URL, env);
     expect(cred).toEqual({
-      tenant_id: 'tenant-1', api_key: GRANT.api_key, key_id: 'key-1', role: 'write', expires_at: GRANT.expires_at,
+      tenant_id: '22222222-2222-2222-2222-222222222222', api_key: GRANT.api_key, key_id: 'key-1', role: 'write', expires_at: GRANT.expires_at,
     });
   });
 
@@ -164,5 +164,76 @@ describe('cmdLogin', () => {
     deps.env = { ...env, AER_BASE_URL: 'https://env.test' };
     await cmdLogin({}, deps);
     expect(getCredential('https://env.test', deps.env)).toBeDefined();
+  });
+
+  it('P1-2: sanitizes the verification URL and user code before printing', async () => {
+    const dirtyStart = { ...START, verification_uri: 'https://aer.run/device', user_code: 'ab\x07cd-ef\ngh' };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, dirtyStart))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(out.join('\n')).not.toMatch(/[\x00-\x08\x0B-\x1F\x7F]/);
+  });
+
+  it('P2-3: revokes an existing entry for this base URL before starting a new login', async () => {
+    setCredential(BASE_URL, {
+      tenant_id: '33333333-3333-3333-3333-333333333333', api_key: 'old-key', key_id: 'old-key-id', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+    }, env);
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 })) // best-effort revoke of the old key
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(0);
+    const [firstUrl, firstInit] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(firstUrl).toBe(`${BASE_URL}/v1/cli/logout`);
+    expect((firstInit.headers as Record<string, string>).authorization).toBe('Bearer old-key');
+    expect(getCredential(BASE_URL, env)?.api_key).toBe(GRANT.api_key);
+  });
+
+  it('P2-3: a failed revoke of the old key never blocks the new login', async () => {
+    setCredential(BASE_URL, {
+      tenant_id: '33333333-3333-3333-3333-333333333333', api_key: 'old-key', key_id: 'old-key-id', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+    }, env);
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new Error('network down')) // revoke of the old key fails
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT));
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, baseDeps(fetchImpl));
+    expect(code).toBe(0);
+    expect(getCredential(BASE_URL, env)?.api_key).toBe(GRANT.api_key);
+  });
+
+  it('P2-2: a store failure after the 201 revokes the newly minted key rather than orphaning it', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT))
+      .mockResolvedValueOnce(new Response(null, { status: 204 })); // revoke of the new key
+    const deps = baseDeps(fetchImpl);
+    // Force the store to fail: point HOME at a path that is actually a file,
+    // so mkdirSync for the aer/ directory fails.
+    const blockerFile = join(root, 'not-a-directory');
+    writeFileSync(blockerFile, 'x');
+    deps.env = { HOME: blockerFile, XDG_CONFIG_HOME: undefined };
+    const code = await cmdLogin({ baseUrlFlag: BASE_URL }, deps);
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/revoked/i);
+    const [, , thirdCall] = fetchImpl.mock.calls;
+    expect(thirdCall?.[0]).toBe(`${BASE_URL}/v1/cli/logout`);
+    const revokeInit = thirdCall?.[1] as RequestInit;
+    expect((revokeInit.headers as Record<string, string>).authorization).toBe(`Bearer ${GRANT.api_key}`);
+  });
+
+  it('P2-2: never prints the api key even when the store fails and it must be revoked', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, START))
+      .mockResolvedValueOnce(jsonResponse(201, GRANT))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const deps = baseDeps(fetchImpl);
+    const blockerFile = join(root, 'not-a-directory-2');
+    writeFileSync(blockerFile, 'x');
+    deps.env = { HOME: blockerFile, XDG_CONFIG_HOME: undefined };
+    await cmdLogin({ baseUrlFlag: BASE_URL }, deps);
+    expect([...out, ...err].join('\n')).not.toContain(GRANT.api_key);
   });
 });
