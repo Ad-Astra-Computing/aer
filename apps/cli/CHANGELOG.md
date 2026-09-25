@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- [`958d73b`](https://github.com/Ad-Astra-Computing/aer/commit/958d73bf42c828d6d7067bd6851d962d2d632b24) - `aer doctor` now folds in the hooks staleness report: a registration
+  missing `--lifecycle v2`, an outdated installed `aer-hooks` or a
+  nix-profile `aer-hook` ahead of the project install, each printed as a
+  `WARN` with the exact fix command and carried under
+  `hooks.stale_registrations` in `--json` output.
+- [`80b8cb4`](https://github.com/Ad-Astra-Computing/aer/commit/80b8cb4f6e19f6f267f11a7d45be371fe1774af9) - Add `aer login`, `aer logout`, `aer whoami` and `aer link`. `aer login` runs
+  the device authorization flow, prints a URL and a code to type, and saves the
+  resulting tenant key to `~/.config/aer/credentials.json` (0700/0600, atomic,
+  symlink-refusing). `aer link` writes `aer.config.json` for the current
+  project from that session, with an interactive agent picker on a terminal.
+  Every tenant command, including `aer import claude-code`, now falls back to
+  these credentials when no environment variable or `aer.config.json` field is
+  set, so a machine only needs `aer login` once and each project only needs
+  `aer link` once.
+
+### Patch Changes
+
+- [`65e71eb`](https://github.com/Ad-Astra-Computing/aer/commit/65e71eb53a1f013a5cbc5362f458c247cfc41ab2) - `aer import claude-code` now reads model + token counts off a transcript
+  assistant message through the same vendored helper aer-hooks uses for its
+  live Claude Code capture, so the two paths cannot drift on what counts as
+  bodies-off. No output change.
+- [`80b8cb4`](https://github.com/Ad-Astra-Computing/aer/commit/80b8cb4f6e19f6f267f11a7d45be371fe1774af9) - Harden `aer login` and friends per security review. Refuse an env or flag
+  API key whose base URL came only from a cloned repo's `aer.config.json` and
+  differs from the default, unless `AER_BASE_URL` confirms it. Validate the
+  server's verification URL (https only, no embedded credentials) before
+  printing or opening it, and open a browser on Windows without going through
+  `cmd /c start`. Revoke a newly minted key if saving it fails, and revoke an
+  existing key before a repeated login replaces it. Never clobber a corrupt
+  credentials file: it is moved aside and refused instead. `aer logout --all`
+  logs out of every stored base URL; a plain `aer logout` in the wrong
+  directory now names where else you are logged in.
+- [`2904eda`](https://github.com/Ad-Astra-Computing/aer/commit/2904eda3f0a27639b60394c16d6a3bfae7b536d8) - `aer import claude-code` now says what is wrong instead of printing the whole
+  usage text. It names each unset variable and where to find its value, reads
+  the tenant, agent and environment ids from `aer.config.json` when they are not
+  in the environment, and defaults the API to https://api.aer.run. Run without a
+  file, it says where Claude Code keeps transcripts and lists the newest for the
+  current directory. A file with no session activity, such as
+  `~/.claude/history.jsonl`, is refused before a session is created, rather than
+  producing a signed record of an empty session.
+
 ## 0.2.0
 
 ### Minor Changes
