@@ -142,16 +142,12 @@ export function hookCommandResolves(command: string): boolean {
  */
 const LIFECYCLE_FLAG = '--lifecycle v2';
 
-// Joins a subagent's hook calls into the lead's record (ADR-023 B1). Claude
-// Code runs hook commands through a shell, so this expands at invocation; a
-// harness that never exports the variable, or invokes without a shell, leaves
-// it unexpanded, which cli.ts treats as absent and falls back to the pid-alias
-// walk.
-const ROOT_SESSION_FLAG = '--root-session "${CLAUDE_SESSION_ID}"';
-
+// Root-session join (ADR-023 B1) needs no flag: the shell substitution was
+// found empty against Claude Code 2.1.281, so cli.ts reads the harness's
+// own CLAUDE_CODE_SESSION_ID env var instead. --root-session still exists
+// as an explicit override for a caller that sets it itself.
 function harnessCommand(harness: Harness, event?: string): string {
-  let base = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
-  if (harness === 'claude-code') base += ` ${ROOT_SESSION_FLAG}`;
+  const base = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
   // Antigravity omits the event name from the payload, so each registration
   // has to carry it.
   return event === undefined ? base : `${base} --event ${event}`;

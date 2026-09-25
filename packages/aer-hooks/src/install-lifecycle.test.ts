@@ -73,20 +73,18 @@ describe('the SessionEnd budget', () => {
   });
 });
 
+// ADR-023 B1, revised after review: `--root-session "${CLAUDE_SESSION_ID}"`
+// was found to expand to an EMPTY string against a real Claude Code binary
+// (2.1.281). The installer no longer writes it; cli.ts reads the harness's
+// own CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID environment variable
+// instead, which needs no shell expansion and no flag at all.
 describe('root-session join (ADR-023 B1)', () => {
-  it('stamps --root-session on every Claude Code registration', async () => {
+  it('writes no --root-session flag: the join reads the hook environment instead', async () => {
     await install('claude-code', { dir });
     const hooks = hooksOf('claude-code');
     const commands = Object.values(hooks).flatMap((g) => aerEntries(g)).map((h) => h.command);
     expect(commands.length).toBeGreaterThan(0);
-    for (const c of commands) expect(c, c).toContain('--root-session "${CLAUDE_SESSION_ID}"');
-  });
-
-  it('does not stamp --root-session for Codex or Antigravity', async () => {
-    await install('codex', { dir });
-    const codexCommands = Object.values(hooksOf('codex')).flatMap((g) => aerEntries(g)).map((h) => h.command);
-    expect(codexCommands.length).toBeGreaterThan(0);
-    for (const c of codexCommands) expect(c).not.toContain('--root-session');
+    for (const c of commands) expect(c, c).not.toContain('--root-session');
   });
 });
 
