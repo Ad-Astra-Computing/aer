@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { emitHookEvent } from './core.js';
 import { normalize } from './normalize.js';
+import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 import type { EventSink } from '@adastracomputing/aer-emit';
 
 function emitOne(raw: Record<string, unknown>, harness?: 'claude-code' | 'codex' | 'antigravity', eventName?: string): string {
@@ -87,5 +88,34 @@ describe('B6: SubagentStart carries only harness_agent_id and agent_type', () =>
     expect(wire).not.toContain('agent_transcript_path');
     expect(wire).not.toContain('prompt');
     expect(wire).not.toContain('description');
+  });
+});
+
+// No aer-hooks adapter reads Codex OTel today, so there is no live code path
+// to drive an event through. This fixture guards the shared allowlist itself
+// (the mechanism ANY future OTel adapter would have to route through) against
+// a Codex-shaped `tool_result` span, so the day such an adapter is written it
+// inherits a passing test rather than a silent leak.
+describe('B6: a future Codex OTel adapter cannot leak tool_result args/output', () => {
+  it('the shared allowlist strips a Codex-shaped OTel tool_result span', () => {
+    const otelToolResultSpan = {
+      tool: 'shell',
+      tool_use_id: 'call_abc123',
+      args: { command: 'cat ~/.ssh/id_ed25519', cwd: '/home/user/project' },
+      output: 'SECRET-STDOUT-CONTENTS',
+      is_error: false,
+      duration_ms: 42,
+    };
+    const { payload, dropped } = stripToIngestPayload(otelToolResultSpan);
+    expect(payload).not.toHaveProperty('args');
+    expect(payload).not.toHaveProperty('output');
+    expect(dropped.sort()).toEqual(['args', 'output']);
+    expect(JSON.stringify(payload)).not.toContain('SECRET-STDOUT-CONTENTS');
+    expect(JSON.stringify(payload)).not.toContain('id_ed25519');
+    // What a bodies-off adapter IS allowed to keep: identifiers and outcome flags.
+    expect(payload['tool']).toBe('shell');
+    expect(payload['tool_use_id']).toBe('call_abc123');
+    expect(payload['is_error']).toBe(false);
+    expect(payload['duration_ms']).toBe(42);
   });
 });
