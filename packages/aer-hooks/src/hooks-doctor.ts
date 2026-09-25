@@ -22,29 +22,34 @@ function isExecutable(p: string): boolean {
 /**
  * The version an `aer-hook` on PATH reports, or undefined when it cannot be
  * run at all. Best-effort: a doctor check must never throw or hang the CLI.
+ * A binary old enough to print NOTHING for --version (0.1.x) still ran
+ * successfully, so it is reported as '0.0.0' - definitely stale - rather
+ * than treated the same as "could not run it at all".
  */
 function installedAerHookVersion(dir: string): string | undefined {
   try {
     const out = execFileSync(path.join(dir, 'aer-hook'), ['--version'], { encoding: 'utf8', timeout: 2000 }).trim();
-    return out.length > 0 ? out : undefined;
+    return out.length > 0 ? out : '0.0.0';
   } catch {
     return undefined;
   }
 }
 
-/** ADR-023 B3: registrations lacking --lifecycle v2 / --root-session, an outdated aer-hooks, or a nix-profile shadow. */
+/** ADR-023 B3: registrations lacking --lifecycle v2, an outdated aer-hooks, or a nix-profile shadow. */
 export async function staleRegistrations(opts: { dir?: string } = {}): Promise<StaleRegistration[]> {
   const entries = await status(opts);
   const findings = diagnoseRegistrations(entries);
 
   const pathDirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
-  const firstDir = pathDirs.find((d) => isExecutable(path.join(d, 'aer-hook')));
+  const hasAerHook = (d: string): boolean => isExecutable(path.join(d, 'aer-hook'));
+  const firstDir = pathDirs.find(hasAerHook);
   if (firstDir !== undefined) {
     const installedVersion = installedAerHookVersion(firstDir);
     const versionFinding = diagnoseVersion(installedVersion, HOOKS_VERSION);
     if (versionFinding !== undefined) findings.push(versionFinding);
   }
-  const nixFinding = diagnoseNixShadow(pathDirs, (d) => isExecutable(path.join(d, 'aer-hook')), undefined);
+  const projectBinDir = path.join(process.cwd(), 'node_modules', '.bin');
+  const nixFinding = diagnoseNixShadow(pathDirs, hasAerHook, projectBinDir);
   if (nixFinding !== undefined) findings.push(nixFinding);
 
   return findings;
