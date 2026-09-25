@@ -5,7 +5,7 @@
 // entry is still removed, but the server key itself is left alone, since
 // only the account owner can decide to revoke a key aer login never made.
 
-import { getCredential, removeCredential } from './credentials-store.js';
+import { getCredential, removeCredential, listCredentialBaseUrls } from './credentials-store.js';
 
 export interface LogoutDeps {
   env: Record<string, string | undefined>;
@@ -27,39 +27,82 @@ async function readErrorCode(res: Response): Promise<string | undefined> {
   }
 }
 
-export async function cmdLogout(opts: { baseUrl: string }, deps: LogoutDeps): Promise<number> {
-  const cred = getCredential(opts.baseUrl, deps.env);
+/** Best-effort server-side revoke of a CLI key. Never throws: a caller using
+ * this for cleanup (login re-run, an orphaned mint) only needs to know
+ * whether it worked, not why it did not. */
+export async function revokeCliKey(baseUrl: string, apiKey: string, fetchImpl?: typeof fetch): Promise<boolean> {
+  const f = fetchImpl ?? fetch;
+  try {
+    const res = await f(`${trimUrl(baseUrl)}/v1/cli/logout`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function logoutOne(baseUrl: string, deps: LogoutDeps): Promise<void> {
+  const cred = getCredential(baseUrl, deps.env);
   if (!cred) {
-    deps.print(`Not logged in to ${opts.baseUrl}.`);
-    return 0;
+    deps.print(`Not logged in to ${baseUrl}.`);
+    return;
   }
 
   const f = deps.fetchImpl ?? fetch;
   let res: Response;
   try {
-    res = await f(`${trimUrl(opts.baseUrl)}/v1/cli/logout`, {
+    res = await f(`${trimUrl(baseUrl)}/v1/cli/logout`, {
       method: 'POST',
       headers: { authorization: `Bearer ${cred.api_key}` },
     });
   } catch {
-    removeCredential(opts.baseUrl, deps.env);
-    deps.printErr('Could not reach the API; removed the local credentials anyway.');
-    return 0;
+    removeCredential(baseUrl, deps.env);
+    deps.printErr(`Could not reach ${baseUrl}; removed the local credentials anyway.`);
+    return;
   }
 
   if (res.ok) {
-    removeCredential(opts.baseUrl, deps.env);
-    deps.print('Logged out.');
-    return 0;
+    removeCredential(baseUrl, deps.env);
+    deps.print(`Logged out of ${baseUrl}.`);
+    return;
   }
 
   if (res.status === 403 && (await readErrorCode(res)) === 'not_a_cli_key') {
-    removeCredential(opts.baseUrl, deps.env);
-    deps.print('That key was not created by `aer login`; removed it locally. Revoke it in Settings if you no longer want it active.');
+    removeCredential(baseUrl, deps.env);
+    deps.print(`That key for ${baseUrl} was not created by \`aer login\`; removed it locally. Revoke it in Settings if you no longer want it active.`);
+    return;
+  }
+
+  removeCredential(baseUrl, deps.env);
+  deps.printErr(`Logout request to ${baseUrl} failed (HTTP ${res.status}); removed the local credentials anyway.`);
+}
+
+export async function cmdLogout(opts: { baseUrl: string; all?: boolean }, deps: LogoutDeps): Promise<number> {
+  if (opts.all) {
+    const urls = listCredentialBaseUrls(deps.env);
+    if (urls.length === 0) {
+      deps.print('Not logged in anywhere.');
+      return 0;
+    }
+    for (const url of urls) await logoutOne(url, deps);
     return 0;
   }
 
-  removeCredential(opts.baseUrl, deps.env);
-  deps.printErr(`Logout request failed (HTTP ${res.status}); removed the local credentials anyway.`);
+  const cred = getCredential(opts.baseUrl, deps.env);
+  if (!cred) {
+    deps.print(`Not logged in to ${opts.baseUrl}.`);
+    // P3: a repo pointing at a different base URL than the one the person is
+    // actually logged into otherwise looks identical to "not logged in at
+    // all", with no hint that anything is stored elsewhere.
+    const others = listCredentialBaseUrls(deps.env).filter((u) => u !== opts.baseUrl);
+    if (others.length > 0) {
+      deps.print(`Logged in elsewhere: ${others.join(', ')}. Use --base-url <url> or --all.`);
+    }
+    return 0;
+  }
+
+  await logoutOne(opts.baseUrl, deps);
   return 0;
 }

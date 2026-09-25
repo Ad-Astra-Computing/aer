@@ -81,4 +81,51 @@ describe('cmdLogout', () => {
     await cmdLogout({ baseUrl: BASE_URL }, deps(fetchImpl));
     expect([...out, ...err].join('\n')).not.toContain(CRED.api_key);
   });
+
+  it('P3: hints at other stored base URLs when nothing matches the resolved one', async () => {
+    setCredential('https://other.test', CRED, env);
+    const fetchImpl = vi.fn();
+    await cmdLogout({ baseUrl: BASE_URL }, deps(fetchImpl));
+    expect(out.join('\n')).toContain('https://other.test');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('P3: --all revokes and removes every stored entry', async () => {
+    setCredential(BASE_URL, CRED, env);
+    setCredential('https://other.test', { ...CRED, tenant_id: 't2' }, env);
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    const code = await cmdLogout({ baseUrl: BASE_URL, all: true }, deps(fetchImpl));
+    expect(code).toBe(0);
+    expect(getCredential(BASE_URL, env)).toBeUndefined();
+    expect(getCredential('https://other.test', env)).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('P3: --all with nothing stored says so without any network call', async () => {
+    const fetchImpl = vi.fn();
+    const code = await cmdLogout({ baseUrl: BASE_URL, all: true }, deps(fetchImpl));
+    expect(code).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(out.join('\n')).toMatch(/not logged in/i);
+  });
+});
+
+describe('revokeCliKey', () => {
+  it('resolves true on an ok response', async () => {
+    const { revokeCliKey } = await import('./logout.js');
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    await expect(revokeCliKey(BASE_URL, 'k', fetchImpl)).resolves.toBe(true);
+  });
+
+  it('resolves false, never throws, on a network error', async () => {
+    const { revokeCliKey } = await import('./logout.js');
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('down'));
+    await expect(revokeCliKey(BASE_URL, 'k', fetchImpl)).resolves.toBe(false);
+  });
+
+  it('resolves false on a non-ok response', async () => {
+    const { revokeCliKey } = await import('./logout.js');
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    await expect(revokeCliKey(BASE_URL, 'k', fetchImpl)).resolves.toBe(false);
+  });
 });
