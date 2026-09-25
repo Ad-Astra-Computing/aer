@@ -6,6 +6,7 @@
 import { join } from 'node:path';
 import { getCredential } from './credentials-store.js';
 import { resolveBaseUrl } from './resolve.js';
+import { sanitizeForTerminal } from '../cli-error.js';
 
 export interface LinkOptions {
   agentId?: string | undefined;
@@ -38,15 +39,30 @@ function trimUrl(u: string): string {
   return u.replace(/\/+$/, '');
 }
 
+const RESPONSE_TEXT_CAP = 200;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Truncated, control-character-free response text: an error body is
+ * untrusted and unbounded server output, never printed raw. */
+async function safeResponseText(res: Response): Promise<string> {
+  try {
+    return sanitizeForTerminal(await res.text(), RESPONSE_TEXT_CAP);
+  } catch {
+    return '';
+  }
+}
+
 async function createAgent(baseUrl: string, apiKey: string, name: string, fetchImpl: typeof fetch): Promise<string> {
   const res = await fetchImpl(`${trimUrl(baseUrl)}/v1/agents`, {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({ name }),
   });
-  if (!res.ok) throw new Error(`could not create agent "${name}" (HTTP ${res.status}): ${await res.text()}`);
+  if (!res.ok) throw new Error(`could not create agent "${name}" (HTTP ${res.status}): ${await safeResponseText(res)}`);
   const body = (await res.json()) as { agent_id?: string };
-  if (!body.agent_id) throw new Error('agent create response did not include agent_id');
+  if (!body.agent_id || !UUID_RE.test(body.agent_id)) {
+    throw new Error('agent create response did not include a valid agent_id');
+  }
   return body.agent_id;
 }
 
@@ -54,7 +70,7 @@ async function listAgents(baseUrl: string, apiKey: string, fetchImpl: typeof fet
   const res = await fetchImpl(`${trimUrl(baseUrl)}/v1/agents`, {
     headers: { authorization: `Bearer ${apiKey}` },
   });
-  if (!res.ok) throw new Error(`could not list agents (HTTP ${res.status}): ${await res.text()}`);
+  if (!res.ok) throw new Error(`could not list agents (HTTP ${res.status}): ${await safeResponseText(res)}`);
   const body = (await res.json()) as { agents?: AgentSummary[] };
   return body.agents ?? [];
 }
