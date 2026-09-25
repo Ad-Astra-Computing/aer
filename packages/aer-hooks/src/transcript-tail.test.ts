@@ -131,8 +131,65 @@ describe('tailTranscript', () => {
     expect(seen.has('msg_0')).toBe(true);
   });
 
+  it('holds back a message id straddling a cap-limited read, so its final usage is not lost', () => {
+    // A fixed-byte-length line lets the boundary between two reads be placed
+    // exactly on a message id, rather than approximately.
+    const LINE_LEN = 300;
+    function fixedLine(id: string, uuid: string, outTok: number): string {
+      const build = (padLen: number): string =>
+        JSON.stringify({
+          type: 'assistant', uuid,
+          timestamp: '2026-09-01T00:00:00.000Z',
+          message: { id, role: 'assistant', model: 'claude-opus-4-8', usage: { input_tokens: 1, output_tokens: outTok }, content: [{ type: 'text', text: 'x'.repeat(Math.max(0, padLen)) }] },
+        });
+      const base = build(0);
+      const line = build(LINE_LEN - Buffer.byteLength(base, 'utf8'));
+      expect(Buffer.byteLength(line, 'utf8')).toBe(LINE_LEN);
+      return line;
+    }
+    const STRIDE = LINE_LEN + 1; // + the '\n' each written line is followed by
+
+    const numLines = Math.floor(MAX_TRANSCRIPT_READ_BYTES / STRIDE);
+    // numLines * STRIDE <= MAX_TRANSCRIPT_READ_BYTES < (numLines + 1) * STRIDE,
+    // so the boundary message is exactly the last complete line the first
+    // read can hold.
+    let content = '';
+    for (let i = 0; i < numLines - 1; i++) content += fixedLine(`filler_${i}`, `fu${i}`, 1) + '\n';
+    content += fixedLine('boundary_msg', 'ub-a', 1) + '\n'; // stale usage: still streaming
+    for (let i = 0; i < 20; i++) content += fixedLine(`after_${i}`, `au${i}`, 1) + '\n';
+    content += fixedLine('boundary_msg', 'ub-b', 999) + '\n'; // the real final usage
+
+    fs.writeFileSync(file, content);
+    expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(MAX_TRANSCRIPT_READ_BYTES);
+
+    const first = tailTranscript({ transcriptPath: file, offset: 0, emittedMessageIds: [] });
+    expect(first.events.some((e) => e.messageId === 'boundary_msg')).toBe(false);
+    expect(first.events.some((e) => e.messageId === 'filler_0')).toBe(true);
+    // Rolled back to right before boundary_msg's own line, not the full window.
+    expect(first.nextOffset).toBe((numLines - 1) * STRIDE);
+
+    const second = tailTranscript({
+      transcriptPath: file,
+      offset: first.nextOffset,
+      emittedMessageIds: first.events.map((e) => e.messageId),
+    });
+    const boundaryEvent = second.events.find((e) => e.messageId === 'boundary_msg');
+    expect(boundaryEvent).toBeDefined();
+    // The final, later usage was captured, not the stale mid-stream one.
+    expect(boundaryEvent!.outputTokens).toBe(999);
+  });
+
   it('tolerates a missing transcript file silently', () => {
     const result = tailTranscript({ transcriptPath: path.join(dir, 'nope.jsonl'), offset: 0, emittedMessageIds: [] });
+    expect(result.events).toEqual([]);
+    expect(result.nextOffset).toBe(0);
+    expect(result.reset).toBe(false);
+  });
+
+  it('refuses a non-regular file at the transcript path (e.g. a directory)', () => {
+    const notAFile = path.join(dir, 'a-directory.jsonl');
+    fs.mkdirSync(notAFile);
+    const result = tailTranscript({ transcriptPath: notAFile, offset: 0, emittedMessageIds: [] });
     expect(result.events).toEqual([]);
     expect(result.nextOffset).toBe(0);
     expect(result.reset).toBe(false);
@@ -186,5 +243,30 @@ describe('tailTranscript', () => {
     );
     const result = tailTranscript({ transcriptPath: file, offset: 0, emittedMessageIds: [] });
     expect(result.events[0]).toMatchObject({ isSidechain: true, agentType: 'code-reviewer' });
+  });
+
+  it('skips the entire entry when the model does not fit the identifier shape', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        type: 'assistant', uuid: 'a1', timestamp: '2026-09-01T00:00:00.000Z',
+        message: { id: 'msg_1', role: 'assistant', model: '<synthetic>', usage: { input_tokens: 1, output_tokens: 2 } },
+      }) + '\n',
+    );
+    const result = tailTranscript({ transcriptPath: file, offset: 0, emittedMessageIds: [] });
+    expect(result.events).toEqual([]);
+  });
+
+  it('drops an ill-shaped agentType but still records the usage', () => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        type: 'assistant', uuid: 'a1', agentType: '<synthetic>', timestamp: '2026-09-01T00:00:00.000Z',
+        message: { id: 'msg_1', role: 'assistant', model: 'claude-opus-4-8', usage: { input_tokens: 1, output_tokens: 2 } },
+      }) + '\n',
+    );
+    const result = tailTranscript({ transcriptPath: file, offset: 0, emittedMessageIds: [] });
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]!.agentType).toBeUndefined();
   });
 });
