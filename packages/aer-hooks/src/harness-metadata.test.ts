@@ -130,6 +130,31 @@ describe('Claude Code metadata', () => {
     expect(normalizeClaudeCode({ hook_event_name: 'SubagentStop', session_id: 's1' }, 2).kind)
       .toBe('subagent_end');
   });
+
+  it('reads agent_id as harness_agent_id on every event kind, not just subagent markers', () => {
+    const toolCall = normalizeClaudeCode({
+      hook_event_name: 'PreToolUse', session_id: 's1', tool_name: 'Bash',
+      tool_input: { command: 'ls' }, agent_id: 'agent-42', agent_type: 'Explore',
+    }, 2);
+    expect(toolCall.meta?.['harness_agent_id']).toBe('agent-42');
+    expect(toolCall.meta?.['agent_type']).toBe('Explore');
+  });
+
+  it('treats agent_type with no agent_id as the main thread, not a lane', () => {
+    const e = normalizeClaudeCode({
+      hook_event_name: 'PreToolUse', session_id: 's1', tool_name: 'Bash',
+      tool_input: {}, agent_type: 'explore-mode',
+    }, 2);
+    expect(e.meta?.['harness_agent_id']).toBeUndefined();
+    expect(e.meta?.['agent_type']).toBe('explore-mode');
+  });
+
+  it('drops an over-length agent_id rather than truncate it', () => {
+    const e = normalizeClaudeCode({
+      hook_event_name: 'SubagentStart', session_id: 's1', agent_id: 'a'.repeat(129),
+    }, 2);
+    expect(e.meta?.['harness_agent_id']).toBeUndefined();
+  });
 });
 
 describe('Codex metadata', () => {

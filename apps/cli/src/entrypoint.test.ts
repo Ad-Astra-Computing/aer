@@ -118,6 +118,15 @@ describe('CLI entry point', () => {
     expect(config['env_id']).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
+  // ADR-023 B3: doctor's JSON carries the hooks staleness report alongside
+  // the config/live checks, so a coding agent gating on --json sees both.
+  it('doctor --json carries the hooks stale-registrations report', async () => {
+    const { out } = await runWithEnv(linked, ['doctor', '--json'], { AER_BASE_URL: '' });
+    const report = JSON.parse(out) as { checks: unknown[]; hooks?: { stale_registrations: unknown[] } };
+    expect(Array.isArray(report.checks)).toBe(true);
+    expect(Array.isArray(report.hooks?.stale_registrations)).toBe(true);
+  });
+
   // The collector documents AER_API_KEY and these commands used to read only
   // AER_TENANT_API_KEY, so the documented name printed usage instead.
   it('accepts AER_API_KEY for the tenant commands', async () => {

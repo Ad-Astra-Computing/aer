@@ -11,6 +11,7 @@ import { cmdWhoami } from './auth/whoami.js';
 import { cmdLink, type AgentSummary } from './auth/link.js';
 import { resolveAuth, resolveBaseUrl } from './auth/resolve.js';
 import { runLiveChecks } from './doctor-live.js';
+import { staleRegistrations } from '@adastracomputing/aer-hooks';
 import { ingestJsonlStream } from './ingest.js';
 import { runClaudeCodeImport } from './import/run.js';
 import { verifyAer } from './verify.js';
@@ -289,12 +290,19 @@ async function cmdDoctor(args: string[]): Promise<void> {
     agentId: env['AER_AGENT_ID'] ?? cfg.agent_id,
   });
 
+  // Hooks registrations are independent of the Node collector: a project that
+  // records through aer-hooks has none of the Node checks above, so this runs
+  // unconditionally. Best-effort: a broken PATH probe must never fail doctor
+  // itself, only surface as an empty (not thrown) list of stale registrations.
+  const staleHooks = await staleRegistrations().catch(() => []);
+
   const checks = [...config.checks, ...live.checks];
-  const ok = config.ok && live.ok;
+  const ok = config.ok && live.ok; // stale hook registrations are WARN, not a failing check
   if (args.includes('--json')) {
-    console.log(JSON.stringify({ ok, checks }, null, 2));
+    console.log(JSON.stringify({ ok, checks, hooks: { stale_registrations: staleHooks } }, null, 2));
   } else {
     for (const c of checks) console.error(`${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}`);
+    for (const f of staleHooks) console.error(`WARN: ${f.detail} - fix: ${f.fix}`);
     console.error(ok ? '\nOK' : '\nFAILED');
   }
   if (!ok) process.exit(1);

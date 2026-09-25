@@ -2,6 +2,10 @@
 // at POST /v1/sessions/:id/events, so a client that sends one pays the privacy
 // cost and gets nothing in the record. Source of truth is
 // BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
+//
+// harness_agent_id, subagent_events_unattached and events_dropped_budget are
+// listed ahead of the server allowlist, which strips and counts them until it
+// accepts them; listing them now avoids a second client release.
 
 export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'provider', 'model', 'agent', 'name', 'source', 'status', 'streaming', 'tools_available',
@@ -21,7 +25,8 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'session_ref', 'frameworks', 'providers', 'adapters', 'calls_recorded', 'provider_requests',
   'coverage', 'harness', 'permission_mode', 'effort', 'repo_head', 'seq', 'turn_id',
   'tool_use_id', 'parent_tool_use_id', 'agent_type', 'events_registered', 'events_emitted', 'tools_unresolved',
-  'run_id', 'thread_id', 'main_thread'
+  'run_id', 'thread_id', 'main_thread', 'harness_agent_id',
+  'subagent_events_unattached', 'events_dropped_budget'
 ]);
 
 export interface StripResult {

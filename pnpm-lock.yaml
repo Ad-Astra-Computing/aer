@@ -27,6 +27,9 @@ importers:
       '@adastracomputing/aer-auto-node':
         specifier: workspace:*
         version: link:../../packages/aer-auto-node
+      '@adastracomputing/aer-hooks':
+        specifier: workspace:*
+        version: link:../../packages/aer-hooks
       '@adastracomputing/aer-verify':
         specifier: workspace:*
         version: link:../../packages/aer-verify

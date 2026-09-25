@@ -111,7 +111,7 @@ export interface HttpSinkOptions {
    * lazily (never called in attach mode). Lets the caller persist the id and
    * ingest token so later processes can attach to the same session.
    */
-  onOpen?: ((info: { id: string; ingestToken: string }) => void) | undefined;
+  onOpen?: ((info: { id: string; ingestToken: string; reused?: boolean }) => void) | undefined;
   /**
    * Whether POST /complete landed, for a caller holding recovery state. A
    * failed completion is otherwise only a line on stderr, and a caller that
@@ -124,6 +124,15 @@ export interface HttpSinkOptions {
    * inferring it from what the events happen to contain.
    */
   collector?: { name: string; version?: string; schema_capability?: string } | undefined;
+  /**
+   * Idempotency key for session open (ADR-023 A1): a repeat open with the same
+   * client_ref while the prior session is still running reuses it instead of
+   * minting a duplicate. Derive with `deriveClientRef`. A strict server that
+   * predates this field 400s the whole request; on that specific failure the
+   * open is retried exactly once with client_ref omitted, so an old server
+   * degrades to the pre-idempotency behaviour rather than failing outright.
+   */
+  clientRef?: string | undefined;
 }
 
 interface OpenSession {
@@ -232,21 +241,42 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
     openAttempted = true;
     openInFlight = (async () => {
       try {
-        const body: Record<string, unknown> = {};
-        if (opts.tenantId !== undefined) body['tenant_id'] = opts.tenantId;
-        if (opts.agentId !== undefined) body['agent_id'] = opts.agentId;
-        if (opts.environmentId !== undefined) body['environment_id'] = opts.environmentId;
-        if (opts.agentVersion !== undefined) body['agent_version'] = opts.agentVersion;
-        if (opts.principal !== undefined) body['principal'] = opts.principal;
-        if (opts.collector !== undefined) body['collector'] = opts.collector;
-        const res = await timedFetch(`${opts.baseUrl}/v1/sessions`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${opts.apiKey}`,
-          },
-          body: JSON.stringify(body),
-        });
+        const bodyOf = (includeClientRef: boolean): Record<string, unknown> => {
+          const body: Record<string, unknown> = {};
+          if (opts.tenantId !== undefined) body['tenant_id'] = opts.tenantId;
+          if (opts.agentId !== undefined) body['agent_id'] = opts.agentId;
+          if (opts.environmentId !== undefined) body['environment_id'] = opts.environmentId;
+          if (opts.agentVersion !== undefined) body['agent_version'] = opts.agentVersion;
+          if (opts.principal !== undefined) body['principal'] = opts.principal;
+          if (opts.collector !== undefined) body['collector'] = opts.collector;
+          if (includeClientRef && opts.clientRef !== undefined) body['client_ref'] = opts.clientRef;
+          return body;
+        };
+        const post = (body: Record<string, unknown>): Promise<Response> =>
+          timedFetch(`${opts.baseUrl}/v1/sessions`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${opts.apiKey}`,
+            },
+            body: JSON.stringify(body),
+          });
+
+        let res = await post(bodyOf(true));
+        // A server that predates client_ref rejects the whole request with a
+        // strict-schema 400 rather than ignoring the unknown field. Retry
+        // exactly once without it, so an old server degrades to the
+        // pre-idempotency behaviour instead of failing the open outright.
+        // Gated on the error body actually naming client_ref: a 400 for any
+        // OTHER reason (a bad tenant_id, an oversized field) would otherwise
+        // retry too, doubling the Argon2id cost of a rejection that client_ref
+        // had nothing to do with.
+        if (!res.ok && res.status === 400 && opts.clientRef !== undefined) {
+          const bodyText = await res.text().catch(() => '');
+          if (/client_ref/i.test(bodyText)) {
+            res = await post(bodyOf(false));
+          }
+        }
         if (!res.ok) {
           noteFatal('session open', new Error(`HTTP ${res.status}`));
           return null;
@@ -263,7 +293,9 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
         session = { sessionId, ingestToken };
         if (opts.onOpen) {
           try {
-            opts.onOpen({ id: sessionId, ingestToken });
+            const info: { id: string; ingestToken: string; reused?: boolean } = { id: sessionId, ingestToken };
+            if (json['reused'] === true) info.reused = true;
+            opts.onOpen(info);
           } catch {
             /* onOpen persistence is best-effort and must never break the sink */
           }

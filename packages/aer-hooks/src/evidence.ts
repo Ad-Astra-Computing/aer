@@ -51,22 +51,16 @@ function layerDirs(base: string | undefined, projectDir: string | undefined): st
 
 /**
  * This package's version, reported so a record names the code that made it.
- * Read from package.json rather than restated here: a release bumps the
- * manifest, and a second copy would quietly name the previous release.
+ * Baked in at build time (scripts/write-version.mjs generates
+ * version.generated.ts from package.json) rather than read from package.json
+ * at RUNTIME via `import.meta.url`: a consumer that bundles this package
+ * into its own single-file build (apps/cli's esbuild output does) collapses
+ * every module's import.meta.url to the bundle's own path, so a relative
+ * `../package.json` read silently lands on the CONSUMER's manifest instead
+ * (reviewer-confirmed: apps/cli 0.2.0 read where aer-hooks 0.3.0 was meant).
+ * A literal string constant has no such failure mode.
  */
-export const HOOKS_VERSION: string = readOwnVersion();
-
-function readOwnVersion(): string {
-  try {
-    const pkg = new URL('../package.json', import.meta.url);
-    const raw = readFileSync(pkg, 'utf8');
-    const version = (JSON.parse(raw) as { version?: unknown }).version;
-    if (typeof version === 'string' && version.length > 0) return version;
-  } catch {
-    /* a record naming no version beats one naming the wrong version */
-  }
-  return 'unknown';
-}
+export { HOOKS_VERSION } from './version.generated.js';
 
 const SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
