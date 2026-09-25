@@ -103,8 +103,20 @@ function warnIfLoosePermissions(path: string, warn: (msg: string) => void): void
   }
 }
 
+// ISO basic format (no colons/dashes: safe in a filename), e.g. 20260925T074512Z.
+function timestampSuffix(): string {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+// Never overwrites an earlier quarantined file: each corruption gets its own
+// evidence, in case there is ever more than one in the same run.
 function quarantineCorruptFile(paths: CredentialsPaths): CredentialsCorruptError {
-  const movedTo = `${paths.file}.corrupt`;
+  let movedTo = `${paths.file}.corrupt-${timestampSuffix()}`;
+  let suffix = 1;
+  while (existsSync(movedTo)) {
+    movedTo = `${paths.file}.corrupt-${timestampSuffix()}-${suffix}`;
+    suffix += 1;
+  }
   try {
     renameSync(paths.file, movedTo);
   } catch {
