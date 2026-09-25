@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- [`958d73b`](https://github.com/Ad-Astra-Computing/aer/commit/958d73bf42c828d6d7067bd6851d962d2d632b24) - Add `deriveClientRef` and a `clientRef` sink option (ADR-023 A1/B2). A
+  repeated `POST /v1/sessions` open with the same `client_ref` while the prior
+  session is still running reuses it instead of minting a duplicate, closing
+  the race that produced empty orphaned sessions. Against a server that
+  predates the field, the open retries once without `client_ref` rather than
+  failing outright.
+- [`65e71eb`](https://github.com/Ad-Astra-Computing/aer/commit/65e71eb53a1f013a5cbc5362f458c247cfc41ab2) - `EventSink.emit` takes an optional third `eventId` argument. A caller that
+  can derive a stable id for an event, such as one keyed off a transcript
+  message id, can now make re-emitting it idempotent at ingest instead of
+  getting a fresh random id every time. Omitted, behavior is unchanged. A
+  supplied id that is not a lowercase RFC 4122 UUID is treated as not
+  supplied, so the generator still runs rather than sending a value ingest
+  would reject the whole event over.
+
+### Patch Changes
+
+- [`958d73b`](https://github.com/Ad-Astra-Computing/aer/commit/958d73bf42c828d6d7067bd6851d962d2d632b24) - The installed `aer-hooks` version is baked in at build time, so a bundled
+  CLI reports it correctly. The session open is retried without `client_ref`
+  only when the server's 400 names that field, and a late write from a stalled
+  opener can no longer move the stored event position backwards.
+
 ## 0.3.0
 
 ### Minor Changes
