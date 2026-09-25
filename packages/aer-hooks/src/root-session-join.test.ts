@@ -135,6 +135,49 @@ describe('ADR-023 B1: root-session join and the no-lead-no-open rule', () => {
     expect(new Set(eventSessionIds)).toEqual(new Set(['sess-1']));
   });
 
+  // Review P2: an alias whose store entry is already gone (the session ended
+  // or expired) must be cleaned up and skipped, not returned as a live lead.
+  it('skips and deletes a dead alias, falling through to a live one further up', async () => {
+    const lead = 'lead-session-alive';
+    await fire({ hook_event_name: 'SessionStart', session_id: lead }, { ownPpid: 400 });
+    const store = await import('./session-store.js');
+    // A dead alias at the FIRST candidate pid, pointing at a session that no
+    // longer exists.
+    store.savePidAlias('500', 'long-gone-session', envWith(), Date.now());
+    expect(store.loadPidAlias('500', envWith(), Date.now())).toBe('long-gone-session');
+
+    const parentPidOf = (pid: number): number | undefined => (pid === 500 ? 400 : undefined);
+    await fire(
+      { hook_event_name: 'PreToolUse', session_id: 'sub-alive', tool_name: 'Bash', tool_input: {}, agent_id: 'agent-8' },
+      { ownPpid: 500, parentPidOf },
+    );
+    expect(opens).toBe(1);
+    expect(new Set(eventSessionIds)).toEqual(new Set(['sess-1']));
+    // The dead alias was deleted along the way.
+    expect(store.loadPidAlias('500', envWith(), Date.now())).toBeNull();
+  });
+
+  // Review P2: an alias written for a different agent must never be trusted,
+  // even if its store key happens to point at a live session.
+  it('refuses a pid alias written for a different agent', async () => {
+    const lead = 'lead-session-other-agent';
+    await fire({ hook_event_name: 'SessionStart', session_id: lead }, { ownPpid: 600 });
+    const eventsAfterLeadStart = eventSessionIds.length;
+
+    // A subagent hook under a DIFFERENT AER_AGENT_ID reusing the same pid.
+    const otherAgentEnv = { ...envWith(), AER_AGENT_ID: 'agent-different' };
+    await runHook(['--harness', 'claude-code', '--lifecycle', 'v2'], otherAgentEnv, {
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 'sub-other-agent', tool_name: 'Bash', tool_input: {}, agent_id: 'agent-8' }),
+      fetch: fetchImpl,
+      ownPpid: 600,
+    });
+    // Refused the alias, found no lead of its own, and dropped rather than
+    // attaching to the wrong agent's session: no open and no new event.
+    expect(opens).toBe(1);
+    expect(eventSessionIds).toHaveLength(eventsAfterLeadStart);
+  });
+
   it('a subagent event with a matching root-session does not open even when it arrives first', async () => {
     // The subagent's hook fires before the lead's SessionStart is ever seen
     // by this store (e.g. scheduling), but the lead has already opened
@@ -160,6 +203,41 @@ describe('ADR-023 B1: root-session join and the no-lead-no-open rule', () => {
     // never reaches this lead's closing report - the point of this assertion
     // is that ending the LEAD's own session does not throw or hang.
     await fireWithRoot({ hook_event_name: 'SessionEnd', session_id: lead }, lead);
+    expect(opens).toBe(1);
+  });
+
+  // Review P1: a subagent event with no session_id at all (agent_id present,
+  // ref absent) used to fall straight into the correlation-less single-shot
+  // path and open its own session.
+  it('a subagent event with agent_id but no session_id never opens', async () => {
+    await fire({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, agent_id: 'agent-99' });
+    expect(opens).toBe(0);
+  });
+
+  // Review P1: a subagent event that loses the lock race on a NON-tool kind
+  // (e.g. SubagentStop) used to fall into the single-shot degrade path and
+  // open its own session, same as the ref-absent case above.
+  it('a subagent event that loses the lock on a non-tool kind never opens', async () => {
+    // A real session must already exist at storeKey first: otherwise the
+    // alias-walk-finds-nothing branch (an earlier, separate guard) drops the
+    // event before this invocation ever reaches the lock at all, and the
+    // lock-lost path this test targets is never exercised.
+    const sid = 'lock-lost-subagent-session';
+    await fireWithRoot({ hook_event_name: 'SessionStart', session_id: sid }, sid);
+    expect(opens).toBe(1);
+
+    const { acquireSessionLock } = await import('./session-store.js');
+    const held = await acquireSessionLock(sid, envWith());
+    expect(held).not.toBeNull();
+
+    await fireWithRoot(
+      { hook_event_name: 'SubagentStop', session_id: 'sub-of-' + sid, agent_id: 'agent-77' },
+      sid,
+      { hardTimeoutMs: 700 },
+    );
+    held?.release();
+    // Still just the one open from SessionStart: the lock-lost subagent event
+    // dropped instead of minting a second session.
     expect(opens).toBe(1);
   });
 });
@@ -294,5 +372,76 @@ describe('ADR-023 B2: pending-entry reopen with the same client_ref', () => {
 
     // Attached to the session the other opener finished, never opened a second one.
     expect(opens).toBe(0);
+  });
+});
+
+// Review P1 (livelock): a fresh pending marker used to get re-stamped on
+// every giving-up reopen, so its age never crossed the 15s stale rule and
+// each invocation minted a token until client_ref_exhausted. Now a tool
+// event drops instead of reopening, so the marker's age tracks real time.
+describe('ADR-023 B2: steady tool traffic never re-triggers the pending-marker livelock', () => {
+  let cacheDir: string;
+  let opens: number;
+  let fetchImpl: typeof fetch;
+
+  function envWith(): NodeJS.ProcessEnv {
+    return { ...CONFIGURED, XDG_CACHE_HOME: cacheDir } as NodeJS.ProcessEnv;
+  }
+
+  beforeEach(() => {
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-livelock-'));
+    opens = 0;
+    fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) {
+        opens += 1;
+        return jsonResponse({ agent_session_id: `sess-${opens}`, ingest_token: `tok-${opens}`, status: 'running' }, 201);
+      }
+      return jsonResponse({ accepted: 1, rejected: 0 }, 202);
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  it('does not rewrite a fresh marker under repeated tool events, and reopens once it genuinely goes stale', async () => {
+    const lead = 'lead-livelock';
+    const store = await import('./session-store.js');
+    const clientRef = deriveClientRef('claude-code', lead, 'agent-1');
+    const originalCreatedAt = Date.now();
+    store.savePendingSession(lead, clientRef, envWith(), originalCreatedAt);
+
+    // Steady tool traffic: each invocation is a separate process in reality,
+    // and each gets a short budget so the capped wait gives up almost
+    // immediately rather than the test waiting out the real margin.
+    for (let i = 0; i < 5; i++) {
+      await runHook(['--harness', 'claude-code', '--lifecycle', 'v2', '--root-session', lead], envWith(), {
+        readInput: async () =>
+          JSON.stringify({ hook_event_name: 'PreToolUse', session_id: lead, tool_name: 'Bash', tool_input: { n: i } }),
+        fetch: fetchImpl,
+        hardTimeoutMs: 300,
+      });
+    }
+
+    // Not one of them opened a session, or exhausted the server's 16-token
+    // cap the way the pre-fix reopen loop did.
+    expect(opens).toBe(0);
+
+    // The marker itself was never touched: its timestamp is still the
+    // ORIGINAL one, not backdated-and-reset by any of the five invocations.
+    const stillPending = store.loadSession(lead, envWith(), Date.now());
+    expect(stillPending).not.toBeNull();
+    expect((stillPending as { pending?: true; createdAt: number }).createdAt).toBe(originalCreatedAt);
+
+    // Real time has now genuinely passed the 15s stale threshold (simulated
+    // directly rather than sleeping 15s in the test): the NEXT event reopens.
+    store.savePendingSession(lead, clientRef, envWith(), Date.now() - 20_000);
+    await runHook(['--harness', 'claude-code', '--lifecycle', 'v2', '--root-session', lead], envWith(), {
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PreToolUse', session_id: lead, tool_name: 'Bash', tool_input: {} }),
+      fetch: fetchImpl,
+    });
+    expect(opens).toBe(1);
   });
 });
