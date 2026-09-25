@@ -5,6 +5,7 @@ import {
   runDeviceLogin,
   formatUserCode,
   sanitizeHostname,
+  validateVerificationUri,
   DeviceLoginError,
   type DeviceStartResponse,
 } from './device-login.js';
@@ -63,7 +64,7 @@ describe('pollForToken branches', () => {
       .mockResolvedValueOnce(jsonResponse(400, { error: 'authorization_pending' }))
       .mockResolvedValueOnce(jsonResponse(400, { error: 'authorization_pending' }))
       .mockResolvedValueOnce(jsonResponse(201, {
-        api_key: 'secret-key', key_id: 'k1', tenant_id: 't1', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+        api_key: 'secret-key', key_id: 'k1', tenant_id: '11111111-1111-1111-1111-111111111111', role: 'write', expires_at: '2099-01-01T00:00:00Z',
       }));
     const result = await pollForToken(START, {
       baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl, sleep: immediateSleep(),
@@ -77,7 +78,7 @@ describe('pollForToken branches', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse(400, { error: 'slow_down' }))
       .mockResolvedValueOnce(jsonResponse(201, {
-        api_key: 'k', key_id: 'k1', tenant_id: 't1', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+        api_key: 'k', key_id: 'k1', tenant_id: '11111111-1111-1111-1111-111111111111', role: 'write', expires_at: '2099-01-01T00:00:00Z',
       }));
     const sleeps: number[] = [];
     const result = await pollForToken(START, {
@@ -123,12 +124,12 @@ describe('pollForToken branches', () => {
 
   it('201 exactly once: resolves and stops calling fetch', async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(201, {
-      api_key: 'k', key_id: 'k1', tenant_id: 't1', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+      api_key: 'k', key_id: 'k1', tenant_id: '11111111-1111-1111-1111-111111111111', role: 'write', expires_at: '2099-01-01T00:00:00Z',
     }));
     const result = await pollForToken(START, {
       baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl, sleep: immediateSleep(),
     });
-    expect(result).toEqual({ api_key: 'k', key_id: 'k1', tenant_id: 't1', role: 'write', expires_at: '2099-01-01T00:00:00Z' });
+    expect(result).toEqual({ api_key: 'k', key_id: 'k1', tenant_id: '11111111-1111-1111-1111-111111111111', role: 'write', expires_at: '2099-01-01T00:00:00Z' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -137,7 +138,7 @@ describe('pollForToken branches', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse(429, {}))
       .mockResolvedValueOnce(jsonResponse(201, {
-        api_key: 'k', key_id: 'k1', tenant_id: 't1', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+        api_key: 'k', key_id: 'k1', tenant_id: '11111111-1111-1111-1111-111111111111', role: 'write', expires_at: '2099-01-01T00:00:00Z',
       }));
     const sleeps: number[] = [];
     const result = await pollForToken(START, {
@@ -176,7 +177,7 @@ describe('runDeviceLogin', () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse(200, START))
       .mockResolvedValueOnce(jsonResponse(201, {
-        api_key: 'k', key_id: 'k1', tenant_id: 't1', role: 'write', expires_at: '2099-01-01T00:00:00Z',
+        api_key: 'k', key_id: 'k1', tenant_id: '11111111-1111-1111-1111-111111111111', role: 'write', expires_at: '2099-01-01T00:00:00Z',
       }));
     const onPrompt = vi.fn();
     await runDeviceLogin({
@@ -209,5 +210,143 @@ describe('sanitizeHostname', () => {
   it('truncates to 64 characters', () => {
     const long = 'x'.repeat(200);
     expect(sanitizeHostname(long)).toHaveLength(64);
+  });
+});
+
+describe('validateVerificationUri', () => {
+  it('accepts https and returns the canonical href', () => {
+    expect(validateVerificationUri('https://aer.run/device')).toBe('https://aer.run/device');
+  });
+
+  it('accepts http only for localhost / 127.0.0.1 / ::1', () => {
+    expect(validateVerificationUri('http://localhost:8080/device')).toBe('http://localhost:8080/device');
+    expect(validateVerificationUri('http://127.0.0.1:8080/device')).toBe('http://127.0.0.1:8080/device');
+  });
+
+  it('refuses plain http for a non-loopback host', () => {
+    expect(() => validateVerificationUri('http://aer.run/device')).toThrow(DeviceLoginError);
+  });
+
+  it('refuses a URL with embedded userinfo', () => {
+    expect(() => validateVerificationUri('https://user:pass@aer.run/device')).toThrow(DeviceLoginError);
+  });
+
+  it('refuses a string new URL() cannot parse', () => {
+    expect(() => validateVerificationUri('not a url')).toThrow(DeviceLoginError);
+  });
+
+  it('refuses a non-http(s) scheme, such as javascript:', () => {
+    expect(() => validateVerificationUri('javascript:alert(1)')).toThrow(DeviceLoginError);
+  });
+
+  it('refuses a file: URL', () => {
+    expect(() => validateVerificationUri('file:///etc/passwd')).toThrow(DeviceLoginError);
+  });
+});
+
+describe('startDeviceLogin field validation and clamping (P2-1)', () => {
+  it('rejects a missing device_code', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { ...START, device_code: '' }));
+    await expect(
+      startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl }),
+    ).rejects.toThrow(/device_code/);
+  });
+
+  it('rejects a missing user_code', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { ...START, user_code: '' }));
+    await expect(
+      startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl }),
+    ).rejects.toThrow(/user_code/);
+  });
+
+  it('rejects an unsafe verification_uri', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { ...START, verification_uri: 'http://evil.example/device' }));
+    await expect(
+      startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl }),
+    ).rejects.toThrow(DeviceLoginError);
+  });
+
+  it('clamps an interval above 60s down to 60s rather than trusting the server', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { ...START, interval: 99999 }));
+    const result = await startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl });
+    expect(result.interval).toBe(60);
+  });
+
+  it('clamps an interval of 0 or negative up to 1s', () => {
+    return Promise.all([0, -5].map(async (interval) => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { ...START, interval }));
+      const result = await startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl });
+      expect(result.interval).toBe(1);
+    }));
+  });
+
+  it('clamps expires_in above 900s down to 900s', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { ...START, expires_in: 100000 }));
+    const result = await startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl });
+    expect(result.expires_in).toBe(900);
+  });
+
+  it('a non-finite interval/expires_in falls back to a sane default instead of NaN propagating', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { ...START, interval: 'soon', expires_in: null }));
+    const result = await startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl });
+    expect(Number.isFinite(result.interval)).toBe(true);
+    expect(Number.isFinite(result.expires_in)).toBe(true);
+  });
+});
+
+describe('grant validation (P3): tenant_id UUID, role domain, expires_at parseable', () => {
+  const VALID_GRANT = {
+    api_key: 'k', key_id: 'k1', tenant_id: '11111111-1111-1111-1111-111111111111',
+    role: 'write', expires_at: '2099-01-01T00:00:00Z',
+  };
+
+  it('rejects a non-UUID tenant_id', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, { ...VALID_GRANT, tenant_id: 'not-a-uuid' }));
+    await expect(
+      pollForToken(START, { baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl, sleep: immediateSleep() }),
+    ).rejects.toThrow(/tenant_id/);
+  });
+
+  it('rejects a role outside read|write, such as admin', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, { ...VALID_GRANT, role: 'admin' }));
+    await expect(
+      pollForToken(START, { baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl, sleep: immediateSleep() }),
+    ).rejects.toThrow(/role/);
+  });
+
+  it('rejects an unparsable expires_at', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, { ...VALID_GRANT, expires_at: 'whenever' }));
+    await expect(
+      pollForToken(START, { baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl, sleep: immediateSleep() }),
+    ).rejects.toThrow(/expires_at/);
+  });
+
+  it('rejects a missing api_key', async () => {
+    const { api_key: _drop, ...rest } = VALID_GRANT;
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, rest));
+    await expect(
+      pollForToken(START, { baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl, sleep: immediateSleep() }),
+    ).rejects.toThrow(/api_key/);
+  });
+
+  it('accepts a well-formed grant', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, VALID_GRANT));
+    const result = await pollForToken(START, { baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl, sleep: immediateSleep() });
+    expect(result).toEqual(VALID_GRANT);
+  });
+});
+
+describe('P2-5: server error bodies are sanitized and bounded', () => {
+  it('an oversized/control-character error body from /v1/cli/device is capped and cleaned', async () => {
+    const huge = `\x07${'x'.repeat(5000)}`;
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: huge }), { status: 500 }));
+    try {
+      await startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl });
+      expect.fail('should have thrown');
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message.length).toBeLessThan(500);
+      expect(message).not.toMatch(/[\x00-\x08\x0B-\x1F\x7F]/);
+    }
   });
 });

@@ -3,6 +3,8 @@
 // `verification_uri_complete` is never used: the code must be typed, never
 // prefilled, so only the plain `verification_uri` is shown or opened.
 
+import { sanitizeForTerminal } from '../cli-error.js';
+
 export interface DeviceStartResponse {
   device_code: string;
   user_code: string;
@@ -43,6 +45,13 @@ export interface DeviceLoginOptions {
 }
 
 const RATE_LIMIT_BACKOFF_MS = 5000;
+const RESPONSE_TEXT_CAP = 200;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const ALLOWED_ROLES = new Set(['read', 'write']);
+const MIN_INTERVAL_S = 1;
+const MAX_INTERVAL_S = 60;
+const MIN_EXPIRES_IN_S = 1;
+const MAX_EXPIRES_IN_S = 900;
 
 function trimUrl(u: string): string {
   return u.replace(/\/+$/, '');
@@ -59,6 +68,102 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
   }
 }
 
+/** Truncated, control-character-free response text for error messages: a
+ * misconfigured or hostile base URL must never flood or corrupt the
+ * terminal. */
+async function safeResponseText(res: Response): Promise<string> {
+  try {
+    return sanitizeForTerminal(await res.text(), RESPONSE_TEXT_CAP);
+  } catch {
+    return '';
+  }
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * The verification URL is untrusted server input handed to a shell-adjacent
+ * browser-open call and printed to the terminal, so it is parsed and pinned
+ * to https (http only for loopback) with no embedded userinfo before it is
+ * ever shown or opened. Returns the canonical `href`.
+ */
+export function validateVerificationUri(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new DeviceLoginError('the login server returned an invalid verification URL');
+  }
+  if (url.username || url.password) {
+    throw new DeviceLoginError('the login server returned a verification URL with embedded credentials, refusing it');
+  }
+  const isLoopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+  const isHttpsOrLoopbackHttp = url.protocol === 'https:' || (url.protocol === 'http:' && isLoopback);
+  if (!isHttpsOrLoopbackHttp) {
+    throw new DeviceLoginError('the login server returned a verification URL that is not https, refusing it');
+  }
+  return url.href;
+}
+
+/** Validates and normalizes the /v1/cli/device response before it is ever
+ * shown, opened, or polled against. */
+function parseStartResponse(body: Record<string, unknown>): DeviceStartResponse {
+  const deviceCode = typeof body['device_code'] === 'string' ? body['device_code'] : '';
+  if (!deviceCode) throw new DeviceLoginError('the login server did not return a device_code');
+
+  const userCode = typeof body['user_code'] === 'string' ? body['user_code'] : '';
+  if (!userCode) throw new DeviceLoginError('the login server did not return a user_code');
+
+  const verificationUri = validateVerificationUri(
+    typeof body['verification_uri'] === 'string' ? body['verification_uri'] : '',
+  );
+  const verificationUriComplete = typeof body['verification_uri_complete'] === 'string'
+    ? body['verification_uri_complete']
+    : '';
+
+  const rawExpiresIn = Number(body['expires_in']);
+  const expiresIn = Number.isFinite(rawExpiresIn) ? clamp(rawExpiresIn, MIN_EXPIRES_IN_S, MAX_EXPIRES_IN_S) : 600;
+
+  const rawInterval = Number(body['interval']);
+  const interval = Number.isFinite(rawInterval) ? clamp(rawInterval, MIN_INTERVAL_S, MAX_INTERVAL_S) : 5;
+
+  return {
+    device_code: deviceCode,
+    user_code: userCode,
+    verification_uri: verificationUri,
+    verification_uri_complete: verificationUriComplete,
+    expires_in: expiresIn,
+    interval,
+  };
+}
+
+/** Validates the grant the server hands back on success, before it is ever
+ * stored: a non-empty key/key_id, a UUID tenant_id, a role within the CLI's
+ * ceiling (never admin, matching the design's "never admin from this flow"),
+ * and a parseable expires_at. */
+function parseGrant(body: Record<string, unknown>): DeviceLoginResult {
+  const apiKey = typeof body['api_key'] === 'string' ? body['api_key'] : '';
+  if (!apiKey) throw new DeviceLoginError('the login server did not return an api_key');
+
+  const keyId = typeof body['key_id'] === 'string' ? body['key_id'] : '';
+  if (!keyId) throw new DeviceLoginError('the login server did not return a key_id');
+
+  const tenantId = typeof body['tenant_id'] === 'string' ? body['tenant_id'] : '';
+  if (!UUID_RE.test(tenantId)) throw new DeviceLoginError('the login server returned a malformed tenant_id');
+
+  const role = typeof body['role'] === 'string' ? body['role'] : '';
+  if (!ALLOWED_ROLES.has(role)) throw new DeviceLoginError(`the login server returned an unexpected role: ${sanitizeForTerminal(role, 40)}`);
+
+  const expiresAt = typeof body['expires_at'] === 'string' ? body['expires_at'] : '';
+  if (!expiresAt || Number.isNaN(Date.parse(expiresAt))) {
+    throw new DeviceLoginError('the login server returned an unparsable expires_at');
+  }
+
+  return { api_key: apiKey, key_id: keyId, tenant_id: tenantId, role, expires_at: expiresAt };
+}
+
 export async function startDeviceLogin(opts: DeviceLoginOptions): Promise<DeviceStartResponse> {
   const f = opts.fetchImpl ?? fetch;
   const res = await f(`${trimUrl(opts.baseUrl)}/v1/cli/device`, {
@@ -69,14 +174,15 @@ export async function startDeviceLogin(opts: DeviceLoginOptions): Promise<Device
       ...(opts.hostname ? { hostname: opts.hostname } : {}),
     }),
   });
-  const body = await readJson(res);
   if (!res.ok) {
+    const body = await readJson(res);
+    const errorCode = typeof body['error'] === 'string' ? body['error'] : undefined;
     throw new DeviceLoginError(
-      `could not start login (HTTP ${res.status}): ${String(body['error'] ?? 'unknown error')}`,
-      typeof body['error'] === 'string' ? body['error'] : undefined,
+      `could not start login (HTTP ${res.status}): ${errorCode ? sanitizeForTerminal(errorCode, RESPONSE_TEXT_CAP) : 'unknown error'}`,
+      errorCode,
     );
   }
-  return body as unknown as DeviceStartResponse;
+  return parseStartResponse(await readJson(res));
 }
 
 /**
@@ -112,8 +218,7 @@ export async function pollForToken(
     });
 
     if (res.status === 201) {
-      const body = await readJson(res);
-      return body as unknown as DeviceLoginResult;
+      return parseGrant(await readJson(res));
     }
 
     const body = await readJson(res);
@@ -131,7 +236,10 @@ export async function pollForToken(
       if (error === 'expired_token') {
         throw new DeviceLoginError('the login request expired, run `aer login` again', 'expired_token');
       }
-      throw new DeviceLoginError(`unexpected response from the login server: ${error ?? 'unknown error'}`, error);
+      throw new DeviceLoginError(
+        `unexpected response from the login server: ${error ? sanitizeForTerminal(error, RESPONSE_TEXT_CAP) : await safeResponseText(res)}`,
+        error,
+      );
     }
 
     if (res.status === 403 && error === 'cli_device_key_limit_reached') {
