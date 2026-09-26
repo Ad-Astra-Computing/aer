@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Runs the commands the docs print, as printed, in a directory holding only
 // what a reader can obtain. Covers the root README's ```sh blocks, every
-// ```bash block in apps/cli/README.md, and the install command in every
+// ```bash block in apps/cli/README.md and the install command in every
 // package README, whatever fence (or none) it sits in. Every command found
 // must appear below, either as one that runs or as a skip with a reason.
 import { execFileSync } from 'node:child_process';
@@ -38,7 +38,7 @@ const RUN = new Map([
   ],
   [
     'pip install "git+https://github.com/Ad-Astra-Computing/aer.git@sdk-py-v0.1.0#subdirectory=packages/sdk-py"',
-    null,
+    'python3 -m venv .venv && . .venv/bin/activate && pip install "git+https://github.com/Ad-Astra-Computing/aer.git@sdk-py-v0.1.0#subdirectory=packages/sdk-py" && python -c "import aer_sdk"',
   ],
 ]);
 
@@ -67,6 +67,8 @@ const SKIP = new Map([
   ['nix build github:Ad-Astra-Computing/aer#node-modules', 'covered by nix flake check'],
   ['ln -s ./result/lib/node_modules node_modules', 'second line of the nix build block'],
   ['aer-hooks install claude-code', 'run as part of the nix profile block above'],
+  ['python3 -m venv .venv', 'run as part of the pip install block'],
+  ['. .venv/bin/activate', 'run as part of the pip install block'],
   ['aer-hooks install codex', 'illustrative; identical shape to the claude-code install already run'],
   ['npx @adastracomputing/aer-hooks@next status', 'needs a wired harness to report on'],
   ['npx @adastracomputing/aer-hooks@next uninstall claude-code', 'would remove the install just run'],
@@ -169,7 +171,34 @@ function allSources() {
   return sources;
 }
 
+// A scratch HOME also hides the nix.conf that turns on flakes, which every
+// nix command in the docs needs. Carry over only the feature list, never the
+// whole file: nix.conf can hold access tokens.
+function nixFeatures() {
+  try {
+    return execFileSync('nix', ['config', 'show', 'experimental-features'], { encoding: 'utf8' }).trim();
+  } catch {
+    return '';
+  }
+}
+const NIX_FEATURES = nixFeatures();
+
+function onPath(tool) {
+  try {
+    execFileSync('sh', ['-c', `command -v ${tool}`], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function run(command) {
+  // A tool this machine lacks is a gap in the check, not a broken doc, so say
+  // which it is rather than print a bare exit 127.
+  const tool = command.split(/\s+/)[0];
+  if (!onPath(tool)) {
+    return { ok: false, why: `\`${tool}\` is not on PATH here, so this command was not checked` };
+  }
   // A scratch HOME as well as a scratch cwd: a reader's machine is not this
   // runner, and a command that writes into the checkout would pass here and
   // fail for them.
@@ -194,6 +223,9 @@ function run(command) {
         PATH: `${home}/.nix-profile/bin:${process.env.PATH}`,
         npm_config_yes: 'true',
         npm_config_prefix: globalPrefix,
+        ...(NIX_FEATURES
+          ? { NIX_CONFIG: `${process.env.NIX_CONFIG ?? ''}\nexperimental-features = ${NIX_FEATURES}`.trim() }
+          : {}),
       },
       encoding: 'utf8',
       timeout: 15 * 60 * 1000,

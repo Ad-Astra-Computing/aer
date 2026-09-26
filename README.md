@@ -244,9 +244,13 @@ The Python SDK lives in [`packages/sdk-py`](./packages/sdk-py) and imports as
 It is not published to PyPI, and there is no plan to publish it. The package is
 maintained here and installed from this repository, which keeps one source of
 truth for it rather than a copy that drifts from the code under test. Pin the
-release tag rather than tracking the default branch:
+release tag rather than tracking the default branch. Most current Python
+installs refuse a bare `pip install` outside a virtual environment, so make
+one first:
 
 ```sh
+python3 -m venv .venv
+. .venv/bin/activate
 pip install "git+https://github.com/Ad-Astra-Computing/aer.git@sdk-py-v0.1.0#subdirectory=packages/sdk-py"
 ```
 

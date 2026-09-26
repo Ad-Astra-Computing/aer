@@ -11,9 +11,13 @@ Stdlib only, no dependencies. Python 3.10 or newer.
 Not on PyPI, and there is no plan to publish it there. The package is maintained
 in this repository and installed from it, so there is one source of truth rather
 than a copy that drifts from the code under test. Pin the release tag, which is
-what the GitHub release for each version points at:
+what the GitHub release for each version points at. Most current Python
+installs refuse a bare `pip install` outside a virtual environment, so make one
+first:
 
 ```
+python3 -m venv .venv
+. .venv/bin/activate
 pip install "git+https://github.com/Ad-Astra-Computing/aer.git@sdk-py-v0.1.0#subdirectory=packages/sdk-py"
 ```
 
