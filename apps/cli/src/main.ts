@@ -301,9 +301,10 @@ async function cmdDoctor(args: string[]): Promise<void> {
   const checks = [...config.checks, ...live.checks];
   const ok = config.ok && live.ok; // stale hook registrations are WARN, not a failing check
   if (args.includes('--json')) {
-    console.log(JSON.stringify({ ok, checks, hooks: { stale_registrations: staleHooks } }, null, 2));
+    console.log(JSON.stringify({ ok, checks, warnings: config.warnings ?? [], hooks: { stale_registrations: staleHooks } }, null, 2));
   } else {
     for (const c of checks) console.error(`${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}`);
+    for (const w of config.warnings ?? []) console.error(`WARN: ${w.detail}`);
     for (const f of staleHooks) console.error(`WARN: ${f.detail} - fix: ${f.fix}`);
     console.error(ok ? '\nOK' : '\nFAILED');
   }

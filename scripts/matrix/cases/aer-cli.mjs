@@ -327,6 +327,16 @@ export default function register(registry) {
     const human = await c.bin('aer', ['doctor'], { cwd: dir, env, timeoutMs: 60_000 });
     c.assert.exit(human, 0, 'doctor (human)');
     c.assert.includes(human.stderr, 'OK', 'human verdict');
+    c.assert.equal(JSON.stringify(rep.warnings), '[]', 'warnings outside an agent shell');
+
+    // In a Claude Code tool shell the collector stays off: doctor still
+    // passes, but says so and names the opt-in.
+    const shell = { ...env, CLAUDECODE: '1' };
+    const inShell = parseJson(c, await c.bin('aer', ['doctor', '--json'], { cwd: dir, env: shell, timeoutMs: 60_000 }), 'doctor --json in an agent shell');
+    c.assert.equal(inShell.ok, true, 'ok in an agent shell');
+    c.assert.includes(JSON.stringify(inShell.warnings), 'AER_RECORD_IN_AGENT_SHELL=1', 'agent shell warning');
+    const optedIn = parseJson(c, await c.bin('aer', ['doctor', '--json'], { cwd: dir, env: { ...shell, AER_RECORD_IN_AGENT_SHELL: '1' }, timeoutMs: 60_000 }), 'doctor --json opted in');
+    c.assert.equal(JSON.stringify(optedIn.warnings), '[]', 'warnings after opting in');
   });
 
   t.case('doctor refuses to send an env key to a base URL only aer.config.json names', async (c) => {
