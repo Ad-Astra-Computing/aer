@@ -681,7 +681,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (command === 'agents' || command === 'sessions' || command === 'findings' || command === 'audit' || command === 'aers' || command === 'baseline') {
     // A command without its subcommand used to fall through to the whole usage
     // text, which reads as the tool ignoring you. Name what is missing.
-    if (sub === undefined || sub.startsWith('-')) {
+    // `aer audit` is the one of these with a bare form: the usage text
+    // documents `aer audit [--limit N]`, and `aer audit list` is kept.
+    if (command !== 'audit' && (sub === undefined || sub.startsWith('-'))) {
       console.error(`aer ${command} needs a subcommand, for example: aer ${command} list\n`);
       usage();
     }
@@ -794,9 +796,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       }), null, 2));
       return;
     }
-    if (command === 'audit') {
-      // /audit takes optional --limit; sub may be '--limit' or the value
-      const args = sub ? [sub, ...rest] : rest;
+    if (command === 'audit' && (sub === undefined || sub === 'list' || sub.startsWith('-'))) {
+      // `aer audit [--limit N]` and `aer audit list [--limit N]`.
+      const args = sub && sub !== 'list' ? [sub, ...rest] : rest;
       const limitArg = readFlag(args, '--limit');
       const limit = limitArg ? parseInt(limitArg, 10) : undefined;
       console.log(JSON.stringify(await listAudit({
