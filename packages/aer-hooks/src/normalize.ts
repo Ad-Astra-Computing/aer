@@ -25,7 +25,7 @@
 // old AER_HOOK_RECORD_ARGS flag put raw arguments on the wire and recorded
 // nothing; see shared/ingest-allowlist.ts.
 
-import { shapeOfToolCall, type ToolShape } from './tool-shape.js';
+import { shapesOfToolCall, type ToolShape } from './tool-shape.js';
 
 export type HookKind =
   | 'session_start'
@@ -59,6 +59,11 @@ export interface HookEvent {
    * touched. Computed here so the raw tool input never leaves this module.
    */
   shape?: ToolShape | undefined;
+  /**
+   * Every shape the call reduces to, in order, `shape` being the first: a
+   * shell line runs several programs and can name several hosts.
+   */
+  shapes?: ToolShape[] | undefined;
   /**
    * The harness's working directory. Used to locate the repository and the
    * project's own config layer, and never emitted: ingest drops it, and it
@@ -212,8 +217,11 @@ function putToolFields(event: HookEvent, tool: unknown, args: unknown): void {
   const argKeys = keysOf(args);
   if (argKeys !== undefined) event.argKeys = argKeys;
   if (name !== undefined) {
-    const shape = shapeOfToolCall(name, args);
-    if (shape !== undefined) event.shape = shape;
+    const shapes = shapesOfToolCall(name, args);
+    if (shapes.length > 0) {
+      event.shape = shapes[0];
+      event.shapes = shapes;
+    }
   }
 }
 

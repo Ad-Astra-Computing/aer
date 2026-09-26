@@ -366,7 +366,9 @@ export default function register(registry) {
     c.assert.equal(byType(sink, 'tool.completed').length, 3, 'tool.completed');
     const exec = byType(sink, 'process.exec')[0];
     c.assert.equal(exec?.payload?.command, 'git', 'process.exec is the executable name only');
-    c.assert.equal(byType(sink, 'http.requested')[0]?.payload?.host, 'example.com', 'http.requested is the host only');
+    const fetched = byType(sink, 'network.connect').find((e) => e.payload?.tool === 'WebFetch');
+    c.assert.equal(fetched?.payload?.host, 'example.com', 'a fetch is the host only');
+    c.assert.equal(fetched?.payload?.method, undefined, 'a fetch claims a method the hook never saw');
     c.assert.ok(byType(sink, 'file.written').length === 1, 'file.written');
     const bashStart = byType(sink, 'tool.started')[0];
     c.assert.equal(JSON.stringify(bashStart.payload.arg_keys), JSON.stringify(['command', 'description']), 'arg_keys');
@@ -488,6 +490,7 @@ export default function register(registry) {
     c.assert.equal(start?.payload?.harness, 'codex', 'harness');
     c.assert.equal(start?.payload?.model, 'model-matrix-c', 'model');
     c.assert.equal(byType(sink, 'process.exec')[0]?.payload?.command, 'curl', 'process.exec command');
+    c.assert.equal(byType(sink, 'network.connect')[0]?.payload?.host, 'example.org', 'the host curl was pointed at');
     c.assert.equal(byType(sink, 'tool.completed').length, 1, 'tool.completed');
     assertNoCanaries(sink.allText(), cn);
   });

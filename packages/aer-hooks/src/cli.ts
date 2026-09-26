@@ -20,7 +20,7 @@ import {
   type HttpSinkOptions,
 } from '@adastracomputing/aer-emit';
 import { normalize, type Harness, type HookEvent, type Lifecycle } from './normalize.js';
-import { emitHookEvent } from './core.js';
+import { emitHookEvent, shapesOf } from './core.js';
 import {
   loadSession,
   saveSession,
@@ -266,7 +266,7 @@ function transcriptStateOf(stored: StoredSession | null): TranscriptUsageState {
  */
 export function plannedEventCount(event: HookEvent): number {
   if (event.kind === 'other') return 0;
-  if (event.kind === 'tool_start') return event.shape === undefined ? 1 : 2;
+  if (event.kind === 'tool_start') return 1 + shapesOf(event).length;
   return 1;
 }
 
