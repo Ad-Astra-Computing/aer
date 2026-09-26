@@ -13,7 +13,7 @@ require editing application code.
 Run this from the project root:
 
 ```sh
-npx @adastracomputing/aer init --yes --json
+npx @adastracomputing/aer@next init --yes --json
 ```
 
 On Nix, without npm:
@@ -53,7 +53,7 @@ Instrumentation loads before the program, so no application code changes:
   "instrumentation": { "register": "@adastracomputing/aer-auto-node/register",
                        "session_strategy": "process" },
   "env_required": ["AER_API_KEY"],
-  "verify_command": "npx @adastracomputing/aer doctor"
+  "verify_command": "npx @adastracomputing/aer@next doctor"
 }
 ```
 
@@ -63,7 +63,7 @@ when proposing a change for a human to approve.
 ## Confirm it, do not assume it
 
 ```sh
-npx @adastracomputing/aer doctor --json
+npx @adastracomputing/aer@next doctor --json
 ```
 
 `doctor` exits non-zero when anything is wrong, so it is safe to gate on, and
@@ -71,13 +71,25 @@ each check reports separately. Do not report success until it exits zero. To
 prove the whole path end to end, including that a record comes out:
 
 ```sh
-npx @adastracomputing/aer smoke
+npx @adastracomputing/aer@next smoke
 ```
 
 ## What you need from a person
 
-An AER account, from [aer.run](https://aer.run). The only secret is
-`AER_API_KEY`. Never write a key into a tracked file, a commit or a log line.
+An AER account, from [aer.run](https://aer.run). Either the person runs
+`npx @adastracomputing/aer@next login` once on their own machine and
+`npx @adastracomputing/aer@next link` once in the project, or they hand you
+`AER_API_KEY`. Never write a key into a tracked file, a commit, a log line or
+a chat message you print back; do not read `~/.config/aer/credentials.json`
+or any other credential store on the person's behalf.
+
+Every `aer` subcommand resolves that key in a fixed order: a command-line
+flag, then `AER_API_KEY` (or `AER_TENANT_API_KEY`), then `aer.config.json`
+for a base URL, then the credentials `aer login` stored on disk. An explicit
+flag or environment key always wins over a stored login. The collector
+(`aer-auto-node`) and the harness hooks (`aer-hooks`) read the environment
+directly and never consult a stored login, so a running agent still needs
+`AER_API_KEY` set in its own process.
 
 Verifying a record needs no account and no network:
 `@adastracomputing/aer-verify` checks the hash, the signature and the

@@ -81,7 +81,7 @@ for verifying one.
 ### Set up a Node project
 
 ```sh
-npx @adastracomputing/aer init
+npx @adastracomputing/aer@next init
 ```
 
 On Nix, run the CLI from the flake instead:
@@ -101,6 +101,40 @@ nix build github:Ad-Astra-Computing/aer#node-modules
 ln -s ./result/lib/node_modules node_modules
 ```
 
+## Sign in
+
+Recording a run needs an AER account, from [aer.run](https://aer.run). The
+CLI can hold that credential for you, once per machine, rather than you
+copying a key into an environment variable yourself:
+
+```sh
+npx @adastracomputing/aer@next login
+```
+
+This opens `https://aer.run/device` and prints a code to type there. Once
+approved, the tenant key it mints is saved to
+`~/.config/aer/credentials.json`, owner-only and never printed again. Then
+tell the current project which agent to record as:
+
+```sh
+npx @adastracomputing/aer@next link
+```
+
+`link` writes `agent_id` and `env_id` into `aer.config.json` for you, picking
+from the tenant's existing agents on a terminal or creating one with
+`--create-agent <name>`. From here, every `aer` subcommand that needs a
+tenant key (`doctor`, `smoke`, `import claude-code` and the tenant-data
+commands) picks it up on its own. `npx @adastracomputing/aer@next whoami`
+shows what is signed in and `npx @adastracomputing/aer@next logout` revokes
+it.
+
+Setting `AER_API_KEY` yourself still works and takes priority over a stored
+login, which is what a CI job or a container without a browser should do
+instead of running `login` there. `aer-hooks` and `aer-auto-node` read that
+same environment directly and do not consult a stored login, so a coding
+harness or a long-running agent still needs `AER_API_KEY` (and
+`AER_TENANT_ID` / `AER_AGENT_ID`) set in its own environment.
+
 ## Usage
 
 Run your agent with the collector loaded:
@@ -113,7 +147,7 @@ Check the integration. `doctor` exits non-zero if anything is wrong, so it is
 safe to gate on in CI:
 
 ```sh
-$ npx @adastracomputing/aer doctor
+$ npx @adastracomputing/aer@next doctor
 AER_BASE_URL          ok    https://api.aer.run
 API reachable         ok    ready (200)
 tenant auth           ok
@@ -122,7 +156,7 @@ tenant auth           ok
 Then send a tiny instrumented run end to end and verify what comes out:
 
 ```sh
-npx @adastracomputing/aer smoke
+npx @adastracomputing/aer@next smoke
 ```
 
 ## Record a coding harness
@@ -131,11 +165,21 @@ Claude Code, Codex CLI and opencode are recorded through hooks rather than the
 Node collector, since the agent is the harness rather than a script you launch:
 
 ```sh
-npx @adastracomputing/aer-hooks install claude-code
+npx @adastracomputing/aer-hooks@next install claude-code
 ```
 
-`codex` and `opencode` work the same way. `status` shows what is wired and
-`uninstall` removes it. Every config write keeps a backup.
+`codex` and `opencode` work the same way. `status` shows what is wired, and
+lists any registration that has fallen behind: missing the current hook
+lifecycle, running an older `aer-hooks` release or shadowed by a copy on a
+different `PATH` entry. `uninstall` removes AER's entries and only those.
+Every config write keeps a backup, and running `install` again is safe: it
+updates an existing registration in place instead of duplicating it, which is
+also how you pick up a newer hook lifecycle after upgrading.
+
+A Claude Code subagent's tool calls join its lead session's record rather than
+opening one of their own, so a run that spawns subagents still seals into one
+record. `aer doctor` folds the same staleness checks in, so a project that
+also uses the Node collector sees both in one place.
 
 On Nix, install the tools first so the hook binary is on `PATH`, then wire the
 harness:
@@ -151,6 +195,9 @@ time it runs a tool.
 
 ## Configuration
 
+The collector and the hooks read these directly, whether or not you have
+also run `aer login`:
+
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `AER_API_KEY` | Yes, to record | The only secret. Never commit it |
@@ -158,7 +205,12 @@ time it runs a tool.
 | `AER_DISABLE` | No | Set to turn the collector off without code changes |
 
 Non-secret identity (tenant, agent and environment) lives in
-`aer.config.json`, written by `init`.
+`aer.config.json`, written by `init` or `aer link`. The `aer` CLI itself
+resolves a tenant key in a different order, so a person who signed in with
+`aer login` does not need `AER_API_KEY` set to use it: a command-line flag,
+then `AER_API_KEY` (or `AER_TENANT_API_KEY`), then the credentials `aer
+login` stored for the base URL in use. An environment key always wins over
+a stored login.
 
 ## Documentation
 
@@ -179,7 +231,7 @@ you already hold. The command below fetches the bundle and the public key first,
 then does all of the checking locally.
 
 ```sh
-npx @adastracomputing/aer verify <aer-id>
+npx @adastracomputing/aer@next verify <aer-id>
 ```
 
 ## Python SDK
@@ -191,10 +243,11 @@ The Python SDK lives in [`packages/sdk-py`](./packages/sdk-py) and imports as
 
 It is not published to PyPI, and there is no plan to publish it. The package is
 maintained here and installed from this repository, which keeps one source of
-truth for it rather than a copy that drifts from the code under test.
+truth for it rather than a copy that drifts from the code under test. Pin the
+release tag rather than tracking the default branch:
 
 ```sh
-pip install "git+https://github.com/Ad-Astra-Computing/aer.git#subdirectory=packages/sdk-py"
+pip install "git+https://github.com/Ad-Astra-Computing/aer.git@sdk-py-v0.1.0#subdirectory=packages/sdk-py"
 ```
 
 With Nix, take it as a flake output rather than a git URL:

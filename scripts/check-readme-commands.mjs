@@ -14,23 +14,28 @@ const README = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 // first line carries the whole block, because running the second on its own is
 // not what the page tells anyone to do.
 const RUN = new Map([
-  ['npx @adastracomputing/aer init', null],
-  ['npx @adastracomputing/aer-hooks install claude-code', null],
+  ['npx @adastracomputing/aer@next init', null],
+  ['npx @adastracomputing/aer-hooks@next install claude-code', null],
   ['npm install @adastracomputing/aer@next', null],
   ['nix run github:Ad-Astra-Computing/aer -- init', null],
   [
     'nix profile add github:Ad-Astra-Computing/aer#tools',
     'nix profile add github:Ad-Astra-Computing/aer#tools && aer-hooks install claude-code',
   ],
-  ['pip install "git+https://github.com/Ad-Astra-Computing/aer.git#subdirectory=packages/sdk-py"', null],
+  [
+    'pip install "git+https://github.com/Ad-Astra-Computing/aer.git@sdk-py-v0.1.0#subdirectory=packages/sdk-py"',
+    null,
+  ],
 ]);
 
 // Each skip states why the command cannot run here. "It is awkward" is not a
 // reason; every entry names a credential, a placeholder or another job.
 const SKIP = new Map([
-  ['npx @adastracomputing/aer doctor', 'needs a configured project and a tenant API key'],
-  ['npx @adastracomputing/aer smoke', 'needs a tenant API key'],
-  ['npx @adastracomputing/aer verify <aer-id>', 'the argument is a placeholder'],
+  ['npx @adastracomputing/aer@next login', 'needs a browser and a person to approve the device code'],
+  ['npx @adastracomputing/aer@next link', 'needs a login session from the command above'],
+  ['npx @adastracomputing/aer@next doctor', 'needs a configured project and a tenant API key'],
+  ['npx @adastracomputing/aer@next smoke', 'needs a tenant API key'],
+  ['npx @adastracomputing/aer@next verify <aer-id>', 'the argument is a placeholder'],
   ['node --import @adastracomputing/aer-auto-node/register your-agent.js', 'the script is a placeholder'],
   ['nix build github:Ad-Astra-Computing/aer#node-modules', 'covered by nix flake check'],
   ['ln -s ./result/lib/node_modules node_modules', 'second line of the nix build block'],
@@ -115,8 +120,26 @@ function run(command) {
   }
 }
 
+// One instruction, one form: a command that appears in more than one doc
+// has to be the identical string everywhere, pin included. The pip install
+// line is the case that actually drifted once (root pinned nothing, the
+// package README pinned a tag), so it is checked here rather than trusted
+// to stay in sync by eye.
+function checkCopiesMatch() {
+  const sdkPyReadme = readFileSync(new URL('../packages/sdk-py/README.md', import.meta.url), 'utf8');
+  const rootLine = README.split('\n').find((l) => l.startsWith('pip install "git+'));
+  const sdkPyLine = sdkPyReadme.split('\n').find((l) => l.startsWith('pip install "git+'));
+  if (rootLine && sdkPyLine && rootLine !== sdkPyLine) {
+    console.log('FAIL  README.md and packages/sdk-py/README.md pip install commands differ:');
+    console.log(`    README.md:            ${rootLine}`);
+    console.log(`    packages/sdk-py/README.md: ${sdkPyLine}`);
+    return false;
+  }
+  return true;
+}
+
 const only = process.argv[2];
-let failures = 0;
+let failures = checkCopiesMatch() ? 0 : 1;
 
 for (const command of commandsInReadme()) {
   if (SKIP.has(command)) {
