@@ -131,13 +131,15 @@ sends what was queued to it.
 
 An interactive session can stay open for days and may never send its end event. So
 that it is still sealed and summarised, the hook completes the record at the first
-turn end once the record is an hour old, and before the next event when the harness
-has been quiet for an hour. The session carries on in a new record under the same
-session reference, with event positions continuing from the last one, so the parts
-can be read back as one run. Set `AER_HOOK_CHECKPOINT_MINUTES` to change the hour, or
-to `0` to keep one record however long the session runs; with `0`, a session that
-never sends its end is left for the server to close after it goes quiet, without the
-summary a completed record gets.
+turn end once the record is four hours old, and before the next event when the
+harness has been quiet for an hour. The session carries on in a new record under the
+same session reference, with event positions continuing from the last one, so the
+parts can be read back as one run. `AER_HOOK_CHECKPOINT_MINUTES` sets the age and
+`AER_HOOK_QUIET_MINUTES` the quiet period; `0` turns either off. With both off, a
+session that never sends its end is left for the server to close after it goes
+quiet, without the summary a completed record gets. Whatever the settings, a record
+is also completed at a turn end once it holds 20,000 events, well under the most the
+server accepts in one session.
 
 The first time the hook meets a transcript that already has history (it was
 installed partway through a session), it records at most the 50 most recent model

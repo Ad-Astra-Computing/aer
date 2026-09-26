@@ -79,8 +79,10 @@ const MAX_ROUNDS = 40;
 const OPEN_BACKOFF_BASE_MS = 2000;
 const OPEN_BACKOFF_MAX_MS = 5 * 60_000;
 // A record is completed at the first turn end once it is this old, and before
-// the next event once the harness has been quiet this long.
-const DEFAULT_CHECKPOINT_MINUTES = 60;
+// the next event once the harness has been quiet for the second. Four hours
+// keeps a working afternoon in one record; an hour of quiet is a real break.
+const DEFAULT_CHECKPOINT_MINUTES = 240;
+const DEFAULT_QUIET_MINUTES = 60;
 // And once it holds this many events, well under the server's per-session cap.
 const CHECKPOINT_EVENTS = 20_000;
 
@@ -100,15 +102,21 @@ export function parseHardTimeoutMs(env: NodeJS.ProcessEnv, warn: (message: strin
   return n;
 }
 
-/**
- * Parse AER_HOOK_CHECKPOINT_MINUTES: a whole number of minutes, 0 to keep one
- * record however long the harness session runs. Returns milliseconds.
- */
-export function parseCheckpointMs(env: NodeJS.ProcessEnv): number {
-  const raw = env['AER_HOOK_CHECKPOINT_MINUTES'];
+function minutesMs(raw: string | undefined, fallback: number): number {
   const n = raw === undefined ? NaN : Number(raw);
-  const minutes = Number.isInteger(n) && n >= 0 ? n : DEFAULT_CHECKPOINT_MINUTES;
-  return minutes * 60_000;
+  return (Number.isInteger(n) && n >= 0 ? n : fallback) * 60_000;
+}
+
+/**
+ * The two record-splitting triggers, in milliseconds, each 0 when turned off:
+ * AER_HOOK_CHECKPOINT_MINUTES (record age at a turn end) and
+ * AER_HOOK_QUIET_MINUTES (quiet time before the next event).
+ */
+export function parseCheckpointMs(env: NodeJS.ProcessEnv): { ageMs: number; quietMs: number } {
+  return {
+    ageMs: minutesMs(env['AER_HOOK_CHECKPOINT_MINUTES'], DEFAULT_CHECKPOINT_MINUTES),
+    quietMs: minutesMs(env['AER_HOOK_QUIET_MINUTES'], DEFAULT_QUIET_MINUTES),
+  };
 }
 
 export function parseHarnessFlag(argv: string[]): Harness | undefined {
@@ -871,7 +879,7 @@ async function orchestrateAndEmit(
     return;
   }
 
-  const checkpointMs = parseCheckpointMs(env);
+  const { ageMs, quietMs } = parseCheckpointMs(env);
   const queued = await withState(ctx, (st, at) => {
     let state = st;
     if (state !== null && state.ended === true) {
@@ -888,7 +896,7 @@ async function orchestrateAndEmit(
 
     // Back after a quiet period: close the record the quiet period ended,
     // and start this event in a new one.
-    if (checkpointMs > 0 && state.session !== undefined && at - state.lastActivityAt >= checkpointMs) {
+    if (quietMs > 0 && state.session !== undefined && at - state.lastActivityAt >= quietMs) {
       state.session.closeFirst = true;
       if (state.complete === 'checkpoint') delete state.complete;
       startSegment(state, at, ctx.storeKey, env);
@@ -900,8 +908,8 @@ async function orchestrateAndEmit(
 
     if (completes(event)) {
       state.complete = 'end';
-    } else if (event.kind === 'turn_end' && checkpointMs > 0 && state.complete === undefined
-        && (at - state.segmentStartedAt >= checkpointMs || state.seq - state.segmentStartSeq + 1 >= CHECKPOINT_EVENTS)) {
+    } else if (event.kind === 'turn_end' && state.complete === undefined
+        && ((ageMs > 0 && at - state.segmentStartedAt >= ageMs) || state.seq - state.segmentStartSeq + 1 >= CHECKPOINT_EVENTS)) {
       // A long interactive session may never send its end. Completing at a
       // turn end once the record is old enough gets it sealed and summarised,
       // and the next turn goes on in a new record under the same client_ref.

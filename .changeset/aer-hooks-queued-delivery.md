@@ -19,10 +19,10 @@ the session.
   the next event opens a new one and sends what was queued, instead of every
   later event being refused for the rest of the day.
 - A long interactive session that never sends its end event is now completed
-  in parts: at the first turn end once the record is an hour old, and before
-  the next event after an hour of quiet. It continues in a new record under
-  the same session reference. `AER_HOOK_CHECKPOINT_MINUTES` changes the hour;
-  `0` keeps one record.
+  in parts: at the first turn end once the record is four hours old, and
+  before the next event after an hour of quiet. It continues in a new record
+  under the same session reference. `AER_HOOK_CHECKPOINT_MINUTES` and
+  `AER_HOOK_QUIET_MINUTES` change the two; `0` turns either off.
 - Every lifecycle report now carries the registered events, the event count
   and the drop counters, not only the opening or closing one.
 - The first read of a transcript with existing history records at most its 50

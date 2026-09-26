@@ -218,15 +218,19 @@ describe('a long interactive session', () => {
   const T0 = Date.parse('2026-09-26T10:00:00Z');
   const MIN = 60_000;
 
-  it('completes its record at the first turn end past the checkpoint age and goes on in a new one', async () => {
+  it('completes its record at the first turn end once it is four hours old and goes on in a new one', async () => {
     const lead = { session_id: 'cc-long', cwd: dir };
     await fire({ ...lead, hook_event_name: 'SessionStart' }, { now: T0 });
-    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 30 * MIN });
+    // Busy all afternoon: never quiet for an hour, and not yet four hours old.
+    for (const at of [50, 100, 150, 200]) {
+      await fire({ ...lead, hook_event_name: at % 100 === 0 ? 'UserPromptSubmit' : 'Stop' }, { now: T0 + at * MIN });
+    }
+    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 230 * MIN });
     expect(api.completes()).toHaveLength(0);
-    await fire({ ...lead, hook_event_name: 'UserPromptSubmit' }, { now: T0 + 40 * MIN });
-    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 61 * MIN });
+    await fire({ ...lead, hook_event_name: 'UserPromptSubmit' }, { now: T0 + 235 * MIN });
+    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 241 * MIN });
     expect(api.completes()).toHaveLength(1);
-    await fire({ ...lead, hook_event_name: 'UserPromptSubmit' }, { now: T0 + 62 * MIN });
+    await fire({ ...lead, hook_event_name: 'UserPromptSubmit' }, { now: T0 + 242 * MIN });
     expect(api.sessions.size).toBe(2);
     const [a, b] = [...api.sessions.values()];
     expect(a!.status).toBe('completed');
@@ -234,6 +238,14 @@ describe('a long interactive session', () => {
     expect(b!.events.map((e) => e.payload['phase'])).toEqual(['turn_start']);
     // Numbering carries on across records, so a reader can join them.
     expect(b!.events[0]!.payload['seq']).toBe(a!.events.length + 1);
+  });
+
+  it('takes the age from AER_HOOK_CHECKPOINT_MINUTES', async () => {
+    const e = env({ AER_HOOK_CHECKPOINT_MINUTES: '30' });
+    const lead = { session_id: 'cc-age30', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' }, { now: T0, env: e });
+    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 31 * MIN, env: e });
+    expect(api.completes()).toHaveLength(1);
   });
 
   it('completes the previous record first when the harness comes back after a quiet period', async () => {
@@ -247,8 +259,16 @@ describe('a long interactive session', () => {
     expect(b!.events.map((e) => e.payload['phase'])).toEqual(['turn_start']);
   });
 
-  it('keeps one record however long it runs when AER_HOOK_CHECKPOINT_MINUTES is 0', async () => {
-    const e = env({ AER_HOOK_CHECKPOINT_MINUTES: '0' });
+  it('takes the quiet period from AER_HOOK_QUIET_MINUTES', async () => {
+    const e = env({ AER_HOOK_QUIET_MINUTES: '10' });
+    const lead = { session_id: 'cc-quiet10', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' }, { now: T0, env: e });
+    await fire({ ...lead, hook_event_name: 'UserPromptSubmit' }, { now: T0 + 11 * MIN, env: e });
+    expect(api.completes()).toHaveLength(1);
+  });
+
+  it('keeps one record however long it runs when both are 0', async () => {
+    const e = env({ AER_HOOK_CHECKPOINT_MINUTES: '0', AER_HOOK_QUIET_MINUTES: '0' });
     const lead = { session_id: 'cc-nock', cwd: dir };
     await fire({ ...lead, hook_event_name: 'SessionStart' }, { now: T0, env: e });
     await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 300 * MIN, env: e });
