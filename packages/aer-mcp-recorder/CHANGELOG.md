@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+### Patch Changes
+
+- [`2fba316`](https://github.com/Ad-Astra-Computing/aer/commit/2fba31694fe8fdbf23461f479cc71a50fa2843f4) - `aer-mcp-recorder --version` (and `-V`) now prints the installed version
+  instead of falling through to the usage text, matching every other AER
+  binary. The version reported also now tracks the package's own release
+  rather than a hand-written number that had drifted out of date.
+
 ## 0.3.1
 
 ### Patch Changes

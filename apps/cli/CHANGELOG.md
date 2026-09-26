@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- [`2fba316`](https://github.com/Ad-Astra-Computing/aer/commit/2fba31694fe8fdbf23461f479cc71a50fa2843f4) - `aer --version` now reports the real version everywhere, including the nix
+  flake app, which previously printed "unknown" because it runs the built
+  entry file without a package.json next to it. The version is baked into the
+  bundle at build time instead of read from disk at startup.
+
 ## 0.3.0
 
 ### Minor Changes
