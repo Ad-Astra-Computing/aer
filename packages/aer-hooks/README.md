@@ -70,9 +70,12 @@ its hooks load at all.
 
 ### Keep the key out of the agent's shell
 
-The hook needs `AER_API_KEY`, `AER_TENANT_ID` and `AER_AGENT_ID` (and optionally
-`AER_ENV_ID`, `AER_BASE_URL`, `AER_AGENT_VERSION`, `AER_PRINCIPAL_ID`). With any of
-the three required values missing, the hook does nothing.
+The hook needs `AER_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID` and `AER_ENV_ID`, and
+optionally `AER_BASE_URL`, `AER_AGENT_VERSION` and `AER_PRINCIPAL_ID`. With a key,
+tenant or agent missing, the hook does nothing; with `AER_ENV_ID` missing it also
+does nothing and says so on stderr, since the API refuses to open a session without
+one. A harness does not tell its hooks its own version, so without
+`AER_AGENT_VERSION` the session's agent version is recorded as `unspecified`.
 
 Do not export them in your shell profile. A harness passes its environment to every
 command its agent runs, so an exported key reaches all of them, and anything among
@@ -195,7 +198,8 @@ export const AerPlugin = aerOpencodePlugin;
 ```
 
 Then set the same env the shell hooks use (`AER_BASE_URL`, `AER_API_KEY` or
-`AER_TENANT_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`). One AER
+`AER_TENANT_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required
+but the base URL). One AER
 session is opened per opencode session and completed on `session.deleted` or plugin
 dispose. Redaction and fail-open are identical to the shell-hook path: tool names
 and argument KEY names only, never values. If emit is unconfigured the plugin is a

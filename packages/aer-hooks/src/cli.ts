@@ -56,6 +56,8 @@ import { openSession, postEvents, completeSession, isRetryable, type ApiBase, ty
 // the default budget needs headroom over that, not just over a fast local call.
 const DEFAULT_HARD_TIMEOUT_MS = 10000;
 
+export const DEFAULT_AGENT_VERSION = 'unspecified';
+
 // The lock covers local state only, so it is held for milliseconds; a wait
 // this long means a holder died, and its lock goes stale soon after.
 const LOCK_WAIT_MS = 3000;
@@ -943,11 +945,24 @@ export async function runHook(
     const resolved = resolveSinkOptionsFromEnv(env, overrides);
     // Unconfigured: do nothing, touch no network.
     if (!resolved) return;
+    // The API refuses an open without an environment, so every event would
+    // queue for a session that can never open. Say so instead.
+    if (resolved.environmentId === undefined || resolved.environmentId.length === 0) {
+      try {
+        (deps.logError ?? ((m: string) => process.stderr.write(m + '\n')))('aer-hook: AER_ENV_ID is not set; the AER API needs it to open a session, so nothing was recorded');
+      } catch {
+        /* a diagnostic must never throw */
+      }
+      return;
+    }
     // A harness records tool lifecycle through hooks and never watches the
     // wire, so mark it as such rather than inherit the wrapper default, which
     // means the auto-node collector did watch it.
     const base = {
       ...resolved,
+      // Required by the API. A harness does not report its own version to
+      // its hooks, so without AER_AGENT_VERSION it is recorded as unspecified.
+      agentVersion: resolved.agentVersion ?? DEFAULT_AGENT_VERSION,
       sourceType: 'harness' as const,
       // Declare who is recording, so a reader can tell a harness recording
       // from a wrapped process without inferring it from the events.

@@ -15,6 +15,7 @@ const CONFIGURED = {
   AER_API_KEY: 'k',
   AER_TENANT_ID: 't',
   AER_AGENT_ID: 'agent-1',
+  AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
   AER_BASE_URL: 'https://api.test',
 } as NodeJS.ProcessEnv;
 

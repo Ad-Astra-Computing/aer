@@ -62,7 +62,7 @@ describe('the stored position survives a lost process', () => {
     const state = { ...freshState(Date.now()), seq: 4, session: { id: 'a', ingestToken: 't', baseUrl: 'http://127.0.0.1:9', openedAt: Date.now() } };
     saveState('s3', state, env);
     await runHook(['--harness', 'claude-code', '--lifecycle', 'v2'], {
-      ...env, AER_BASE_URL: 'http://127.0.0.1:9', AER_API_KEY: 'k', AER_TENANT_ID: 't', AER_AGENT_ID: 'a',
+      ...env, AER_BASE_URL: 'http://127.0.0.1:9', AER_API_KEY: 'k', AER_TENANT_ID: 't', AER_AGENT_ID: 'a', AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
     }, {
       readInput: async () => JSON.stringify({ session_id: 's3', hook_event_name: 'UserPromptSubmit' }),
       hardTimeoutMs: 2000,
@@ -88,6 +88,7 @@ describe('a completion that fails keeps the way back to the session', () => {
       AER_API_KEY: 'k',
       AER_TENANT_ID: '01950000-0000-7000-8000-0000000000aa',
       AER_AGENT_ID: '01950000-0000-7000-8000-0000000000ac',
+      AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
       AER_HOOK_TIMEOUT_MS: '2000',
     }, {
       readInput: async () => JSON.stringify({ session_id: 'dead-1', hook_event_name: 'SessionEnd', reason: 'other' }),
@@ -121,6 +122,7 @@ describe('the hook says who is recording', () => {
       AER_API_KEY: 'k',
       AER_TENANT_ID: '01950000-0000-7000-8000-0000000000aa',
       AER_AGENT_ID: '01950000-0000-7000-8000-0000000000ac',
+      AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
     }, {
       fetch: fetchStub,
       readInput: async () => JSON.stringify({ session_id: 'who-1', hook_event_name: 'SessionStart', source: 'startup' }),

@@ -99,6 +99,10 @@ export class FakeApi {
   }
 
   private open(body: Record<string, unknown>): Response {
+    // The real API's CreateSessionRequest requires both.
+    if (typeof body?.['agent_version'] !== 'string' || typeof body?.['environment_id'] !== 'string') {
+      return json({ error: 'invalid_request' }, 400);
+    }
     const clientRef = typeof body?.['client_ref'] === 'string' ? (body['client_ref'] as string) : undefined;
     if (clientRef !== undefined) {
       const running = [...this.sessions.values()].find((s) => s.clientRef === clientRef && s.status === 'running');

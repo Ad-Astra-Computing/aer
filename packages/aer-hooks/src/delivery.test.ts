@@ -21,6 +21,7 @@ function env(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     AER_API_KEY: 'k',
     AER_TENANT_ID: 't',
     AER_AGENT_ID: 'agent-1',
+    AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
     AER_BASE_URL: 'http://aer.test',
     XDG_CACHE_HOME: cache,
     TMPDIR: path.join(dir, 'tmp'),
@@ -327,5 +328,27 @@ describe('an invocation cut off by its budget', () => {
     expect(api.sessions.size).toBe(1);
     const s = [...api.sessions.values()][0]!;
     expect(s.events.map((x) => x.event_type)).toEqual(['collector.report', 'tool.started', 'process.exec']);
+  });
+});
+
+describe('what the API requires to open a session', () => {
+  it('sends an agent version even when AER_AGENT_VERSION is unset', async () => {
+    await fire({ session_id: 'cc-ver', cwd: dir, hook_event_name: 'SessionStart' });
+    expect(api.sessions.size).toBe(1);
+    expect(api.opens()[0]!.body).toMatchObject({ agent_version: 'unspecified' });
+  });
+
+  it('keeps AER_AGENT_VERSION when it is set', async () => {
+    await fire({ session_id: 'cc-ver2', cwd: dir, hook_event_name: 'SessionStart' }, { env: env({ AER_AGENT_VERSION: '2.1.281' }) });
+    expect(api.opens()[0]!.body).toMatchObject({ agent_version: '2.1.281' });
+  });
+
+  it('without AER_ENV_ID, says so once and sends nothing rather than queuing what can never open', async () => {
+    const e = env();
+    delete e['AER_ENV_ID'];
+    const lines: string[] = [];
+    await runHook(V2, e, { readInput: async () => JSON.stringify({ session_id: 'cc-noenv', cwd: dir, hook_event_name: 'SessionStart' }), fetch: api.fetch, logError: (m) => lines.push(m) });
+    expect(api.requests).toHaveLength(0);
+    expect(lines).toEqual([expect.stringMatching(/AER_ENV_ID/)]);
   });
 });

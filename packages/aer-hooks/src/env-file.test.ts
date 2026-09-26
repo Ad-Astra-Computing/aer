@@ -29,6 +29,7 @@ const GOOD = [
   'AER_TENANT_ID="tenant-from-file"',
   "AER_AGENT_ID='agent-from-file'",
   'AER_BASE_URL=http://aer.test',
+  'AER_ENV_ID=01950000-0000-7000-8000-0000000000ad',
   'PATH=/should/not/apply',
   '',
 ].join('\n');
@@ -45,7 +46,7 @@ describe('reading the credential file', () => {
   it('reads AER_* values from an owner-only file and ignores everything else', () => {
     const r = readEnvFile(writeFile('hooks.env', GOOD));
     expect(r).toEqual({
-      values: { AER_API_KEY: 'aer_file_key', AER_TENANT_ID: 'tenant-from-file', AER_AGENT_ID: 'agent-from-file', AER_BASE_URL: 'http://aer.test' },
+      values: { AER_API_KEY: 'aer_file_key', AER_TENANT_ID: 'tenant-from-file', AER_AGENT_ID: 'agent-from-file', AER_BASE_URL: 'http://aer.test', AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad' },
     });
   });
 
