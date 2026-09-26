@@ -20,16 +20,19 @@ function isExecutable(p: string): boolean {
 }
 
 /**
- * The version an `aer-hook` on PATH reports, or undefined when it cannot be
- * run at all. Best-effort: a doctor check must never throw or hang the CLI.
+ * The version an `aer-hook` on PATH reports, 'unreadable' when it ran but
+ * printed nothing, or undefined when it could not be run at all. Best-effort:
+ * a doctor check must never throw or hang the CLI.
+ *
  * A binary old enough to print NOTHING for --version (0.1.x) still ran
- * successfully, so it is reported as '0.0.0' - definitely stale - rather
- * than treated the same as "could not run it at all".
+ * successfully, so it is reported as 'unreadable' - a real, if unknown,
+ * install - rather than either silently ignored or asserted to be a specific
+ * version number ('0.0.0') nobody actually read off the binary.
  */
 function installedAerHookVersion(dir: string): string | undefined {
   try {
     const out = execFileSync(path.join(dir, 'aer-hook'), ['--version'], { encoding: 'utf8', timeout: 2000 }).trim();
-    return out.length > 0 ? out : '0.0.0';
+    return out.length > 0 ? out : 'unreadable';
   } catch {
     return undefined;
   }
@@ -45,7 +48,12 @@ export async function staleRegistrations(opts: { dir?: string } = {}): Promise<S
   const firstDir = pathDirs.find(hasAerHook);
   if (firstDir !== undefined) {
     const installedVersion = installedAerHookVersion(firstDir);
-    const versionFinding = diagnoseVersion(installedVersion, HOOKS_VERSION);
+    // "Wired" means some harness config actually references the binary, the
+    // same definition diagnoseRegistrations uses (an entry with wiredEvents).
+    // A binary merely found on PATH with no config pointing at it is not
+    // wired into anything yet.
+    const wired = entries.some((e) => e.wiredEvents.length > 0);
+    const versionFinding = diagnoseVersion(installedVersion, HOOKS_VERSION, { wired });
     if (versionFinding !== undefined) findings.push(versionFinding);
   }
   const projectBinDir = path.join(process.cwd(), 'node_modules', '.bin');

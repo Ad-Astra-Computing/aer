@@ -12,6 +12,7 @@ import { createStdioProxy } from './stdio.js';
 import { McpRecorder } from './recorder.js';
 import { sinkFromEnv, NullSink } from './sink.js';
 import { isInvokedDirectly } from './invoked-directly.js';
+import { COLLECTOR_VERSION } from './version.generated.js';
 
 /**
  * Parse AER_CLOSE_TIMEOUT_MS: a positive integer, in ms, or unset. An unset or
@@ -33,6 +34,7 @@ const USAGE = `aer-mcp-recorder: transparent MCP proxy that records tool activit
 
 Usage:
   aer-mcp-recorder [--] <command> [args...]
+  aer-mcp-recorder --version                print the installed version
 
 Wraps <command> as an MCP server. The harness talks to this proxy instead of the
 real server; every byte is forwarded unchanged and a copy is parsed for recording.
@@ -84,6 +86,18 @@ function buildRecorder(): McpRecorder {
 }
 
 export async function main(argv: string[] = process.argv, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  // --version/-V before anything else, the same as every other AER binary:
+  // asking a binary what it is must never depend on there being a wrapped
+  // command to run. Checked ahead of parseArgs, which would otherwise treat
+  // it as an unrecognized flag with no command after it and print usage.
+  // Only the first argument counts, as with --help: a --version after the
+  // command belongs to the wrapped server and must reach it.
+  const first = argv[2];
+  if (first === '--version' || first === '-V') {
+    process.stdout.write(COLLECTOR_VERSION + '\n');
+    return 0;
+  }
+
   const parsed = parseArgs(argv);
   if (parsed === null) {
     process.stderr.write(USAGE + '\n');

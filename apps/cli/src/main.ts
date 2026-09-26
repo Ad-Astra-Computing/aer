@@ -13,6 +13,7 @@ import { resolveAuth, resolveBaseUrl } from './auth/resolve.js';
 import { runLiveChecks } from './doctor-live.js';
 import { staleRegistrations } from '@adastracomputing/aer-hooks';
 import { ingestJsonlStream } from './ingest.js';
+import { CLI_VERSION } from './version.generated.js';
 import { runClaudeCodeImport } from './import/run.js';
 import { verifyAer } from './verify.js';
 import { runCommitmentsVerify } from './commitments-verify.js';
@@ -401,19 +402,12 @@ async function promptAgentChoice(agents: AgentSummary[]): Promise<number> {
 }
 
 /**
- * This package's version, reported so a support conversation can start from the
- * code that actually ran. Read from package.json rather than restated here: a
- * release bumps the manifest, and a second copy would name the previous one.
+ * This package's version. Baked in at build time by scripts/write-version.mjs
+ * rather than read from package.json at runtime, since not every install
+ * layout ships dist/main.js next to its manifest.
  */
 function ownVersion(): string {
-  try {
-    const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
-    const version = (JSON.parse(raw) as { version?: unknown }).version;
-    if (typeof version === 'string' && version.length > 0) return version;
-  } catch {
-    /* saying nothing useful beats naming the wrong version */
-  }
-  return 'unknown';
+  return CLI_VERSION;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {

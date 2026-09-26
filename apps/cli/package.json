@@ -40,8 +40,11 @@
   },
   "scripts": {
     "dev": "tsx src/main.ts",
+    "prebuild": "node scripts/write-version.mjs",
     "build": "rm -rf dist && node bundle.mjs",
+    "pretest": "node scripts/write-version.mjs",
     "test": "vitest run",
+    "pretypecheck": "node scripts/write-version.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "prepack": "node ../../scripts/require-dist.mjs"
   },

@@ -1,6 +1,7 @@
-import { it, expect, beforeAll, describe } from 'vitest';
+import { it, expect, beforeAll, afterEach, describe } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { distProblem } from '../../../scripts/require-dist.mjs';
@@ -65,5 +66,28 @@ describe.each(Object.entries(manifest.bin))('%s --version', (_name, entry) => {
 
   it('still rejects a flag it does not know, so --version is not a catch-all', () => {
     expect(run(entry, ['--definitely-not-a-flag']).code).not.toBe(0);
+  });
+});
+
+// The nix flake's `aer` app copies only the built entry file, with no
+// package.json alongside it, unlike the npm install layout.
+describe('aer --version away from its own package.json', () => {
+  let scratchDir: string;
+
+  afterEach(() => {
+    if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
+  });
+
+  it('still reports the real version, mirroring the flake app layout', () => {
+    scratchDir = mkdtempSync(join(tmpdir(), 'aer-cli-no-manifest-'));
+    const copy = join(scratchDir, 'main.js');
+    copyFileSync(join(pkgRoot, 'dist/main.js'), copy);
+    const out = execFileSync(process.execPath, [copy, '--version'], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      cwd: scratchDir,
+    }).trim();
+    expect(out).toBe(manifest.version);
+    expect(out).not.toBe('unknown');
   });
 });
