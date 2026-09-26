@@ -46,6 +46,7 @@ import {
   type TranscriptUsageState,
 } from './claude-code-transcript.js';
 import { isInvokedDirectly } from './invoked-directly.js';
+import { envWithFile } from './env-file.js';
 import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 import { openSession, postEvents, completeSession, isRetryable, type ApiBase, type CallResult } from './transport.js';
@@ -935,6 +936,8 @@ export async function runHook(
   deps: RunHookDeps = {},
 ): Promise<void> {
   try {
+    // Credentials from an owner-only file, for this process alone.
+    env = envWithFile(argv, env, deps.logError ?? ((m) => process.stderr.write(m + '\n')));
     const harness = parseHarnessFlag(argv);
     const overrides = deps.fetch ? { fetch: deps.fetch } : {};
     const resolved = resolveSinkOptionsFromEnv(env, overrides);

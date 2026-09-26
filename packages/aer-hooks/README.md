@@ -68,10 +68,32 @@ command itself, so upgrading AER can change the command and need approving
 again. A project-local `.codex` layer also has to be a trusted project before
 its hooks load at all.
 
-Configure AER with the standard environment: `AER_API_KEY`, `AER_TENANT_ID`,
-`AER_AGENT_ID` (and optionally `AER_ENV_ID`, `AER_BASE_URL`, `AER_AGENT_VERSION`,
-`AER_PRINCIPAL_ID`). With any of the three required values missing, the hook does
-nothing.
+### Keep the key out of the agent's shell
+
+The hook needs `AER_API_KEY`, `AER_TENANT_ID` and `AER_AGENT_ID` (and optionally
+`AER_ENV_ID`, `AER_BASE_URL`, `AER_AGENT_VERSION`, `AER_PRINCIPAL_ID`). With any of
+the three required values missing, the hook does nothing.
+
+Do not export them in your shell profile. A harness passes its environment to every
+command its agent runs, so an exported key reaches all of them, and anything among
+them that loads an AER emitter (an instrumented app, a test, `aer smoke`) records
+under the agent the hooks record under. Put them in a file only you can read and
+point the hooks at it instead:
+
+```
+install -m 600 /dev/null ~/.config/aer/hooks.env
+$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_AGENT_ID=...
+aer-hooks install claude-code --env-file ~/.config/aer/hooks.env
+```
+
+Every command the installer writes then carries `--env-file <path>`. The hook reads
+only the file's `AER_*` lines and never puts the values into its own environment,
+so nothing it starts inherits them. It refuses a file that is a link,
+belongs to another user or can be read or written by anyone else, and says so on
+stderr without showing the contents. Installing again without `--env-file` keeps the
+file already configured. `AER_ENV_FILE=<path>` works in place of the flag.
+`aer-hooks status` and `aer doctor` warn when an AER key is exported in the shell
+they run in while hooks are wired.
 
 ## One AER session per harness session
 

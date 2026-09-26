@@ -46,6 +46,13 @@ const AER_GROUP_NAME = 'aer';
 export interface InstallOptions {
   /** Base directory that stands in for the user home. Defaults to os.homedir(). */
   dir?: string | undefined;
+  /**
+   * An owner-only file holding the AER credentials, read by the hook process
+   * alone. Written into every command as `--env-file`, so the key never has
+   * to be exported in the shell the harness and its agent run in. When
+   * omitted, a file an earlier install wrote is kept.
+   */
+  envFile?: string | undefined;
 }
 
 interface HookCommandEntry {
@@ -146,11 +153,27 @@ const LIFECYCLE_FLAG = '--lifecycle v2';
 // found empty against Claude Code 2.1.281, so cli.ts reads the harness's
 // own CLAUDE_CODE_SESSION_ID env var instead. --root-session still exists
 // as an explicit override for a caller that sets it itself.
-function harnessCommand(harness: Harness, event?: string): string {
-  const base = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
+function harnessCommand(harness: Harness, event?: string, envFile?: string): string {
+  let cmd = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
   // Antigravity omits the event name from the payload, so each registration
   // has to carry it.
-  return event === undefined ? base : `${base} --event ${event}`;
+  if (event !== undefined) cmd += ` --event ${event}`;
+  if (envFile !== undefined) cmd += ` --env-file ${shellSingleQuote(envFile)}`;
+  return cmd;
+}
+
+const ENV_FILE_IN_COMMAND = / --env-file '((?:[^']|'\\'')*)'/;
+
+/** The credential file an existing AER entry in this config already names, if any. */
+function existingEnvFile(config: unknown): string | undefined {
+  const text = JSON.stringify(config ?? {});
+  for (const cmd of text.match(/"command":"(?:[^"\\]|\\.)*"/g) ?? []) {
+    const command = JSON.parse(cmd.slice('"command":'.length)) as string;
+    if (!isAerEntry({ command })) continue;
+    const m = ENV_FILE_IN_COMMAND.exec(command);
+    if (m) return m[1]!.replace(/'\\''/g, "'");
+  }
+  return undefined;
 }
 
 /** One Antigravity entry: the command sits on the entry itself. */
@@ -167,10 +190,10 @@ interface AntigravityEntry {
  * nested typed-object form the others use is rejected outright, with
  * `command hook must specify 'command'` in the CLI log and nothing loaded.
  */
-function antigravityGroup(): Record<string, unknown> {
+function antigravityGroup(envFile?: string): Record<string, unknown> {
   const group: Record<string, unknown> = { enabled: true };
   for (const ev of ANTIGRAVITY_EVENTS) {
-    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev) };
+    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev, envFile) };
     if (ANTIGRAVITY_MATCHED.has(ev)) entry.matcher = '*';
     group[ev] = [entry];
   }
@@ -319,14 +342,16 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
   const base = baseDir(opts);
   const file = configPathFor(harness, base);
   const config = await readJsonOrAbort(file);
-  if (harness === 'antigravity') return installAntigravity(file, config);
+  if (opts.envFile !== undefined && !isSafeToPin(opts.envFile)) throw new Error('refusing an --env-file path with control characters');
+  const envFile = opts.envFile ?? existingEnvFile(config);
+  if (harness === 'antigravity') return installAntigravity(file, config, envFile);
 
   const existingHooks =
     typeof config['hooks'] === 'object' && config['hooks'] !== null && !Array.isArray(config['hooks'])
       ? ({ ...(config['hooks'] as Record<string, unknown>) } as HooksMap)
       : ({} as HooksMap);
 
-  const command = harnessCommand(harness);
+  const command = harnessCommand(harness, undefined, envFile);
   const events = harness === 'claude-code' ? CLAUDE_EVENTS : CODEX_EVENTS;
   const added: string[] = [];
   const alreadyPresent: string[] = [];
@@ -416,8 +441,9 @@ export interface UninstallResult {
 async function installAntigravity(
   file: string,
   config: Record<string, unknown>,
+  envFile: string | undefined,
 ): Promise<InstallResult> {
-  const want = antigravityGroup();
+  const want = antigravityGroup(envFile);
   if (JSON.stringify(config[AER_GROUP_NAME]) === JSON.stringify(want)) {
     return {
       harness: 'antigravity',
