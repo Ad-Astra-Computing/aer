@@ -56,7 +56,8 @@ type HeaderGetter = (name: string) => string | null | undefined;
  * HTTP status for a denial reason:
  *  - 403  token is authentic but lacks authority: revoked / introspection says
  *         inactive / insufficient_scope (RFC 6750 maps insufficient_scope → 403)
- *  - 503  introspection unreachable + fail-closed (liveness unknown - not the
+ *  - 503  introspection unreachable + fail-closed, or the JWKS unreachable
+ *         (jwks_unavailable): the guard could not decide (liveness unknown - not the
  *         client's fault, and the token may well be valid)
  *  - 401  everything else: missing / malformed / bad signature / expired /
  *         wrong audience / wrong issuer / DPoP proof failures (RFC 9449 uses 401
@@ -64,7 +65,7 @@ type HeaderGetter = (name: string) => string | null | undefined;
  */
 export function statusForReason(reason: string): number {
   if (reason === 'revoked' || reason === 'insufficient_scope') return 403;
-  if (reason === 'introspection_unavailable') return 503;
+  if (reason === 'introspection_unavailable' || reason === 'jwks_unavailable') return 503;
   return 401;
 }
 
