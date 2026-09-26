@@ -69,6 +69,13 @@ const hookPayload = (sessionId, cwd, event, extra = {}) => JSON.stringify({
   ...extra,
 });
 
+/**
+ * Whether a registered command is ours. The installer writes a bare
+ * `aer-hook` when one is on a persistent PATH, and otherwise pins node and the
+ * absolute path of the installed cli.js.
+ */
+const isAerHook = (cmd) => /(^|[\s/"'])aer-hook(\s|$)|aer-hooks\/dist\/cli\.js/.test(cmd);
+
 /** The aer-hook commands registered for one event in a harness config. */
 function commandsFor(config, event) {
   return (config.hooks?.[event] ?? []).flatMap((g) => (g.hooks ?? []).map((h) => h.command)).filter(Boolean);
@@ -100,7 +107,7 @@ export default function register(registry, env) {
     c.assert.exit(status, 0, 'candidate aer-hooks status --json');
     const stale = JSON.parse(status.stdout).hooks?.stale_registrations ?? [];
     c.note(`stale before re-install: ${stale.map((s) => `${s.harness}:${s.reason}`).join(', ') || 'none'}`);
-    const seededCmd = commandsFor(seeded, 'PreToolUse').find((x) => x.startsWith('aer-hook'));
+    const seededCmd = commandsFor(seeded, 'PreToolUse').find(isAerHook);
     if (!/--lifecycle v2/.test(seededCmd ?? '')) {
       for (const h of ['claude-code', 'codex']) {
         c.assert.ok(stale.some((s) => s.harness === h), `status did not flag the old ${h} registration (${seededCmd})`);
@@ -120,12 +127,12 @@ export default function register(registry, env) {
     c.assert.equal(cfg.theme, 'user-setting', 'a user setting survived the upgrade');
     c.assert.ok(commandsFor(cfg, 'PreToolUse').includes('user-own-hook --keep-me'), 'the user\'s own hook survived the upgrade');
     for (const [event] of Object.entries(cfg.hooks)) {
-      const ours = commandsFor(cfg, event).filter((x) => x.startsWith('aer-hook'));
+      const ours = commandsFor(cfg, event).filter(isAerHook);
       c.assert.ok(ours.length <= 1, `${event} has ${ours.length} aer-hook registrations: ${ours.join(' | ')}`);
     }
     const codexCfg = readJson(join(p.home, '.codex', 'hooks.json'));
     for (const event of Object.keys(codexCfg.hooks)) {
-      const ours = commandsFor(codexCfg, event).filter((x) => x.startsWith('aer-hook'));
+      const ours = commandsFor(codexCfg, event).filter(isAerHook);
       c.assert.ok(ours.length <= 1, `codex ${event} has ${ours.length} aer-hook registrations`);
     }
   }, { timeoutMs: 600_000 });
@@ -143,7 +150,7 @@ export default function register(registry, env) {
     const cfg = readJson(join(p.home, '.claude', 'settings.json'));
     const sid = randomUUID();
     const fire = async (event, extra) => {
-      const cmd = commandsFor(cfg, event).find((x) => x.startsWith('aer-hook'));
+      const cmd = commandsFor(cfg, event).find(isAerHook);
       c.assert.ok(cmd, `no aer-hook registered for ${event}`);
       // Run the registered command string exactly as the harness would.
       const r = await c.run('sh', ['-c', cmd], { env: hookEnv, cwd: p.dir, input: hookPayload(sid, p.dir, event, extra), timeoutMs: 30_000 });
@@ -168,7 +175,7 @@ export default function register(registry, env) {
     const r0 = await c.run(join(p.binDir, 'aer-hooks'), ['install', 'claude-code'], { env: p.mkEnv(), cwd: p.dir });
     c.assert.exit(r0, 0, 'old install');
     const cfg = readJson(join(p.home, '.claude', 'settings.json'));
-    const cmd = commandsFor(cfg, 'PreToolUse').find((x) => x.startsWith('aer-hook'));
+    const cmd = commandsFor(cfg, 'PreToolUse').find(isAerHook);
 
     const sink = await c.sink();
     const hookEnv = p.mkEnv(identity(sink));
