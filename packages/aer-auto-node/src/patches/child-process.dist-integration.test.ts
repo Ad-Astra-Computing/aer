@@ -2,9 +2,10 @@
 // real consumer can reach node:child_process by: a named import (which binds
 // its function reference before the patch is installed, the exact shape that
 // let a secret-bearing shell command slip past `safeExtract` and into a
-// signed record), promisify() of that same named import, execSync (not
-// patched at all, so it must simply produce no leaking event), and
-// default-import property access for exec/execFile/spawn/fork. Every case
+// signed record), promisify() of that same named import, a named-import
+// execSync (bound before the patch, so it must simply produce no leaking
+// event), and default-import property access for exec/execFile/spawn/fork
+// and execSync. Every case
 // plants a secret marker in the command line and asserts it never survives
 // into a captured event, and that a captured `process.exec` command is
 // always a bare executable basename.
@@ -91,7 +92,20 @@ describe('installChildProcessPatch against the built dist', () => {
     uninstall();
   });
 
-  it('execSync is not patched: no event is emitted, so nothing can leak', () => {
+  it('default-import cp.execSync: recorded once by basename, secret never leaks', () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+
+    cpDefault.execSync(`${NODE} -e "process.exit(0)" ${SECRET}`);
+
+    const execEvents = events.filter((e) => e.event_type === 'process.exec');
+    expect(execEvents).toHaveLength(1);
+    expect(execEvents[0]?.payload['command']).toBe(path.basename(NODE));
+    assertNoSecretLeak(events);
+    uninstall();
+  });
+
+  it('named-import execSync binds before the patch: no event, so nothing can leak', () => {
     const { capture, events } = withCapture();
     const uninstall = installChildProcessPatch(capture);
 

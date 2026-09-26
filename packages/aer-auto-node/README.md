@@ -169,6 +169,11 @@ binds to the original function before the patch applies and is not captured; use
 default-import property access (`cp.spawn(...)`) or `globalThis.fetch` so the
 patched function is resolved at call time.
 
+The synchronous forms `spawnSync`, `execSync` and `execFileSync` are captured the
+same way as their asynchronous counterparts: a `process.exec` event before the
+call and a `process.exit` event with the exit code after it, including when the
+call throws.
+
 `exec` and `execFile` are the one exception to "not captured": Node's own `exec()`
 implementation calls the shared, patched `execFile` property internally regardless
 of which import style the caller used, so a named-import `exec` (or

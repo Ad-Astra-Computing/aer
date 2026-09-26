@@ -1,7 +1,9 @@
-// Patch node:child_process spawn/exec/execFile/fork -> process.exec / process.exit.
+// Patch node:child_process spawn/exec/execFile/fork and their synchronous
+// forms spawnSync/execSync/execFileSync -> process.exec / process.exit.
 //
 // Records the command basename and a redacted arg count (never the argument
-// values). Completion is observed via the ChildProcess 'exit'/'error' events.
+// values). Completion is observed via the ChildProcess 'exit'/'error' events,
+// or, for a synchronous call, from its return value or thrown error.
 // Idempotent, restores originals, never throws into the host.
 
 import cp from 'node:child_process';
@@ -38,6 +40,7 @@ export function installChildProcessPatch(capture: Capture): () => void {
 
   const originals = {
     spawn: cp.spawn, exec: cp.exec, execFile: cp.execFile, fork: cp.fork,
+    spawnSync: cp.spawnSync, execSync: cp.execSync, execFileSync: cp.execFileSync,
   };
 
   const wrap = (original: (...a: never[]) => unknown, kind: CmdKind) =>
@@ -89,6 +92,44 @@ export function installChildProcessPatch(capture: Capture): () => void {
       return child;
     };
 
+  // A synchronous call has no ChildProcess to listen on: the exit is read off
+  // the return value (spawnSync) or the thrown error (execSync, execFileSync).
+  const wrapSync = (original: (...a: never[]) => unknown, kind: CmdKind) =>
+    function wrappedSync(this: unknown, ...args: unknown[]): unknown {
+      if (inWrappedCall) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (original as any).apply(this, args);
+      }
+      const meta = safeExtract(kind, args);
+      const start = Date.now();
+      safeCapture(capture, {
+        event_type: 'process.exec',
+        payload: {
+          command: meta.command,
+          args_redacted: meta.argsRedacted,
+          ...(meta.commandKnown === false ? { command_known: false } : {}),
+        },
+      });
+      let result: unknown;
+      inWrappedCall = true;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        result = (original as any).apply(this, args);
+      } catch (err) {
+        safeCapture(capture, { event_type: 'process.exit', payload: syncExitPayload(err, start) });
+        throw err;
+      } finally {
+        inWrappedCall = false;
+      }
+      safeCapture(capture, {
+        event_type: 'process.exit',
+        // spawnSync returns its outcome; execSync and execFileSync return
+        // output only when the child exited 0.
+        payload: kind === 'spawn' ? syncExitPayload(result, start) : { exit_code: 0, duration_ms: Date.now() - start },
+      });
+      return result;
+    };
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cp.spawn = wrap(originals.spawn as any, 'spawn') as typeof cp.spawn;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -97,12 +138,21 @@ export function installChildProcessPatch(capture: Capture): () => void {
   cp.execFile = wrap(originals.execFile as any, 'execFile') as typeof cp.execFile;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cp.fork = wrap(originals.fork as any, 'fork') as typeof cp.fork;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  cp.spawnSync = wrapSync(originals.spawnSync as any, 'spawn') as typeof cp.spawnSync;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  cp.execSync = wrapSync(originals.execSync as any, 'exec') as typeof cp.execSync;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  cp.execFileSync = wrapSync(originals.execFileSync as any, 'execFile') as typeof cp.execFileSync;
 
   const restore = (): void => {
     cp.spawn = originals.spawn;
     cp.exec = originals.exec;
     cp.execFile = originals.execFile;
     cp.fork = originals.fork;
+    cp.spawnSync = originals.spawnSync;
+    cp.execSync = originals.execSync;
+    cp.execFileSync = originals.execFileSync;
   };
   slot[PATCHED] = { restore };
 
@@ -192,6 +242,25 @@ function safeExtract(kind: CmdKind, args: unknown[]): ExecMeta {
     return execMeta(safeProgramName(first), redactArgs(list));
   } catch {
     return execMeta(null, redactArgs([]));
+  }
+}
+
+/**
+ * The process.exit payload for a synchronous call, from a spawnSync result or
+ * the error execSync/execFileSync threw. Both carry `status`, `signal`, `pid`
+ * and, when the child never started, `error` or an errno `code`. Never reads
+ * stdout, stderr or the error message.
+ */
+function syncExitPayload(outcome: unknown, start: number): Record<string, unknown> {
+  const duration_ms = Date.now() - start;
+  try {
+    const o = (outcome ?? {}) as { status?: unknown; signal?: unknown; pid?: unknown; error?: unknown; code?: unknown };
+    const pid = typeof o.pid === 'number' && o.pid > 0 ? { pid: o.pid } : {};
+    if (typeof o.status === 'number') return { ...pid, exit_code: o.status, duration_ms };
+    if (typeof o.signal === 'string') return { ...pid, exit_code: -1, duration_ms };
+    return { error: true, duration_ms };
+  } catch {
+    return { error: true, duration_ms };
   }
 }
 
