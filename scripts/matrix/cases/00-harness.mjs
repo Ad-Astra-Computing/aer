@@ -47,4 +47,18 @@ export default function register(registry) {
     c.assert.ok(r.json && r.json.error && r.json.status === undefined, `a case process reached the network: ${r.stdout.trim()}`);
     c.note(`outbound fetch failed as intended: ${r.json.error}`);
   });
+
+  t.case('the sink refuses a session open the real API would refuse', async (c) => {
+    // A lax sink once answered 201 to opens with no agent_version, which the
+    // API refuses, so a client that recorded nothing in production passed.
+    const sink = await c.sink();
+    const open = (body) => fetch(`${sink.url}/v1/sessions`, { method: 'POST', headers: { authorization: 'Bearer k', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const good = { tenant_id: crypto.randomUUID(), agent_id: crypto.randomUUID(), environment_id: crypto.randomUUID(), agent_version: '1' };
+    c.assert.equal((await open(good)).status, 201, 'a complete open');
+    const { agent_version: _v, ...noVersion } = good;
+    c.assert.equal((await open(noVersion)).status, 400, 'an open without agent_version');
+    c.assert.equal((await open({ ...good, environment_id: 'prod' })).status, 400, 'an open with an environment_id that is not a UUID');
+    const { environment_id: _e, ...noEnv } = good;
+    c.assert.equal((await open(noEnv)).status, 400, 'an open without environment_id');
+  });
 }
