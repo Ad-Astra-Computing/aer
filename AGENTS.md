@@ -83,10 +83,10 @@ An AER account, from [aer.run](https://aer.run). Either the person runs
 a chat message you print back; do not read `~/.config/aer/credentials.json`
 or any other credential store on the person's behalf.
 
-Every `aer` subcommand resolves that key in a fixed order: a command-line
-flag, then `AER_API_KEY` (or `AER_TENANT_API_KEY`), then `aer.config.json`
-for a base URL, then the credentials `aer login` stored on disk. An explicit
-flag or environment key always wins over a stored login. The collector
+Every `aer` subcommand resolves that key in a fixed order: `AER_API_KEY`
+(or `AER_TENANT_API_KEY`) first, then `aer.config.json` for a base URL, then
+the credentials `aer login` stored on disk. No command takes the key as a
+flag. An environment key always wins over a stored login. The collector
 (`aer-auto-node`) and the harness hooks (`aer-hooks`) read the environment
 directly and never consult a stored login, so a running agent still needs
 `AER_API_KEY` set in its own process.

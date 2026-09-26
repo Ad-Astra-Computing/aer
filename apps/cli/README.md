@@ -59,12 +59,12 @@ Running `aer login` again for a host you are already logged into revokes the
 previous key first, so repeated logins do not pile up live keys server-side.
 
 Every tenant command, including `aer import claude-code`, resolves
-credentials in this order: an explicit flag, then the environment
-(`AER_TENANT_API_KEY` / `AER_API_KEY`, as before), then `aer.config.json`,
-then the credentials file `aer login` wrote for the base URL in use. An
-explicit environment key always wins over a stored one, with one exception:
-if that key came from the environment (or a flag) and the base URL came only
-from `aer.config.json` in the current directory and differs from the
+credentials in this order: the environment (`AER_TENANT_API_KEY` /
+`AER_API_KEY`, as before), then `aer.config.json`, then the credentials file
+`aer login` wrote for the base URL in use. No command takes the key as a
+flag. An environment key always wins over a stored one, with one exception:
+if that key came from the environment and the base URL came only from
+`aer.config.json` in the current directory and differs from the
 default, the command refuses rather than send your key to a host a cloned
 repo chose. Set `AER_BASE_URL` yourself to confirm you mean it.
 
