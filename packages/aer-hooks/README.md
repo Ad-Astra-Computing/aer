@@ -43,9 +43,9 @@ That command is idempotent: running it again after an upgrade updates the
 existing registration in place, rather than leaving it on an older hook
 lifecycle. `npx @adastracomputing/aer@next doctor` (from the `aer` CLI) also
 watches for a registration that has fallen behind, whether that is a missing
-`--lifecycle v2`, an installed `aer-hooks` older than what is on `PATH` now
-or a nix-profile copy of `aer-hook` shadowing the project's own, and prints
-the exact re-run that fixes each one.
+`--lifecycle v2`, an `aer-hook` on `PATH` older than the `aer-hooks` release
+the CLI carries or a nix-profile copy of `aer-hook` shadowing the project's
+own, and prints the exact re-run that fixes each one.
 
 Check what is wired, and whether each wired command still resolves, with:
 

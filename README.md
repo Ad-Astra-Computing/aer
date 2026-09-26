@@ -170,8 +170,8 @@ npx @adastracomputing/aer-hooks@next install claude-code
 
 `codex` and `opencode` work the same way. `status` shows what is wired, and
 lists any registration that has fallen behind: missing the current hook
-lifecycle, running an older `aer-hooks` release or shadowed by a copy on a
-different `PATH` entry. `uninstall` removes AER's entries and only those.
+lifecycle, running an older `aer-hooks` release or shadowed by a nix-profile copy of
+`aer-hook` that sits ahead of the project's own on `PATH`. `uninstall` removes AER's entries and only those.
 Every config write keeps a backup, and running `install` again is safe: it
 updates an existing registration in place instead of duplicating it, which is
 also how you pick up a newer hook lifecycle after upgrading.
@@ -207,9 +207,9 @@ also run `aer login`:
 Non-secret identity (tenant, agent and environment) lives in
 `aer.config.json`, written by `init` or `aer link`. The `aer` CLI itself
 resolves a tenant key in a different order, so a person who signed in with
-`aer login` does not need `AER_API_KEY` set to use it: a command-line flag,
-then `AER_API_KEY` (or `AER_TENANT_API_KEY`), then the credentials `aer
-login` stored for the base URL in use. An environment key always wins over
+`aer login` does not need `AER_API_KEY` set to use it: `AER_API_KEY` (or
+`AER_TENANT_API_KEY`) first, then the credentials `aer login` stored for the
+base URL in use. An environment key always wins over
 a stored login.
 
 ## Documentation
