@@ -44,4 +44,17 @@ describe('aer-mcp-recorder --version', () => {
     const r = run(['--version']);
     expect(r.out).not.toContain('transparent MCP proxy');
   });
+
+  // A --version further along belongs to the wrapped server, so the
+  // recorder must pass it through and run the command.
+  it('passes a later --version through to the wrapped command', () => {
+    const r = run(['--', process.execPath, '-e', 'console.log("wrapped-ran:" + process.argv.slice(1).join(","))', '--', '--version']);
+    expect(r.out).toContain('wrapped-ran:--version');
+    expect(r.out.trim()).not.toBe(manifest.version);
+  });
+
+  it('passes a later -V through to the wrapped command', () => {
+    const r = run(['--', process.execPath, '-e', 'console.log("wrapped-ran:" + process.argv.slice(1).join(","))', '--', '-V']);
+    expect(r.out).toContain('wrapped-ran:-V');
+  });
 });

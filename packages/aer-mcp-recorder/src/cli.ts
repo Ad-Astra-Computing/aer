@@ -90,7 +90,10 @@ export async function main(argv: string[] = process.argv, env: NodeJS.ProcessEnv
   // asking a binary what it is must never depend on there being a wrapped
   // command to run. Checked ahead of parseArgs, which would otherwise treat
   // it as an unrecognized flag with no command after it and print usage.
-  if (argv.slice(2).some((a) => a === '--version' || a === '-V')) {
+  // Only the first argument counts, as with --help: a --version after the
+  // command belongs to the wrapped server and must reach it.
+  const first = argv[2];
+  if (first === '--version' || first === '-V') {
     process.stdout.write(COLLECTOR_VERSION + '\n');
     return 0;
   }
