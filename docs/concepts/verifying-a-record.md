@@ -5,7 +5,7 @@ Verification is the part that needs nothing from us. Given a bundle,
 machine, with no network calls and no account.
 
 ```sh
-npx @adastracomputing/aer verify <aer-id>
+npx @adastracomputing/aer@next verify <aer-id>
 ```
 
 The command fetches the bundle and the public key first, then does all of

@@ -10,11 +10,13 @@ ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Install
 
-The harness will run `aer-hook` on every event, so `aer-hook` has to be on the
-harness's `PATH` for as long as you want recording. Put it there first:
+Every package here is pre-1.0, so install the `next` dist-tag until this
+README says otherwise. The harness will run `aer-hook` on every event, so
+`aer-hook` has to be on the harness's `PATH` for as long as you want
+recording. Put it there first:
 
 ```
-npm install -g @adastracomputing/aer-hooks          # npm
+npm install -g @adastracomputing/aer-hooks@next     # npm
 nix profile add github:Ad-Astra-Computing/aer#tools  # Nix, also installs the aer CLI
 ```
 
@@ -34,19 +36,27 @@ carries its own `timeout`, because that harness shares 1.5 seconds across
 every SessionEnd hook and completing a record takes longer than that. If `aer-hook` is not on `PATH` at install
 time, the installer writes the absolute path of the copy it is running from and
 says so, which keeps recording working but ties the config to that install
-location. `npx @adastracomputing/aer-hooks install ...` works the same way, and
+location. `npx @adastracomputing/aer-hooks@next install ...` works the same way, and
 is the case that needs the absolute path, since `npx` puts nothing on `PATH`.
+
+That command is idempotent: running it again after an upgrade updates the
+existing registration in place, rather than leaving it on an older hook
+lifecycle. `npx @adastracomputing/aer@next doctor` (from the `aer` CLI) also
+watches for a registration that has fallen behind, whether that is a missing
+`--lifecycle v2`, an `aer-hook` on `PATH` older than the `aer-hooks` release
+the CLI carries or a nix-profile copy of `aer-hook` shadowing the project's
+own, and prints the exact re-run that fixes each one.
 
 Check what is wired, and whether each wired command still resolves, with:
 
 ```
-npx @adastracomputing/aer-hooks status
+npx @adastracomputing/aer-hooks@next status
 ```
 
 Remove AER's entries (and only AER's) with:
 
 ```
-npx @adastracomputing/aer-hooks uninstall claude-code
+npx @adastracomputing/aer-hooks@next uninstall claude-code
 ```
 
 ### Codex will not run the hook until you trust it
@@ -79,6 +89,16 @@ tool sequence, parallel subagents). A short-lived lock file next to the store
 makes the "is there already a session" check and the "open one and save it" write
 atomic across processes, so concurrent hooks converge on one AER session instead
 of racing to open two.
+
+On Claude Code, a subagent's tool calls join its lead session's record rather
+than opening one of their own: the hook reads the lead's session id out of
+its own environment, and falls back to checking a short chain of parent
+processes when a harness version does not expose it. `--root-session <id>`
+overrides both, for a caller that already knows which session a subagent
+belongs to. A subagent event that still cannot find its lead is dropped
+rather than starting a session of its own, and the drop is counted on the
+closing record so a run that lost events is visibly incomplete rather than
+silently split across two records.
 
 ## Redaction, with no way to turn it off
 
