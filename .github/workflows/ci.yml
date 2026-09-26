@@ -169,6 +169,23 @@ jobs:
             echo "::endgroup::"
           done
 
+      # A version an install layout cannot read back is worse than none: it
+      # reads as confirmation. This runs every app straight from the flake
+      # derivation, the same layout a Nix user gets, not the repo checkout,
+      # so a build-time version baked in wrong or left out fails right here.
+      - name: Every binary must report its version from the flake
+        run: |
+          for app in aer aer-hooks aer-hook aer-mcp-recorder; do
+            echo "::group::nix run .#$app -- --version"
+            out="$(nix run ".#$app" -- --version 2>&1)"
+            printf '%s\n' "$out"
+            if printf '%s' "$out" | grep -Eiq 'unknown'; then
+              echo "::error::$app --version could not read its own version"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
       # The wiring a coding harness gets told to use, end to end: install into
       # a scratch directory, confirm it reports itself wired, then remove it.
       - name: Harness wiring must work from the installed tools
