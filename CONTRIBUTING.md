@@ -38,7 +38,10 @@ filters and the JSON report.
 No case may reach the AER service. The runner drops every `AER_*` variable it
 was started with, refuses to start a child whose environment or arguments name
 `api.aer.run`, and routes each case process's non-loopback traffic to a proxy
-that nothing listens on.
+that nothing listens on. That proxy relies on Node's `NODE_USE_ENV_PROXY`, which
+covers both `fetch` and `node:http(s)` only from Node 22.21 and 24.5 (never 23),
+so the matrix refuses to start on an older Node. The `harness` suite checks the
+guard first on every run, and if any of its cases fails no other suite runs.
 
 The one exception is `--live`, off by default. A positive `aer verify` verdict
 needs a record signed by a key in the CLI's pinned production trust root, and

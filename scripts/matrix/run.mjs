@@ -21,7 +21,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRegistry, runSuites, table } from './lib/harness.mjs';
-import { scrubOwnEnv } from './lib/proc.mjs';
+import { scrubOwnEnv, proxyGuardSupported, PROXY_GUARD_FLOOR } from './lib/proc.mjs';
 import { packLocal, resolveRegistry, installInto, verifyInstalled, makeInstall, npmEnvFor, publishable } from './lib/install.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -109,6 +109,12 @@ async function main() {
   }
   if (opts.help) { process.stdout.write(`${HELP}\n`); return; }
   const log = (m) => process.stderr.write(`${m}\n`);
+  // The network guard that keeps cases off production depends on Node's
+  // own proxy support. Refuse rather than run a matrix that only looks safe.
+  if (!opts.list && !proxyGuardSupported(process.version)) {
+    process.stderr.write(`the matrix needs ${PROXY_GUARD_FLOOR}: this is ${process.version}, whose NODE_USE_ENV_PROXY does not cover both fetch and node:http(s), so a case could reach a real service. Use a newer Node.\n`);
+    process.exit(2);
+  }
   const scrubbed = scrubOwnEnv();
   if (scrubbed.length) log(`dropped ${scrubbed.join(', ')} from the matrix environment; no case may inherit them`);
   const out = opts.json ? log : (m) => process.stdout.write(`${m}\n`);
@@ -177,7 +183,7 @@ async function main() {
       const reg = await loadRegistry(env);
       const only = opts.only.length ? opts.only : ['upgrade'];
       log(`\nupgrade path: ${opts.upgradeFrom} -> ${opts.source === 'local' ? 'local tarballs' : opts.tag}`);
-      report.results = await runSuites(reg, env, { only });
+      report.results = await runSuites(reg, env, { only, gates: ['harness'] });
     } else {
       if (!opts.installDir) {
         installDir = join(workRoot, 'install');
@@ -197,7 +203,7 @@ async function main() {
       const unknown = only.filter((n) => !reg.suites.some((s) => s.name === n));
       if (unknown.length) throw new Error(`unknown suite(s): ${unknown.join(', ')}; see --list`);
       log(`\nrunning ${only.length} suites against ${opts.source === 'local' ? 'local tarballs' : `${opts.tag} on npmjs`} on Node ${process.version}`);
-      report.results = await runSuites(reg, env, { only });
+      report.results = await runSuites(reg, env, { only, gates: ['harness'] });
     }
   } catch (err) {
     log(`\nmatrix setup failed: ${err?.stack ?? err}`);
@@ -205,6 +211,10 @@ async function main() {
     exitCode = 2;
   }
 
+  if (report.results.aborted) {
+    report.aborted = `the ${report.results.aborted} suite failed, so no other suite ran`;
+    exitCode = 2;
+  }
   report.finishedAt = new Date().toISOString();
   const failed = report.results.filter((r) => r.status === 'FAIL');
   const known = report.results.filter((r) => r.status === 'KNOWN');
@@ -230,6 +240,7 @@ async function main() {
     const skips = report.results.filter((r) => r.status === 'SKIP');
     section('SKIPPED', skips);
   }
+  if (report.aborted) out(`\nABORTED: ${report.aborted}`);
   out(`\nNode ${process.version} on ${report.platform}; source ${opts.source}${opts.source === 'registry' ? ` (${opts.tag})` : ''}${opts.upgradeFrom ? `; upgrade from ${opts.upgradeFrom}` : ''}`);
 
   if (opts.report) writeFileSync(opts.report, JSON.stringify(report, null, 2));

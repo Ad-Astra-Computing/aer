@@ -23,6 +23,25 @@ export const PRODUCTION_HOST = 'api.aer.run';
 const BLACKHOLE_PROXY = 'http://127.0.0.1:9';
 const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy', 'NODE_USE_ENV_PROXY'];
 
+/**
+ * Whether this Node honours NODE_USE_ENV_PROXY for fetch AND node:http(s).
+ * fetch gained it in 24.0 and 22.21, the http and https global agents in
+ * 24.5 and 22.21 (Node's http.md, Built-in Proxy Support). 23.x never had
+ * the http half. Below this the blackhole proxy silently does nothing.
+ */
+export function proxyGuardSupported(version = process.version) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version));
+  if (!m) return false;
+  const [major, minor] = [Number(m[1]), Number(m[2])];
+  if (major >= 25) return true;
+  if (major === 24) return minor >= 5;
+  if (major === 22) return minor >= 21;
+  return false;
+}
+
+/** The versions proxyGuardSupported accepts, for the refusal message. */
+export const PROXY_GUARD_FLOOR = 'Node 22.21, 24.5 or later (not 23)';
+
 /** Raised when a case would hand a child process a production target. */
 export class ProductionTargetError extends Error {}
 

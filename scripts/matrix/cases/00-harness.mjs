@@ -1,6 +1,13 @@
 /**
- * The matrix's own safety net. These run first: if the guard that keeps cases
- * off the production API is broken, nothing after it should be trusted.
+ * The matrix's own safety net. These run first, whatever --only says, and a
+ * failure here stops the run before any other suite starts.
+ *
+ * The primary guard is the blackhole proxy: it covers every Node process a
+ * case starts, including grandchildren (a workload's own spawns, a package
+ * script) that build their own environment. The refusal in run() only sees
+ * the environment the runner hands to its direct child, so it is a second
+ * line, not the first. The proxy needs a Node whose NODE_USE_ENV_PROXY covers
+ * fetch and node:http(s); run.mjs refuses to start on anything older.
  */
 import { run, ProductionTargetError, PRODUCTION_HOST } from '../lib/proc.mjs';
 

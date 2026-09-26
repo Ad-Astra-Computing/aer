@@ -149,10 +149,15 @@ export function makeContext(env, suite, caseName) {
   return ctx;
 }
 
-export async function runSuites(registry, env, { only } = {}) {
+/**
+ * Run the suites in registry order. A suite named in `gates` guards the rest:
+ * if any of its cases fails, nothing after it runs and the returned array
+ * carries `aborted` set to that suite's name.
+ */
+export async function runSuites(registry, env, { only, gates = [] } = {}) {
   const results = [];
   for (const suite of registry.suites) {
-    if (only && !only.includes(suite.name)) continue;
+    if (only && !only.includes(suite.name) && !gates.includes(suite.name)) continue;
     for (const c of suite.cases) {
       const base = { suite: suite.name, pkg: suite.pkg, case: c.name };
       if (c.kind === 'skip') {
@@ -191,6 +196,11 @@ export async function runSuites(registry, env, { only } = {}) {
       results.push(r);
       const extra = status === 'PASS' ? '' : [detail, ...ctx.notes.map((n) => `note: ${n}`)].join('\n');
       env.log(`  ${status.padEnd(5)} ${suite.name} :: ${c.name} (${ms} ms)${extra ? `\n        ${extra.split('\n').join('\n        ')}` : ''}`);
+    }
+    if (gates.includes(suite.name) && results.some((r) => r.suite === suite.name && r.status === 'FAIL')) {
+      env.log(`\nthe ${suite.name} suite failed: stopping before any other suite runs`);
+      results.aborted = suite.name;
+      return results;
     }
   }
   return results;
