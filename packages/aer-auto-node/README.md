@@ -39,7 +39,7 @@ Configuration: non-secret identity lives in `aer.config.json`; the only secret,
 ```
 
 ```bash
-export AER_API_KEY=…          # the only secret env var
+export AER_API_KEY=…          # the only secret env var (AER_TENANT_API_KEY also works)
 # optional CI overrides: AER_TENANT_ID / AER_AGENT_ID / AER_ENV_ID / AER_BASE_URL
 ```
 
