@@ -259,6 +259,31 @@ describe('a long interactive session', () => {
     expect(b!.events.map((e) => e.payload['phase'])).toEqual(['turn_start']);
   });
 
+  it('a session end right after a checkpoint opens no one-event record', async () => {
+    const e = env({ AER_HOOK_CHECKPOINT_MINUTES: '30' });
+    const lead = { session_id: 'cc-end-after-ck', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' }, { now: T0, env: e });
+    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 31 * MIN, env: e });
+    await fire({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }, { now: T0 + 31 * MIN + 1000, env: e });
+    expect(api.opens()).toHaveLength(1);
+    expect(api.completes()).toHaveLength(1);
+    expect(api.sessions.size).toBe(1);
+    // The session is over: a late subagent event does not reopen it either.
+    await fire({ ...lead, hook_event_name: 'PreToolUse', tool_name: 'Grep', tool_input: {}, agent_id: 'late' }, { now: T0 + 32 * MIN, env: e });
+    expect(api.opens()).toHaveLength(1);
+  });
+
+  it('a session end after a quiet period closes the record it ends, not a new one', async () => {
+    const lead = { session_id: 'cc-end-after-quiet', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' }, { now: T0 });
+    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 5 * MIN });
+    await fire({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }, { now: T0 + 70 * MIN });
+    expect(api.sessions.size).toBe(1);
+    expect(api.completes()).toHaveLength(1);
+    const [a] = [...api.sessions.values()];
+    expect(a!.events.map((x) => x.payload['phase'])).toEqual(['session_start', 'turn_end', 'session_end']);
+  });
+
   it('takes the quiet period from AER_HOOK_QUIET_MINUTES', async () => {
     const e = env({ AER_HOOK_QUIET_MINUTES: '10' });
     const lead = { session_id: 'cc-quiet10', cwd: dir };

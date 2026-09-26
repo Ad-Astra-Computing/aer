@@ -893,16 +893,27 @@ async function orchestrateAndEmit(
       state = freshState(at);
     }
     if (evidence.registered !== undefined) state.eventsRegistered = evidence.registered;
+    const recordedBefore = state.seq > 0;
 
     // Back after a quiet period: close the record the quiet period ended,
-    // and start this event in a new one.
-    if (quietMs > 0 && state.session !== undefined && at - state.lastActivityAt >= quietMs) {
+    // and start this event in a new one. A session end instead joins the
+    // record it ends, rather than opening one to hold nothing else.
+    if (quietMs > 0 && !completes(event) && state.session !== undefined && at - state.lastActivityAt >= quietMs) {
       state.session.closeFirst = true;
       if (state.complete === 'checkpoint') delete state.complete;
       startSegment(state, at, ctx.storeKey, env);
     }
 
     const events = buildQueuedEvents(event, state, at, evidence, ctx.storeKey, env, true);
+    // The end of a session whose last record a checkpoint already completed:
+    // opening a record to hold only this marker would add an empty record to
+    // the agent's history. What it would report is on the record that closed.
+    if (completes(event) && recordedBefore && state.session === undefined && state.outbox.length === 0
+        && events.every((e) => e.type === 'collector.report')) {
+      finishRecord(state, 'end', ctx, at);
+      state.lastActivityAt = at;
+      return { result: 'ended' as const, save: state };
+    }
     enqueue(state, events);
     state.lastActivityAt = at;
 
@@ -927,6 +938,7 @@ async function orchestrateAndEmit(
     noteSubagentEventUnattached(storeKey, env, now);
     return;
   }
+  if (queued === 'ended') return;
 
   if (event.kind === 'session_start' && !isSubagent) {
     const startTimeOf = opts.deps.processStartTime ?? defaultProcessStartTime;
