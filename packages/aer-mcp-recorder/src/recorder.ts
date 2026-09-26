@@ -12,9 +12,10 @@
 
 import type { EventSink } from './sink.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
+import { COLLECTOR_VERSION } from './version.generated.js';
 
 export const COLLECTOR_NAME = '@adastracomputing/aer-mcp-recorder';
-export const COLLECTOR_VERSION = '0.1.0';
+export { COLLECTOR_VERSION };
 
 const MAX_PENDING = 4096;
 
