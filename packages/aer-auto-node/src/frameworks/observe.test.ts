@@ -14,8 +14,11 @@ const dist = join(here, '..', '..', 'dist');
 // tests would only have worked on the machine that created it.
 let fixtures: string;
 let harness: string;
+// Never the developer's AER_* settings or agent-shell markers: a shell can
+// carry real production credentials, and a Claude Code tool shell keeps the
+// collector from starting at all.
 const childEnv = (): NodeJS.ProcessEnv => ({
-  ...process.env,
+  ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AER_') && k !== 'CLAUDECODE' && k !== 'CLAUDE_CODE_ENTRYPOINT')),
   AER_OBSERVE_MODULE: pathToFileURL(join(dist, 'frameworks', 'observe.js')).href,
   AER_COLLECTOR_MODULE: pathToFileURL(join(dist, 'collector.js')).href,
   AER_CONFIG_MODULE: pathToFileURL(join(dist, 'config.js')).href,
