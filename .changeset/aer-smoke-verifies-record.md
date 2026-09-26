@@ -1,5 +1,5 @@
 ---
-'@adastracomputing/aer': patch
+'@adastracomputing/aer': minor
 ---
 
 `aer smoke` now checks with the API that its workload produced a completed

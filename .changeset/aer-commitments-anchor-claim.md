@@ -1,5 +1,5 @@
 ---
-'@adastracomputing/aer': patch
+'@adastracomputing/aer': minor
 ---
 
 `aer commitments verify` no longer reports `bundle_signature.anchored: true`
