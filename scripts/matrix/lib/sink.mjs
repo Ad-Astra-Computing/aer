@@ -33,7 +33,9 @@ export async function startSink(opts = {}) {
   const attestationKey = opts.attestationKey ?? mintEd25519('mx-attest');
   let jwks = { keys: [attestationKey.publicJwk] };
   const device = { pendingPolls: 1, deny: false, apiKey: `aer_cli_${randomUUID().replace(/-/g, '')}`, tenantId: randomUUID(), polls: 0 };
-  const agents = [{ id: randomUUID(), name: 'matrix-agent', framework_type: 'custom' }];
+  // agent_id is the real API's field; id is kept for older readers.
+  const firstAgent = randomUUID();
+  const agents = [{ agent_id: firstAgent, id: firstAgent, name: 'matrix-agent', framework_type: 'custom' }];
   const policies = new Map();
 
   const sink = {
@@ -53,8 +55,18 @@ export async function startSink(opts = {}) {
     find(method, pathRe) {
       return requests.filter((r) => (!method || r.method === method) && (typeof pathRe === 'string' ? r.path === pathRe : pathRe.test(r.path)));
     },
-    /** Every event body posted to any session, flattened. */
+    /**
+     * Every event the sink ACCEPTED, flattened. A batch answered with an
+     * injected fault or an error was not accepted and is not counted, so a
+     * client that retries is not credited twice.
+     */
     events() {
+      return requests
+        .filter((r) => r.method === 'POST' && /^\/v1\/sessions\/[^/]+\/events$/.test(r.path) && Array.isArray(r.json) && r.status >= 200 && r.status < 300)
+        .flatMap((r) => r.json);
+    },
+    /** Every event body posted, accepted or not. */
+    postedEvents() {
       return requests
         .filter((r) => r.method === 'POST' && /^\/v1\/sessions\/[^/]+\/events$/.test(r.path) && Array.isArray(r.json))
         .flatMap((r) => r.json);
@@ -96,6 +108,8 @@ export async function startSink(opts = {}) {
       json: parsed,
     };
     requests.push(rec);
+    // The status the sink answered with, once the response is sent.
+    res.on('finish', () => { rec.status = res.statusCode; });
 
     for (const f of faults) {
       if (f.times <= 0) continue;
@@ -206,7 +220,8 @@ export async function startSink(opts = {}) {
 
     if (method === 'GET' && path === '/v1/agents') return json(res, 200, { agents });
     if (method === 'POST' && path === '/v1/agents') {
-      const a = { id: randomUUID(), name: rec.json?.name ?? 'agent', framework_type: rec.json?.framework_type ?? 'custom' };
+      const id = randomUUID();
+      const a = { agent_id: id, id, name: rec.json?.name ?? 'agent', framework_type: rec.json?.framework_type ?? 'custom' };
       agents.push(a);
       return json(res, 201, a);
     }
