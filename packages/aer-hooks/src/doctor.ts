@@ -76,16 +76,38 @@ export function isOlderVersion(a: string, b: string): boolean {
 // possibly-wrong "current" number blindly.
 export const MIN_HOOKS_VERSION_FOR_B1 = '0.4.0';
 
-/** An installed aer-hooks release older than the one running `aer doctor`. */
-export function diagnoseVersion(installedVersion: string | undefined, currentVersion: string): StaleRegistration | undefined {
+/**
+ * An installed aer-hooks release older than the one running `aer doctor`, or
+ * a release too old to say what it is at all.
+ *
+ * `wired` is whether some harness config actually references the binary
+ * (from `diagnoseRegistrations`' own definition: an entry with wiredEvents).
+ * A binary merely found on PATH with nothing pointing at it is not "wired",
+ * and saying so would blame a harness config that never touches it.
+ */
+export function diagnoseVersion(
+  installedVersion: string | undefined,
+  currentVersion: string,
+  opts: { wired: boolean } = { wired: true },
+): StaleRegistration | undefined {
   if (installedVersion === undefined || installedVersion === 'unknown') return undefined;
   const effectiveCurrent = isOlderVersion(currentVersion, MIN_HOOKS_VERSION_FOR_B1) ? MIN_HOOKS_VERSION_FOR_B1 : currentVersion;
+  const subject = opts.wired ? 'the wired aer-hooks' : 'the aer-hooks on PATH';
+  const fix = 'pnpm add -D @adastracomputing/aer-hooks@latest && aer-hooks install claude-code';
+  if (installedVersion === 'unreadable') {
+    return {
+      harness: 'any',
+      reason: 'outdated_collector',
+      detail: `could not read the version of ${subject}, so it is probably older than ${effectiveCurrent}`,
+      fix,
+    };
+  }
   if (!isOlderVersion(installedVersion, effectiveCurrent)) return undefined;
   return {
     harness: 'any',
     reason: 'outdated_collector',
-    detail: `the wired aer-hooks is ${installedVersion}, older than ${effectiveCurrent}`,
-    fix: 'pnpm add -D @adastracomputing/aer-hooks@latest && aer-hooks install claude-code',
+    detail: `${subject} is ${installedVersion}, older than ${effectiveCurrent}`,
+    fix,
   };
 }
 

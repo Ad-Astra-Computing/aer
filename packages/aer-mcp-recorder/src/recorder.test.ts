@@ -1,6 +1,21 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpRecorder, COLLECTOR_NAME, COLLECTOR_VERSION } from './recorder.js';
 import type { EventSink } from './sink.js';
+
+// COLLECTOR_VERSION used to be a literal restated by hand ('0.1.0') that a
+// release bump to package.json never touched, so it drifted stale (reading
+// 0.1.0 while the manifest read 0.3.1). It must always read back the
+// manifest's own version instead.
+describe('COLLECTOR_VERSION', () => {
+  it('matches the version in package.json, not a restated constant', () => {
+    const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+    const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')) as { version: string };
+    expect(COLLECTOR_VERSION).toBe(manifest.version);
+  });
+});
 
 interface Captured {
   eventType: string;
