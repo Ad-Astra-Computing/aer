@@ -160,14 +160,24 @@ export function createAerClient(opts: AerClientOptions): AerClient {
   async function postWithRetry(chunk: QueuedEvent[]): Promise<IngestResult> {
     let lastErr: unknown;
     for (let i = 0; i <= maxRetries; i++) {
-      const res = await timedFetch(`${baseUrl}/v1/sessions/${sessionId}/events`, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${token}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(chunk),
-      });
+      let res: Response;
+      try {
+        res = await timedFetch(`${baseUrl}/v1/sessions/${sessionId}/events`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(chunk),
+        });
+      } catch (err) {
+        // A network error (refused, reset, DNS, the request timeout) is
+        // retried like a 5xx. Event ids are stable across attempts, so a batch
+        // the server did receive is not recorded twice.
+        lastErr = err;
+        if (i < maxRetries) await sleep(retryBaseMs * 2 ** i);
+        continue;
+      }
       if (res.status === 202 || res.status === 207) {
         return (await res.json()) as IngestResult;
       }
