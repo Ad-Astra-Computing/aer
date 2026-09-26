@@ -1,240 +1,296 @@
-// Cross-process session correlation for hooks.
+// Cross-process state for one harness session.
 //
-// A harness fires the hook once per event as a SEPARATE process, so the AER
-// session opened by the first invocation must be found by the next ones. We map
-// the harness session id to the opened AER session in a small per-user file.
-//
-// The file holds an ingest token, so it is written 0600 under the user cache
-// dir and deleted when the harness session ends. Entries older than the TTL are
-// treated as absent (a crashed harness never cleaned up) and unlinked.
-//
-// Every operation is best-effort: any failure degrades (returns null / does
-// nothing) and never throws, so a broken cache can never break the harness.
+// A harness fires the hook once per event as a SEPARATE process, so what one
+// invocation learns (the open AER session, the next seq, how far the
+// transcript has been read, the events not yet accepted by the server) lives
+// in a small per-user file keyed on the harness session id.
+
+// The file holds an ingest token, so it is written 0600 in a 0700 directory
+// owned by the user, and the token is removed when the record completes.
+// Every operation is best-effort: a failure degrades and never throws, so a
+// broken cache can never break the harness.
 
 import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-export interface StoredSession {
-  aerSessionId: string;
+/** One event waiting for the server, already in its final shape except for the session id. */
+export interface OutboxEvent {
+  id: string;
+  type: string;
+  /** When the hook saw it, not when it was finally sent. */
+  ts: string;
+  payload: Record<string, unknown>;
+  /** Failed sends so far; an event that keeps failing is eventually dropped and counted. */
+  attempts?: number;
+}
+
+/** The AER session the current record is being written to. */
+export interface OpenSession {
+  id: string;
   ingestToken: string;
   baseUrl: string;
+  openedAt: number;
+  /** Complete this session before sending anything else (quiet period, full session). */
+  closeFirst?: boolean;
+}
+
+export interface SessionState {
+  v: 2;
   createdAt: number;
-  /**
-   * How many events this harness session has emitted so far, which is the
-   * position the next one takes. Assigned under the same lock that decides
-   * whether a session already exists, so two hooks racing for one harness
-   * session cannot take the same position.
-   */
-  seq?: number;
-  /**
-   * Tool starts that have not yet been matched by a completion. A tool that
-   * never completes is the difference between an agent that stopped and a
-   * recorder that missed the end of the call.
-   */
-  toolsOpen?: number;
-  /**
-   * The Claude Code transcript this harness session has been read from so
-   * far, for incremental llm.completed capture (model + token counts read
-   * from the transcript, since no Claude Code hook payload carries them).
-   * `transcriptOffset` is a BYTE offset into `transcriptPath`; a mismatch
-   * between the stored path and the one on the current event means a fresh
-   * transcript, so the offset resets to 0.
-   */
+  lastActivityAt: number;
+  /** The last seq handed out. Positions are assigned once, in order, and never reused. */
+  seq: number;
+  /** The first seq and the start time of the record currently being written. */
+  segmentStartSeq: number;
+  segmentStartedAt: number;
+  /** Tool starts not yet matched by a completion. */
+  toolsOpen: number;
+  /** The Claude Code transcript read so far, for incremental llm.completed capture. */
   transcriptPath?: string;
   transcriptOffset?: number;
-  /**
-   * Assistant message ids already turned into an llm.completed, bounded so
-   * the store never grows unbounded across a long session. Kept even across
-   * a transcript offset reset (truncation/rotation) so a message already
-   * recorded is never recorded twice.
-   */
   emittedLlmMessageIds?: string[];
+  /** Which harness events the installation wires, carried on every report. */
+  eventsRegistered?: string[];
+  session?: OpenSession;
+  /** The invocation currently talking to the server for this harness session. */
+  lease?: { owner: string; until: number };
+  /** Consecutive failed opens and when the next may be tried. */
+  openFailures?: number;
+  retryOpenAt?: number;
+  /** Complete the record once every queued event is accepted. */
+  complete?: 'checkpoint' | 'end';
+  /** The harness session ended and its record completed; kept only so a transcript is never read twice. */
+  ended?: boolean;
+  /** Events this record lost to a full queue or a send that kept failing. */
+  droppedBudget: number;
+  /** Network targets a shell line named that could not be reduced to a host. Local only. */
+  hostsUnreduced?: number;
+  outbox: OutboxEvent[];
+}
+
+/** Most events held for the server at once. Past this the oldest are dropped and counted. */
+export const MAX_OUTBOX_EVENTS = 1000;
+
+/** State untouched this long is presumed left by a harness that went away. */
+const TTL_MS = 24 * 60 * 60 * 1000;
+
+// ── where the state lives ───────────────────────────────────────────────────
+
+function uidTag(): string {
+  try {
+    return typeof process.getuid === 'function' ? String(process.getuid()) : os.userInfo().username;
+  } catch {
+    return 'user';
+  }
 }
 
 /**
- * A store slot before the upstream session is known: written by the lock
- * holder immediately before POST /v1/sessions so a concurrent reader sees
- * "opening" rather than "nothing yet". Carries the client_ref so a reopen
- * after a stale pending entry sends the identical value (ADR-023 B2).
+ * Where state may be written, best first: the user cache dir, then the
+ * per-user runtime dir, then a per-user directory under the temp dir. The
+ * README promises the hook records even when the cache dir cannot be
+ * written; the fallbacks are what keep that true.
  */
-export interface PendingSession {
-  pending: true;
-  clientRef: string;
-  createdAt: number;
-}
-
-export type SessionEntry = StoredSession | PendingSession;
-
-export function isPending(entry: SessionEntry | null): entry is PendingSession {
-  return entry !== null && (entry as PendingSession).pending === true;
-}
-
-/** A pending entry older than this is presumed abandoned by a killed opener. */
-export const PENDING_STALE_MS = 15_000;
-
-const TTL_MS = 24 * 60 * 60 * 1000; // 24h; a stale entry means a crashed harness
-
-/** Cache dir root, honoring XDG_CACHE_HOME, else ~/.cache. */
-function cacheRoot(env: NodeJS.ProcessEnv): string {
+function candidateRoots(env: NodeJS.ProcessEnv): string[] {
   const xdg = env['XDG_CACHE_HOME'];
-  const base = xdg && xdg.length > 0 ? xdg : path.join(os.homedir(), '.cache');
-  return path.join(base, 'aer-hooks');
+  const roots = [xdg && xdg.length > 0 ? path.join(xdg, 'aer-hooks') : path.join(os.homedir(), '.cache', 'aer-hooks')];
+  const runtime = env['XDG_RUNTIME_DIR'];
+  if (runtime && runtime.length > 0) roots.push(path.join(runtime, 'aer-hooks'));
+  const tmp = env['TMPDIR'] && env['TMPDIR'].length > 0 ? env['TMPDIR'] : os.tmpdir();
+  roots.push(path.join(tmp, `aer-hooks-${uidTag()}`));
+  return roots;
 }
 
-function fileFor(env: NodeJS.ProcessEnv, harnessSessionId: string): string {
-  const digest = createHash('sha256').update(harnessSessionId).digest('hex').slice(0, 32);
-  return path.join(cacheRoot(env), `${digest}.json`);
-}
-
-/** Look up the AER session (or a still-opening pending marker) for a harness session id, or null. Best-effort. */
-export function loadSession(
-  harnessSessionId: string,
-  env: NodeJS.ProcessEnv = process.env,
-  now: number = Date.now(),
-): SessionEntry | null {
+/**
+ * A directory is usable when it exists or can be made, is a real directory
+ * rather than a link, belongs to this user and can be written. A shared temp
+ * dir is only safe on those terms: a directory someone else made first, or a
+ * link they planted, is refused.
+ */
+function usableRoot(dir: string): boolean {
   try {
-    const file = fileFor(env, harnessSessionId);
-    const text = fs.readFileSync(file, 'utf8');
-    const parsed = JSON.parse(text) as Partial<StoredSession> & Partial<PendingSession>;
-
-    if (parsed.pending === true) {
-      if (typeof parsed.clientRef !== 'string' || typeof parsed.createdAt !== 'number') return null;
-      if (now - parsed.createdAt > TTL_MS) {
-        try { fs.unlinkSync(file); } catch { /* best-effort */ }
-        return null;
-      }
-      return { pending: true, clientRef: parsed.clientRef, createdAt: parsed.createdAt };
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const st = fs.lstatSync(dir);
+    if (st.isSymbolicLink() || !st.isDirectory()) return false;
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return false;
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch {
+      /* best-effort */
     }
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-    if (
-      typeof parsed.aerSessionId !== 'string' ||
-      typeof parsed.ingestToken !== 'string' ||
-      typeof parsed.baseUrl !== 'string' ||
-      typeof parsed.createdAt !== 'number'
-    ) {
+const rootCache = new Map<string, string | null>();
+
+/** The directory this environment's state lives in, or null when nowhere can be written. */
+export function stateRoot(env: NodeJS.ProcessEnv): string | null {
+  const roots = candidateRoots(env);
+  const key = roots.join('\0');
+  const known = rootCache.get(key);
+  if (known !== undefined && (known === null || fs.existsSync(known))) return known;
+  const found = roots.find(usableRoot) ?? null;
+  rootCache.set(key, found);
+  return found;
+}
+
+function digestOf(id: string): string {
+  return createHash('sha256').update(id).digest('hex').slice(0, 32);
+}
+
+function stateFile(root: string, storeKey: string): string {
+  return path.join(root, `${digestOf(storeKey)}.json`);
+}
+
+function writeAtomic(file: string, data: unknown): void {
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+// ── state ───────────────────────────────────────────────────────────────────
+
+export function freshState(now: number): SessionState {
+  return { v: 2, createdAt: now, lastActivityAt: now, seq: 0, segmentStartSeq: 1, segmentStartedAt: now, toolsOpen: 0, droppedBudget: 0, outbox: [] };
+}
+
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+function validOutbox(v: unknown): OutboxEvent[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((e): e is OutboxEvent =>
+    typeof e === 'object' && e !== null && isStr(e.id) && isStr(e.type) && isStr(e.ts)
+    && typeof e.payload === 'object' && e.payload !== null && !Array.isArray(e.payload));
+}
+
+/**
+ * Read what an earlier release wrote: an open session with its position, or
+ * a marker left while a session was being opened. The session carries on
+ * rather than being reopened, so an upgrade mid-session keeps one record.
+ */
+function fromLegacy(p: Record<string, unknown>): SessionState | null {
+  if (!isInt(p['createdAt'])) return null;
+  const s = freshState(p['createdAt']);
+  if (p['pending'] === true) return s;
+  if (!isStr(p['aerSessionId']) || !isStr(p['ingestToken']) || !isStr(p['baseUrl'])) return null;
+  s.session = { id: p['aerSessionId'], ingestToken: p['ingestToken'], baseUrl: p['baseUrl'], openedAt: p['createdAt'] };
+  if (isInt(p['seq'])) s.seq = p['seq'];
+  if (isInt(p['toolsOpen'])) s.toolsOpen = p['toolsOpen'];
+  copyTranscript(p, s);
+  return s;
+}
+
+function copyTranscript(p: Record<string, unknown>, s: SessionState): void {
+  if (isStr(p['transcriptPath'])) {
+    s.transcriptPath = p['transcriptPath'];
+    s.transcriptOffset = isInt(p['transcriptOffset']) ? p['transcriptOffset'] : 0;
+  }
+  const ids = p['emittedLlmMessageIds'];
+  if (Array.isArray(ids) && ids.every((x) => typeof x === 'string')) s.emittedLlmMessageIds = ids as string[];
+}
+
+function parseState(p: Record<string, unknown>): SessionState | null {
+  if (p['v'] !== 2) return fromLegacy(p);
+  if (!isInt(p['createdAt']) || !isInt(p['lastActivityAt']) || !isInt(p['seq'])) return null;
+  const s = freshState(p['createdAt']);
+  s.lastActivityAt = p['lastActivityAt'];
+  s.seq = p['seq'];
+  s.segmentStartSeq = isInt(p['segmentStartSeq']) ? p['segmentStartSeq'] : 1;
+  s.segmentStartedAt = isInt(p['segmentStartedAt']) ? p['segmentStartedAt'] : s.createdAt;
+  s.toolsOpen = isInt(p['toolsOpen']) ? p['toolsOpen'] : 0;
+  s.droppedBudget = isInt(p['droppedBudget']) ? p['droppedBudget'] : 0;
+  if (isInt(p['hostsUnreduced'])) s.hostsUnreduced = p['hostsUnreduced'];
+  copyTranscript(p, s);
+  const reg = p['eventsRegistered'];
+  if (Array.isArray(reg) && reg.every((x) => typeof x === 'string')) s.eventsRegistered = reg as string[];
+  const sess = p['session'] as Record<string, unknown> | undefined;
+  if (sess && isStr(sess['id']) && isStr(sess['ingestToken']) && isStr(sess['baseUrl']) && isInt(sess['openedAt'])) {
+    s.session = { id: sess['id'], ingestToken: sess['ingestToken'], baseUrl: sess['baseUrl'], openedAt: sess['openedAt'] };
+    if (sess['closeFirst'] === true) s.session.closeFirst = true;
+  }
+  const lease = p['lease'] as Record<string, unknown> | undefined;
+  if (lease && isStr(lease['owner']) && isInt(lease['until'])) s.lease = { owner: lease['owner'], until: lease['until'] };
+  if (isInt(p['openFailures'])) s.openFailures = p['openFailures'];
+  if (isInt(p['retryOpenAt'])) s.retryOpenAt = p['retryOpenAt'];
+  if (p['complete'] === 'checkpoint' || p['complete'] === 'end') s.complete = p['complete'];
+  if (p['ended'] === true) s.ended = true;
+  s.outbox = validOutbox(p['outbox']);
+  return s;
+}
+
+/** The state for a harness session, or null when there is none (or it expired). Best-effort. */
+export function loadState(storeKey: string, env: NodeJS.ProcessEnv = process.env, now: number = Date.now()): SessionState | null {
+  const root = stateRoot(env);
+  if (root === null) return null;
+  const file = stateFile(root, storeKey);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const state = parseState(parsed as Record<string, unknown>);
+    if (state === null) return null;
+    if (now - state.lastActivityAt > TTL_MS) {
+      try { fs.unlinkSync(file); } catch { /* best-effort */ }
       return null;
     }
-    if (now - parsed.createdAt > TTL_MS) {
-      try {
-        fs.unlinkSync(file);
-      } catch {
-        /* best-effort */
-      }
-      return null;
-    }
-    // seq was added after the first release; an entry written by the older
-    // build has none, and restarting the count is better than discarding a
-    // live session over a missing counter.
-    if (typeof parsed.seq !== 'number' || !Number.isInteger(parsed.seq) || parsed.seq < 0) {
-      parsed.seq = 0;
-    }
-    // Transcript-tracking fields are newer than the store format and may be
-    // absent or, from a corrupted write, malformed. A bad value here degrades
-    // to "no transcript progress yet" rather than discarding the whole
-    // session entry.
-    if (typeof parsed.transcriptPath !== 'string' || parsed.transcriptPath.length === 0) {
-      delete parsed.transcriptPath;
-      delete parsed.transcriptOffset;
-    } else if (
-      typeof parsed.transcriptOffset !== 'number' ||
-      !Number.isInteger(parsed.transcriptOffset) ||
-      parsed.transcriptOffset < 0
-    ) {
-      parsed.transcriptOffset = 0;
-    }
-    if (
-      !Array.isArray(parsed.emittedLlmMessageIds) ||
-      !parsed.emittedLlmMessageIds.every((id) => typeof id === 'string')
-    ) {
-      delete parsed.emittedLlmMessageIds;
-    }
-    return parsed as StoredSession;
+    return state;
   } catch {
     return null;
   }
 }
 
-function writeEntry(file: string, env: NodeJS.ProcessEnv, data: unknown): void {
-  const dir = cacheRoot(env);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // Refuse a symlinked or non-directory cache dir: it could redirect the
-  // token write. Degrade rather than follow it.
-  const dirStat = fs.lstatSync(dir);
-  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
-  // Tighten perms defensively in case the dir pre-existed under a loose umask.
+/** Persist the state. Returns false when it could not be written. */
+export function saveState(storeKey: string, state: SessionState, env: NodeJS.ProcessEnv = process.env): boolean {
+  const root = stateRoot(env);
+  if (root === null) return false;
   try {
-    fs.chmodSync(dir, 0o700);
+    writeAtomic(stateFile(root, storeKey), state);
+    return true;
   } catch {
-    /* best-effort */
-  }
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
-  fs.renameSync(tmp, file);
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    /* best-effort */
+    return false;
   }
 }
 
-/** Persist the AER session for a harness session id. Best-effort, 0600, atomic. */
-export function saveSession(
-  harnessSessionId: string,
-  session: StoredSession,
-  env: NodeJS.ProcessEnv = process.env,
-): void {
+export function deleteState(storeKey: string, env: NodeJS.ProcessEnv = process.env): void {
+  const root = stateRoot(env);
+  if (root === null) return;
   try {
-    writeEntry(fileFor(env, harnessSessionId), env, session);
+    fs.unlinkSync(stateFile(root, storeKey));
   } catch {
-    /* best-effort: a store failure degrades to per-event sessions, never throws */
+    /* best-effort */
   }
 }
 
 /**
- * Write the pending marker for a harness session id BEFORE the upstream open
- * call (ADR-023 B2), so a concurrent reader sees "opening" instead of
- * "nothing yet" and does not also try to open. Best-effort, 0600, atomic.
+ * Queue events for the server, dropping the oldest past the cap. Returns how
+ * many were dropped so the caller can count them where the record reports.
  */
-export function savePendingSession(
-  harnessSessionId: string,
-  clientRef: string,
-  env: NodeJS.ProcessEnv = process.env,
-  now: number = Date.now(),
-): void {
-  try {
-    writeEntry(fileFor(env, harnessSessionId), env, { pending: true, clientRef, createdAt: now });
-  } catch {
-    /* best-effort */
-  }
+export function enqueue(state: SessionState, events: OutboxEvent[]): number {
+  state.outbox.push(...events);
+  const overflow = state.outbox.length - MAX_OUTBOX_EVENTS;
+  if (overflow <= 0) return 0;
+  state.outbox.splice(0, overflow);
+  state.droppedBudget += overflow;
+  return overflow;
 }
 
-/** Remove the mapping for a harness session id (called on session end). */
-export function deleteSession(
-  harnessSessionId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  try {
-    fs.unlinkSync(fileFor(env, harnessSessionId));
-  } catch {
-    /* best-effort */
-  }
-}
+// ── pid aliases (the subagent fallback) ─────────────────────────────────────
 
-const PID_ALIAS_TTL_MS = 24 * 60 * 60 * 1000; // 24h, same as a session entry
+const PID_ALIAS_TTL_MS = 24 * 60 * 60 * 1000;
 
-function pidAliasFile(env: NodeJS.ProcessEnv, pid: string): string {
-  return path.join(cacheRoot(env), `pid-${pid}.json`);
+function pidAliasFile(root: string, pid: string): string {
+  return path.join(root, `pid-${pid}.json`);
 }
 
 /**
  * The identity a pid alias is checked against on read. `startTime` guards a
- * recycled pid (a dead process's id reused by an unrelated one within the TTL
- * window); `agentId`/`baseUrl` guard attaching a subagent to a different
- * agent's or tenant's session. All optional: an absent field on either side
- * of the comparison is not checked, so an alias written before this fix still
- * degrades gracefully rather than being rejected outright.
+ * recycled pid; `agentId`/`baseUrl` guard attaching a subagent to a different
+ * agent's or tenant's session. An absent field on either side is not checked.
  */
 export interface PidAliasIdentity {
   startTime?: string | undefined;
@@ -242,12 +298,7 @@ export interface PidAliasIdentity {
   baseUrl?: string | undefined;
 }
 
-/**
- * Alias the harness process (identified by `pid`) to the store key it opened,
- * so a subagent hook fired from the same harness process can find the lead's
- * session even with no --root-session flag (ADR-023 B1 fallback). Written by
- * SessionStart, keyed on the hook's own PARENT pid (the harness process).
- */
+/** Alias the harness process to the store key it started, for subagent hooks that carry no root id. */
 export function savePidAlias(
   pid: string,
   storeKey: string,
@@ -255,26 +306,26 @@ export function savePidAlias(
   now: number = Date.now(),
   identity: PidAliasIdentity = {},
 ): void {
+  const root = stateRoot(env);
+  if (root === null) return;
   try {
-    writeEntry(pidAliasFile(env, pid), env, { ref: storeKey, createdAt: now, ...identity });
+    writeAtomic(pidAliasFile(root, pid), { ref: storeKey, createdAt: now, ...identity });
   } catch {
     /* best-effort */
   }
 }
 
-/**
- * Look up the store key aliased to a harness process pid, or null. Best-effort.
- * `expected` is this invocation's OWN identity; a stored alias that disagrees
- * with any field the caller can check is refused rather than trusted.
- */
+/** The store key aliased to a harness process pid, or null when absent, expired or not ours. */
 export function loadPidAlias(
   pid: string,
   env: NodeJS.ProcessEnv = process.env,
   now: number = Date.now(),
   expected: PidAliasIdentity = {},
 ): string | null {
+  const root = stateRoot(env);
+  if (root === null) return null;
   try {
-    const file = pidAliasFile(env, pid);
+    const file = pidAliasFile(root, pid);
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<PidAliasIdentity> & { ref?: unknown; createdAt?: unknown };
     if (typeof parsed.ref !== 'string' || typeof parsed.createdAt !== 'number') return null;
     if (now - parsed.createdAt > PID_ALIAS_TTL_MS) {
@@ -294,14 +345,17 @@ export function loadPidAlias(
   }
 }
 
-/** Remove a pid alias (called on session end, mirroring the pid it was written under). */
 export function deletePidAlias(pid: string, env: NodeJS.ProcessEnv = process.env): void {
+  const root = stateRoot(env);
+  if (root === null) return;
   try {
-    fs.unlinkSync(pidAliasFile(env, pid));
+    fs.unlinkSync(pidAliasFile(root, pid));
   } catch {
     /* best-effort */
   }
 }
+
+// ── drops noted before any state exists ─────────────────────────────────────
 
 interface DropCounters {
   subagentEventsUnattached: number;
@@ -309,32 +363,28 @@ interface DropCounters {
   createdAt: number;
 }
 
-function dropCountersFile(env: NodeJS.ProcessEnv, storeKey: string): string {
-  const digest = createHash('sha256').update(storeKey).digest('hex').slice(0, 32);
-  return path.join(cacheRoot(env), `drop-${digest}.json`);
+function dropCountersFile(root: string, storeKey: string): string {
+  return path.join(root, `drop-${digestOf(storeKey)}.json`);
 }
 
-function bumpDropCounter(
-  storeKey: string,
-  field: 'subagentEventsUnattached' | 'eventsDroppedBudget',
-  env: NodeJS.ProcessEnv,
-  now: number,
-): void {
+function bumpDropCounter(storeKey: string, field: 'subagentEventsUnattached' | 'eventsDroppedBudget', env: NodeJS.ProcessEnv, now: number): void {
+  const root = stateRoot(env);
+  if (root === null) return;
   try {
-    const file = dropCountersFile(env, storeKey);
+    const file = dropCountersFile(root, storeKey);
     const counters: DropCounters = { subagentEventsUnattached: 0, eventsDroppedBudget: 0, createdAt: now };
     try {
       const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DropCounters>;
-      if (typeof parsed.subagentEventsUnattached === 'number') counters.subagentEventsUnattached = parsed.subagentEventsUnattached;
-      if (typeof parsed.eventsDroppedBudget === 'number') counters.eventsDroppedBudget = parsed.eventsDroppedBudget;
-      if (typeof parsed.createdAt === 'number') counters.createdAt = parsed.createdAt;
+      if (isInt(parsed.subagentEventsUnattached)) counters.subagentEventsUnattached = parsed.subagentEventsUnattached;
+      if (isInt(parsed.eventsDroppedBudget)) counters.eventsDroppedBudget = parsed.eventsDroppedBudget;
+      if (isInt(parsed.createdAt)) counters.createdAt = parsed.createdAt;
     } catch {
-      /* no prior counter file: start fresh */
+      /* no prior counter file */
     }
     counters[field] += 1;
-    writeEntry(file, env, counters);
+    writeAtomic(file, counters);
   } catch {
-    /* best-effort: an uncounted drop is still a dropped event, never a thrown one */
+    /* an uncounted drop is still a dropped event, never a thrown one */
   }
 }
 
@@ -343,25 +393,38 @@ export function noteSubagentEventUnattached(storeKey: string, env: NodeJS.Proces
   bumpDropCounter(storeKey, 'subagentEventsUnattached', env, now);
 }
 
-/** A tool event lost the budget race for the lock and was dropped without opening a session. */
+/** An event could not be queued (the state stayed locked past the budget) and was dropped. */
 export function noteEventDroppedBudget(storeKey: string, env: NodeJS.ProcessEnv = process.env, now: number = Date.now()): void {
   bumpDropCounter(storeKey, 'eventsDroppedBudget', env, now);
 }
 
-/** Read and clear the drop counters for a store key, for folding into the closing collector.report. */
-export function takeDropCounters(storeKey: string, env: NodeJS.ProcessEnv = process.env): { subagentEventsUnattached: number; eventsDroppedBudget: number } {
-  const file = dropCountersFile(env, storeKey);
+/** The drop counters for a store key, without clearing them. */
+export function readDropCounters(storeKey: string, env: NodeJS.ProcessEnv = process.env): { subagentEventsUnattached: number; eventsDroppedBudget: number } {
+  const root = stateRoot(env);
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<DropCounters>;
-    try { fs.unlinkSync(file); } catch { /* best-effort */ }
+    if (root === null) throw new Error('no root');
+    const parsed = JSON.parse(fs.readFileSync(dropCountersFile(root, storeKey), 'utf8')) as Partial<DropCounters>;
     return {
-      subagentEventsUnattached: typeof parsed.subagentEventsUnattached === 'number' ? parsed.subagentEventsUnattached : 0,
-      eventsDroppedBudget: typeof parsed.eventsDroppedBudget === 'number' ? parsed.eventsDroppedBudget : 0,
+      subagentEventsUnattached: isInt(parsed.subagentEventsUnattached) ? parsed.subagentEventsUnattached : 0,
+      eventsDroppedBudget: isInt(parsed.eventsDroppedBudget) ? parsed.eventsDroppedBudget : 0,
     };
   } catch {
     return { subagentEventsUnattached: 0, eventsDroppedBudget: 0 };
   }
 }
+
+/** Clear the drop counters once the record they describe has completed. */
+export function clearDropCounters(storeKey: string, env: NodeJS.ProcessEnv = process.env): void {
+  const root = stateRoot(env);
+  if (root === null) return;
+  try {
+    fs.unlinkSync(dropCountersFile(root, storeKey));
+  } catch {
+    /* best-effort */
+  }
+}
+
+// ── the lock ────────────────────────────────────────────────────────────────
 
 export interface SessionLock {
   /** Release the lock. Best-effort; never throws. */
@@ -369,47 +432,42 @@ export interface SessionLock {
 }
 
 export interface AcquireLockOptions {
-  /** Give up and return null after spin-waiting this long. Default 8000ms. */
+  /** Give up and return null after waiting this long. Default 3000ms. */
   maxWaitMs?: number;
-  /** Interval between acquisition attempts while waiting. Default 25ms. */
+  /** Interval between attempts while waiting. Default 10ms. */
   pollMs?: number;
-  /** A lock file older than this is presumed left by a crashed holder and is stolen. Default 5000ms. */
+  /** A lock file older than this is presumed left by a crashed holder and is taken over. Default 5000ms. */
   staleMs?: number;
   /** Clock injection for tests. */
   now?: () => number;
 }
 
-const LOCK_MAX_WAIT_MS = 8000;
-const LOCK_POLL_MS = 25;
-// A holder can now legitimately hold the lock for close to the whole budget
-// (open the session, save, emit): the default 10s hook budget plus margin,
-// so a live opener is never mistaken for a crashed one and stolen mid-open.
-const LOCK_STALE_MS = 12000;
-
-function lockFileFor(env: NodeJS.ProcessEnv, harnessSessionId: string): string {
-  return `${fileFor(env, harnessSessionId)}.lock`;
-}
+// The lock covers reading and rewriting one small file and never a network
+// call, so a holder keeps it for milliseconds. A lock this old was left by a
+// process that died holding it.
+export const LOCK_STALE_MS = 5000;
+const LOCK_MAX_WAIT_MS = 3000;
+const LOCK_POLL_MS = 10;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** The lock file for a store key, for tests that check it is never held across a network call. */
+export function lockFileFor(storeKey: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const root = stateRoot(env);
+  return root === null ? null : `${stateFile(root, storeKey)}.lock`;
+}
+
 /**
- * Acquire an exclusive lock for one harness session id, so that a read-decide-write
- * sequence (is there already an AER session for this harness session? if not, open
- * one and persist it) is atomic across concurrent hook processes. Without this,
- * two hooks that both call loadSession() before either calls saveSession() both
- * conclude "no session yet" and each open a separate upstream AER session,
- * orphaning one of them.
- *
- * Uses an O_EXCL ('wx') lock file next to the session-store entry. A lock older
- * than staleMs is presumed abandoned by a crashed process and is stolen, so a
- * dead holder can never wedge future invocations. Spin-waits asynchronously
- * (never blocks the event loop) up to maxWaitMs, then gives up and returns null
- * so the caller can degrade to recording its event on its own, best-effort.
+ * Take the exclusive lock for one harness session's state, so a read, decide
+ * and write of that state is atomic across hook processes. An O_EXCL lock
+ * file next to the state; the owner is stamped in it, so a holder that
+ * overran and lost the lock never releases the next holder's. Returns null
+ * when the state cannot be written at all or the wait runs out.
  */
 export async function acquireSessionLock(
-  harnessSessionId: string,
+  storeKey: string,
   env: NodeJS.ProcessEnv = process.env,
   opts: AcquireLockOptions = {},
 ): Promise<SessionLock | null> {
@@ -418,22 +476,12 @@ export async function acquireSessionLock(
   const staleMs = opts.staleMs ?? LOCK_STALE_MS;
   const now = opts.now ?? Date.now;
 
-  const dir = cacheRoot(env);
-  try {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const dirStat = fs.lstatSync(dir);
-    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return null;
-  } catch {
-    return null;
-  }
-
-  const lockFile = lockFileFor(env, harnessSessionId);
+  const lockFile = lockFileFor(storeKey, env);
+  if (lockFile === null) return null;
   const deadline = now() + maxWaitMs;
 
   for (;;) {
     try {
-      // A holder that overran its lease finds the lock stolen. Stamp who we
-      // are, so releasing late unlinks nothing and the new holder keeps it.
       const owner = `${process.pid}.${randomBytes(8).toString('hex')}`;
       const fd = fs.openSync(lockFile, 'wx', 0o600);
       try {
@@ -452,19 +500,19 @@ export async function acquireSessionLock(
         },
       };
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return null; // unexpected fs failure: degrade
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return null;
       try {
         const st = fs.statSync(lockFile);
-        if (now() - st.mtimeMs > staleMs) {
+        if (Date.now() - st.mtimeMs > staleMs) {
           try {
             fs.unlinkSync(lockFile);
           } catch {
-            /* another process may already be clearing it; the next loop retries the create */
+            /* another process may be clearing it; the next loop retries */
           }
           continue;
         }
       } catch {
-        continue; // the lock vanished between the EEXIST and the stat; retry immediately
+        continue;
       }
       if (now() >= deadline) return null;
       await sleep(pollMs);

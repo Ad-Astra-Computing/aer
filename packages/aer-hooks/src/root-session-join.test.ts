@@ -309,10 +309,15 @@ describe('ADR-023 B2: a tool event that loses the lock race never opens', () => 
   });
 });
 
-describe('ADR-023 B2: pending-entry reopen with the same client_ref', () => {
+// Only one invocation at a time talks to the server for a harness session.
+// The rest queue their events and leave, so a slow or hung open never makes
+// the next events open again (each such open mints a token toward the
+// server's cap of 16) and never makes them wait on it either.
+describe('an open in flight in another invocation', () => {
   let cacheDir: string;
   let opens: number;
   let openBodies: Array<Record<string, unknown>>;
+  let posted: number;
   let fetchImpl: typeof fetch;
 
   function envWith(): NodeJS.ProcessEnv {
@@ -320,8 +325,9 @@ describe('ADR-023 B2: pending-entry reopen with the same client_ref', () => {
   }
 
   beforeEach(() => {
-    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-pending-'));
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-lease-'));
     opens = 0;
+    posted = 0;
     openBodies = [];
     fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -330,6 +336,7 @@ describe('ADR-023 B2: pending-entry reopen with the same client_ref', () => {
         openBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
         return jsonResponse({ agent_session_id: `sess-${opens}`, ingest_token: `tok-${opens}`, status: 'running' }, 201);
       }
+      if (url.endsWith('/events')) posted += (JSON.parse(String(init?.body ?? '[]')) as unknown[]).length;
       return jsonResponse({ accepted: 1, rejected: 0 }, 202);
     }) as unknown as typeof fetch;
   });
@@ -338,110 +345,35 @@ describe('ADR-023 B2: pending-entry reopen with the same client_ref', () => {
     fs.rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  it('reopens with the identical client_ref when the pending marker is stale', async () => {
-    const lead = 'lead-stale-pending';
+  it('queues events fired meanwhile without opening again, and a lapsed claim reopens with the identical client_ref', async () => {
+    const lead = 'lead-in-flight';
+    const store = await import('./session-store.js');
     const clientRef = deriveClientRef('claude-code', lead, 'agent-1');
-    // Simulate a killed opener: the pending marker predates the 15s cutoff.
-    const { savePendingSession } = await import('./session-store.js');
-    savePendingSession(lead, clientRef, envWith(), Date.now() - 20_000);
+    // Another invocation is opening right now: it holds the network role.
+    store.saveState(lead, { ...store.freshState(Date.now()), lease: { owner: 'other.1', until: Date.now() + 60_000 } }, envWith());
 
+    for (let i = 0; i < 5; i++) {
+      const t = Date.now();
+      await runHook(['--harness', 'claude-code', '--lifecycle', 'v2', '--root-session', lead], envWith(), {
+        readInput: async () => JSON.stringify({ hook_event_name: 'PreToolUse', session_id: lead, tool_name: 'Bash', tool_input: { command: 'ls' } }),
+        fetch: fetchImpl,
+      });
+      expect(Date.now() - t).toBeLessThan(1000);
+    }
+    expect(opens).toBe(0);
+    expect(store.loadState(lead, envWith())?.outbox).toHaveLength(10);
+
+    // The other invocation was killed: its claim lapses, and the next event
+    // opens with the same client_ref and sends everything queued.
+    const st = store.loadState(lead, envWith())!;
+    st.lease = { owner: 'other.1', until: Date.now() - 1 };
+    store.saveState(lead, st, envWith());
     await runHook(['--harness', 'claude-code', '--lifecycle', 'v2', '--root-session', lead], envWith(), {
-      readInput: async () => JSON.stringify({ hook_event_name: 'SessionStart', session_id: lead }),
+      readInput: async () => JSON.stringify({ hook_event_name: 'PreToolUse', session_id: lead, tool_name: 'Bash', tool_input: { command: 'ls' } }),
       fetch: fetchImpl,
     });
-
     expect(opens).toBe(1);
     expect(openBodies[0]?.['client_ref']).toBe(clientRef);
-  });
-
-  it('does not reopen when the pending marker is still fresh and a real session appears in time', async () => {
-    const lead = 'lead-fresh-pending';
-    const clientRef = deriveClientRef('claude-code', lead, 'agent-1');
-    const store = await import('./session-store.js');
-    store.savePendingSession(lead, clientRef, envWith(), Date.now());
-    // The "other opener" finishes shortly after: write the real session entry
-    // a beat later, from a timer, while the waiter polls for it.
-    setTimeout(() => {
-      store.saveSession(lead, { aerSessionId: 'sess-real', ingestToken: 'tok-real', baseUrl: 'https://api.test', createdAt: Date.now(), seq: 1, toolsOpen: 0 }, envWith());
-    }, 150);
-
-    await runHook(['--harness', 'claude-code', '--lifecycle', 'v2', '--root-session', lead], envWith(), {
-      readInput: async () => JSON.stringify({ hook_event_name: 'PreToolUse', session_id: lead, tool_name: 'Bash', tool_input: {} }),
-      fetch: fetchImpl,
-    });
-
-    // Attached to the session the other opener finished, never opened a second one.
-    expect(opens).toBe(0);
-  });
-});
-
-// Review P1 (livelock): a fresh pending marker used to get re-stamped on
-// every giving-up reopen, so its age never crossed the 15s stale rule and
-// each invocation minted a token until client_ref_exhausted. Now a tool
-// event drops instead of reopening, so the marker's age tracks real time.
-describe('ADR-023 B2: steady tool traffic never re-triggers the pending-marker livelock', () => {
-  let cacheDir: string;
-  let opens: number;
-  let fetchImpl: typeof fetch;
-
-  function envWith(): NodeJS.ProcessEnv {
-    return { ...CONFIGURED, XDG_CACHE_HOME: cacheDir } as NodeJS.ProcessEnv;
-  }
-
-  beforeEach(() => {
-    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-livelock-'));
-    opens = 0;
-    fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith('/v1/sessions')) {
-        opens += 1;
-        return jsonResponse({ agent_session_id: `sess-${opens}`, ingest_token: `tok-${opens}`, status: 'running' }, 201);
-      }
-      return jsonResponse({ accepted: 1, rejected: 0 }, 202);
-    }) as unknown as typeof fetch;
-  });
-
-  afterEach(() => {
-    fs.rmSync(cacheDir, { recursive: true, force: true });
-  });
-
-  it('does not rewrite a fresh marker under repeated tool events, and reopens once it genuinely goes stale', async () => {
-    const lead = 'lead-livelock';
-    const store = await import('./session-store.js');
-    const clientRef = deriveClientRef('claude-code', lead, 'agent-1');
-    const originalCreatedAt = Date.now();
-    store.savePendingSession(lead, clientRef, envWith(), originalCreatedAt);
-
-    // Steady tool traffic: each invocation is a separate process in reality,
-    // and each gets a short budget so the capped wait gives up almost
-    // immediately rather than the test waiting out the real margin.
-    for (let i = 0; i < 5; i++) {
-      await runHook(['--harness', 'claude-code', '--lifecycle', 'v2', '--root-session', lead], envWith(), {
-        readInput: async () =>
-          JSON.stringify({ hook_event_name: 'PreToolUse', session_id: lead, tool_name: 'Bash', tool_input: { n: i } }),
-        fetch: fetchImpl,
-        hardTimeoutMs: 300,
-      });
-    }
-
-    // Not one of them opened a session, or exhausted the server's 16-token
-    // cap the way the pre-fix reopen loop did.
-    expect(opens).toBe(0);
-
-    // The marker itself was never touched: its timestamp is still the
-    // ORIGINAL one, not backdated-and-reset by any of the five invocations.
-    const stillPending = store.loadSession(lead, envWith(), Date.now());
-    expect(stillPending).not.toBeNull();
-    expect((stillPending as { pending?: true; createdAt: number }).createdAt).toBe(originalCreatedAt);
-
-    // Real time has now genuinely passed the 15s stale threshold (simulated
-    // directly rather than sleeping 15s in the test): the NEXT event reopens.
-    store.savePendingSession(lead, clientRef, envWith(), Date.now() - 20_000);
-    await runHook(['--harness', 'claude-code', '--lifecycle', 'v2', '--root-session', lead], envWith(), {
-      readInput: async () =>
-        JSON.stringify({ hook_event_name: 'PreToolUse', session_id: lead, tool_name: 'Bash', tool_input: {} }),
-      fetch: fetchImpl,
-    });
-    expect(opens).toBe(1);
+    expect(posted).toBe(12);
   });
 });

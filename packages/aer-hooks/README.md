@@ -77,18 +77,46 @@ nothing.
 
 The harness runs the hook once per event as a separate process. To record a whole
 harness session as one AER session instead of one session per tool call, the first
-event opens an AER session and the later events attach to it. The mapping from the
-harness session id to the open session is kept in a small file under your cache dir
-(`$XDG_CACHE_HOME/aer-hooks` or `~/.cache/aer-hooks`). That file holds a short-lived
-ingest token, so it is written owner-only (0600) and removed when the harness
-session ends. Stale entries expire after a day. If the cache cannot be written the
-hook still records, it just falls back to a session per event.
+event opens an AER session and the later events join it. What the hook needs to
+carry between events (the open session, the next event position, how far the
+transcript has been read, and the events the server has not yet accepted) is kept
+in a small file under your cache dir (`$XDG_CACHE_HOME/aer-hooks` or
+`~/.cache/aer-hooks`). That file holds a short-lived ingest token, so it is written
+owner-only (0600) in an owner-only directory, and the token is removed when the
+record completes. State untouched for a day expires.
 
-Two hook processes can fire for the same harness session close together (a fast
-tool sequence, parallel subagents). A short-lived lock file next to the store
-makes the "is there already a session" check and the "open one and save it" write
-atomic across processes, so concurrent hooks converge on one AER session instead
-of racing to open two.
+If the cache dir cannot be written, the hook uses `$XDG_RUNTIME_DIR/aer-hooks`, then
+a per-user `aer-hooks-<uid>` directory under the temp dir, refusing any directory it
+does not own or that is a link. If none of them can be written, each event is still
+recorded, sent on its own and joined to the running record by the server; the server
+accepts a limited number of such joins per record (16), so a long session without
+anywhere to keep state loses the events past that.
+
+Events are queued on disk first and leave the queue only once the server has
+accepted them. If the API is slow, fails or is unreachable, nothing is lost: the
+events stay queued (up to 1000; past that the oldest are dropped and the count is
+reported on the record) and the next hook event sends them. Only one hook process at
+a time talks to the server for a harness session; the others queue their events and
+return at once, so concurrent hooks from a lead agent and its subagents never wait
+on each other's network calls or open a second session. If the server has closed the
+session (for example after a long idle period), the next event opens a new one and
+sends what was queued to it.
+
+### Long sessions are recorded in parts
+
+An interactive session can stay open for days and may never send its end event. So
+that it is still sealed and summarised, the hook completes the record at the first
+turn end once the record is an hour old, and before the next event when the harness
+has been quiet for an hour. The session carries on in a new record under the same
+session reference, with event positions continuing from the last one, so the parts
+can be read back as one run. Set `AER_HOOK_CHECKPOINT_MINUTES` to change the hour, or
+to `0` to keep one record however long the session runs; with `0`, a session that
+never sends its end is left for the server to close after it goes quiet, without the
+summary a completed record gets.
+
+The first time the hook meets a transcript that already has history (it was
+installed partway through a session), it records at most the 50 most recent model
+calls from it rather than replaying the whole history.
 
 On Claude Code, a subagent's tool calls join its lead session's record rather
 than opening one of their own: the hook reads the lead's session id out of
@@ -117,9 +145,11 @@ retained plaintext with a key that never leaves your machine.
 The `aer-hook` binary is designed so it can never break or slow the harness. It
 wraps everything in try/catch, caps its own runtime with a hard timeout (default
 10000ms, override with `AER_HOOK_TIMEOUT_MS`) after which it exits 0 regardless
-and never writes to stdout (some harnesses interpret hook stdout). If the budget
-is exceeded, it writes one stderr line noting the record may be incomplete. If
-AER is unconfigured it does nothing and exits 0. Recording is always best-effort
+and never writes to stdout (some harnesses interpret hook stdout). It stops
+starting network calls shortly before the budget runs out, so what it could not
+send stays queued for the next event rather than being cut off mid-request; if
+the budget is exceeded anyway, it writes one stderr line saying so. If AER is
+unconfigured it does nothing and exits 0. Recording is always best-effort
 and never in the critical path of the tool the harness is running.
 
 ## Install safety

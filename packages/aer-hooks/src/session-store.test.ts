@@ -3,81 +3,137 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  loadSession,
-  saveSession,
-  deleteSession,
+  loadState,
+  saveState,
+  deleteState,
+  freshState,
+  enqueue,
+  stateRoot,
   acquireSessionLock,
   savePidAlias,
   loadPidAlias,
-  type StoredSession,
+  MAX_OUTBOX_EVENTS,
+  type SessionState,
 } from './session-store.js';
 
 describe('session-store', () => {
   let dir: string;
   let env: NodeJS.ProcessEnv;
-  const entry: StoredSession = { aerSessionId: 's1', ingestToken: 'tok', baseUrl: 'https://api.test', createdAt: 1000 };
+  const T = 1_000_000;
+  const state = (): SessionState => ({ ...freshState(T), seq: 3, session: { id: 's1', ingestToken: 'tok', baseUrl: 'https://api.test', openedAt: T } });
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-store-'));
-    env = { XDG_CACHE_HOME: dir } as NodeJS.ProcessEnv;
+    fs.mkdirSync(path.join(dir, 'tmp'));
+    env = { XDG_CACHE_HOME: dir, TMPDIR: path.join(dir, 'tmp') } as NodeJS.ProcessEnv;
   });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
   it('round-trips save then load', () => {
-    saveSession('hs-1', entry, env);
-    // An entry written before seq existed loads with the count restarted
-    // rather than being discarded, so a live session survives the upgrade.
-    expect(loadSession('hs-1', env, 1000)).toEqual({ ...entry, seq: 0 });
+    expect(saveState('hs-1', state(), env)).toBe(true);
+    expect(loadState('hs-1', env, T)).toEqual(state());
   });
 
   it('returns null for an unknown id', () => {
-    expect(loadSession('nope', env, 1000)).toBeNull();
+    expect(loadState('nope', env, T)).toBeNull();
   });
 
-  it('treats an entry past the TTL as absent and unlinks it', () => {
-    saveSession('hs-2', entry, env);
-    // 24h + 1ms later
-    expect(loadSession('hs-2', env, 1000 + 24 * 60 * 60 * 1000 + 1)).toBeNull();
-    // and a fresh read still sees nothing (file removed)
-    expect(loadSession('hs-2', env, 1000)).toBeNull();
+  it('treats state untouched for a day as absent and unlinks it', () => {
+    saveState('hs-2', state(), env);
+    expect(loadState('hs-2', env, T + 24 * 60 * 60 * 1000 + 1)).toBeNull();
+    expect(loadState('hs-2', env, T)).toBeNull();
   });
 
-  it('writes the token file 0600', () => {
-    saveSession('hs-3', entry, env);
+  it('measures that day from the last activity, not from when the session opened', () => {
+    saveState('hs-2b', { ...state(), lastActivityAt: T + 20 * 60 * 60 * 1000 }, env);
+    expect(loadState('hs-2b', env, T + 30 * 60 * 60 * 1000)).not.toBeNull();
+  });
+
+  it('writes the token file 0600 in a 0700 directory', () => {
+    saveState('hs-3', state(), env);
     const files = fs.readdirSync(path.join(dir, 'aer-hooks'));
     expect(files).toHaveLength(1);
-    const mode = fs.statSync(path.join(dir, 'aer-hooks', files[0]!)).mode & 0o777;
-    expect(mode).toBe(0o600);
+    expect(fs.statSync(path.join(dir, 'aer-hooks', files[0]!)).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(path.join(dir, 'aer-hooks')).mode & 0o777).toBe(0o700);
   });
 
   it('delete removes the entry', () => {
-    saveSession('hs-4', entry, env);
-    deleteSession('hs-4', env);
-    expect(loadSession('hs-4', env, 1000)).toBeNull();
+    saveState('hs-4', state(), env);
+    deleteState('hs-4', env);
+    expect(loadState('hs-4', env, T)).toBeNull();
   });
 
-  it('never throws on a bad cache path', () => {
-    const bad = { XDG_CACHE_HOME: path.join(dir, 'file-not-dir') } as NodeJS.ProcessEnv;
-    fs.writeFileSync(path.join(dir, 'file-not-dir'), 'x');
-    expect(() => saveSession('x', entry, bad)).not.toThrow();
-    expect(loadSession('x', bad, 1000)).toBeNull();
+  it('carries on a session an earlier release stored, rather than reopening it', () => {
+    fs.mkdirSync(path.join(dir, 'aer-hooks'), { recursive: true });
+    saveState('hs-legacy', state(), env);
+    const file = path.join(dir, 'aer-hooks', fs.readdirSync(path.join(dir, 'aer-hooks'))[0]!);
+    fs.writeFileSync(file, JSON.stringify({ aerSessionId: 'old-1', ingestToken: 'old-tok', baseUrl: 'https://api.test', createdAt: T, seq: 7, toolsOpen: 1, transcriptPath: '/t', transcriptOffset: 99, emittedLlmMessageIds: ['m1'] }));
+    const loaded = loadState('hs-legacy', env, T + 1)!;
+    expect(loaded.session).toEqual({ id: 'old-1', ingestToken: 'old-tok', baseUrl: 'https://api.test', openedAt: T });
+    expect(loaded.seq).toBe(7);
+    expect(loaded.toolsOpen).toBe(1);
+    expect(loaded.transcriptOffset).toBe(99);
+    expect(loaded.emittedLlmMessageIds).toEqual(['m1']);
+    expect(loaded.outbox).toEqual([]);
   });
 
-  it('degrades (writes nothing) when the cache dir is a symlink', () => {
+  it('reads an earlier release\'s opening marker as nothing open yet', () => {
+    saveState('hs-pending', state(), env);
+    const file = path.join(dir, 'aer-hooks', fs.readdirSync(path.join(dir, 'aer-hooks'))[0]!);
+    fs.writeFileSync(file, JSON.stringify({ pending: true, clientRef: 'v1:abc', createdAt: T }));
+    const loaded = loadState('hs-pending', env, T + 1)!;
+    expect(loaded.session).toBeUndefined();
+    expect(loaded.seq).toBe(0);
+  });
+
+  it('keeps at most the queue cap, dropping and counting the oldest', () => {
+    const st = freshState(T);
+    const ev = (i: number) => ({ id: `e${i}`, type: 'tool.started', ts: 'x', payload: { i } });
+    expect(enqueue(st, Array.from({ length: MAX_OUTBOX_EVENTS }, (_, i) => ev(i)))).toBe(0);
+    expect(enqueue(st, [ev(-1), ev(-2)])).toBe(2);
+    expect(st.outbox).toHaveLength(MAX_OUTBOX_EVENTS);
+    expect(st.outbox[0]!.id).toBe('e2');
+    expect(st.droppedBudget).toBe(2);
+  });
+
+  it('falls back to a private directory under the temp dir when the cache cannot be written', () => {
+    const blocker = path.join(dir, 'file-not-dir');
+    fs.writeFileSync(blocker, 'x');
+    const bad = { XDG_CACHE_HOME: blocker, TMPDIR: path.join(dir, 'tmp') } as NodeJS.ProcessEnv;
+    expect(saveState('x', state(), bad)).toBe(true);
+    const root = stateRoot(bad)!;
+    expect(path.dirname(root)).toBe(path.join(dir, 'tmp'));
+    expect(fs.statSync(root).mode & 0o777).toBe(0o700);
+    expect(loadState('x', bad, T)?.session?.id).toBe('s1');
+  });
+
+  it('refuses a directory planted as a link, anywhere in the chain, and never writes through it', () => {
     const real = path.join(dir, 'real-cache');
     fs.mkdirSync(real);
-    // XDG_CACHE_HOME/aer-hooks will be a symlink to `real`.
     const xdg = path.join(dir, 'xdg');
     fs.mkdirSync(xdg);
     fs.symlinkSync(real, path.join(xdg, 'aer-hooks'));
-    const env2 = { XDG_CACHE_HOME: xdg } as NodeJS.ProcessEnv;
-    expect(() => saveSession('hs', entry, env2)).not.toThrow();
-    // Nothing was written through the symlink.
+    const tmp = path.join(dir, 'tmp2');
+    fs.mkdirSync(tmp);
+    const uid = typeof process.getuid === 'function' ? String(process.getuid()) : os.userInfo().username;
+    fs.symlinkSync(real, path.join(tmp, `aer-hooks-${uid}`));
+    const env2 = { XDG_CACHE_HOME: xdg, TMPDIR: tmp } as NodeJS.ProcessEnv;
+    expect(() => saveState('hs', state(), env2)).not.toThrow();
+    expect(saveState('hs', state(), env2)).toBe(false);
     expect(fs.readdirSync(real)).toHaveLength(0);
   });
 
+  it('never throws when nowhere can be written', () => {
+    const blocker = path.join(dir, 'file-not-dir');
+    fs.writeFileSync(blocker, 'x');
+    const none = { XDG_CACHE_HOME: blocker, TMPDIR: blocker } as NodeJS.ProcessEnv;
+    expect(stateRoot(none)).toBeNull();
+    expect(saveState('x', state(), none)).toBe(false);
+    expect(loadState('x', none, T)).toBeNull();
+  });
+
   // The TOCTOU race this guards against: two concurrent hook processes both call
-  // loadSession(), both see null, and both open a new AER session for the same
+  // loadState(), both see null, and both open a new AER session for the same
   // harness session id. The lock forces one to wait for the other and re-check.
   describe('acquireSessionLock', () => {
     it('acquires immediately when uncontended, and release lets a later caller acquire', async () => {
@@ -130,10 +186,10 @@ describe('session-store', () => {
       lock2!.release();
     });
 
-    it('degrades to null (never throws) on an unwritable cache dir', async () => {
+    it('degrades to null (never throws) when nowhere can be written', async () => {
       const blocker = path.join(dir, 'blocker-file');
       fs.writeFileSync(blocker, 'x');
-      const badEnv = { XDG_CACHE_HOME: path.join(blocker, 'nope') } as NodeJS.ProcessEnv;
+      const badEnv = { XDG_CACHE_HOME: path.join(blocker, 'nope'), TMPDIR: blocker } as NodeJS.ProcessEnv;
       await expect(acquireSessionLock('hs-lock-5', badEnv)).resolves.toBeNull();
     });
 

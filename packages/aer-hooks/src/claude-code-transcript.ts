@@ -4,12 +4,22 @@
 
 import type { EventSink } from '@adastracomputing/aer-emit';
 import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import type { HookEvent } from './normalize.js';
 import { tailTranscript, type LlmUsageEvent } from './transcript-tail.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 
 /** How many message ids to remember per harness session, to bound the store. */
 const MAX_TRACKED_MESSAGE_IDS = 300;
+
+/**
+ * The first read of a transcript the hook has not seen before (the hook was
+ * installed partway through a session, or the state expired) covers only its
+ * tail, and keeps only the most recent model calls in it. A record starts
+ * when recording starts; a long history is not replayed into it in one go.
+ */
+export const FIRST_SCAN_TAIL_BYTES = 1024 * 1024;
+export const FIRST_SCAN_MAX_EVENTS = 50;
 
 const SCAN_KINDS: ReadonlySet<HookEvent['kind']> = new Set(['tool_end', 'turn_end', 'session_end', 'subagent_end']);
 
@@ -69,14 +79,23 @@ export function scanTranscriptForLlmUsage(event: HookEvent, prior: TranscriptUsa
   try {
     const transcriptPath = event.transcriptPath;
     const sameFile = prior.transcriptPath === transcriptPath;
-    const offset = sameFile ? (prior.transcriptOffset ?? 0) : 0;
+    let offset = sameFile ? (prior.transcriptOffset ?? 0) : 0;
     const emittedMessageIds = sameFile ? (prior.emittedLlmMessageIds ?? []) : [];
+    let startsMidLine = false;
+    if (!sameFile) {
+      const size = fs.statSync(transcriptPath).size;
+      if (size > FIRST_SCAN_TAIL_BYTES) {
+        offset = size - FIRST_SCAN_TAIL_BYTES;
+        startsMidLine = true;
+      }
+    }
 
-    const result = tailTranscript({ transcriptPath, offset, emittedMessageIds });
-    const nextIds = [...emittedMessageIds, ...result.events.map((e) => e.messageId)].slice(-MAX_TRACKED_MESSAGE_IDS);
+    const result = tailTranscript({ transcriptPath, offset, emittedMessageIds, startsMidLine });
+    const events = sameFile ? result.events : result.events.slice(-FIRST_SCAN_MAX_EVENTS);
+    const nextIds = [...emittedMessageIds, ...events.map((e) => e.messageId)].slice(-MAX_TRACKED_MESSAGE_IDS);
 
     return {
-      events: result.events,
+      events,
       state: { transcriptPath, transcriptOffset: result.nextOffset, emittedLlmMessageIds: nextIds },
     };
   } catch {

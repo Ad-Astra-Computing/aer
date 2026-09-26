@@ -27,6 +27,11 @@ export interface TranscriptTailState {
   offset: number;
   /** Assistant message ids already turned into an event in a prior call. */
   emittedMessageIds: string[];
+  /**
+   * The offset may fall inside a line (a read that starts partway into the
+   * file), so the first line of the window is discarded rather than parsed.
+   */
+  startsMidLine?: boolean;
 }
 
 export interface TranscriptTailResult {
@@ -104,9 +109,13 @@ export function tailTranscript(state: TranscriptTailState): TranscriptTailResult
     let lastEntryMessageId: string | undefined;
     let runningOffset = offset;
 
+    let first = true;
     for (const line of consumed.split('\n')) {
       const lineStartOffset = runningOffset;
       runningOffset += Buffer.byteLength(line, 'utf8') + 1; // +1 for the '\n' this line was split on
+      const partial = first && state.startsMidLine === true && !reset;
+      first = false;
+      if (partial) continue;
 
       if (line.trim().length === 0) continue;
       let entry: unknown;
