@@ -868,4 +868,141 @@ export default function register(registry) {
     c.assert.equal(moved.length, 1, 'quarantined copies');
     c.assert.equal(readFileSync(join(dir, moved[0]), 'utf8'), '{not json', 'quarantined content');
   });
+
+  // ---- coverage added after the first run -----------------------------------
+
+  t.case('smoke fails when the session never reaches the API', async (c) => {
+    // A workload exits 0 whether or not anything was recorded; smoke must ask
+    // the API, not trust the exit code.
+    const sink = await c.sink();
+    const { tenantId, agents } = withTenant(sink);
+    sink.fault({ method: 'POST', path: /^\/v1\/sessions$/, status: 500 });
+    const home = c.home();
+    const dir = await makeProject(c, { install: true, home });
+    c.assert.exit(await c.bin('aer', ['init', '--yes', '--tenant', tenantId, '--agent', agents[0].agent_id, '--base-url', sink.url], { cwd: dir, env: c.env(home) }), 0, 'init');
+    const r = await c.bin('aer', ['smoke'], { cwd: dir, env: c.env(home, { AER_API_KEY: 'aer_smoke_key', AER_BASE_URL: sink.url }), timeoutMs: 120_000 });
+    c.assert.exit(r, 1, 'smoke with every session open refused');
+    c.assert.includes(r.stderr, 'no session reached', 'says nothing was recorded');
+  }, { timeoutMs: 240_000 });
+
+  t.case('smoke records from an agent tool shell, since running it is an explicit request', async (c) => {
+    const sink = await c.sink();
+    const { tenantId, agents } = withTenant(sink);
+    const home = c.home();
+    const dir = await makeProject(c, { install: true, home });
+    c.assert.exit(await c.bin('aer', ['init', '--yes', '--tenant', tenantId, '--agent', agents[0].agent_id, '--base-url', sink.url], { cwd: dir, env: c.env(home) }), 0, 'init');
+    const r = await c.bin('aer', ['smoke'], { cwd: dir, env: c.env(home, { AER_API_KEY: 'aer_smoke_key', AER_BASE_URL: sink.url, CLAUDECODE: '1' }), timeoutMs: 120_000 });
+    c.assert.exit(r, 0, 'smoke in an agent shell');
+    c.assert.ok(sink.find('POST', /\/complete$/).length === 1, 'no completed session');
+  }, { timeoutMs: 240_000 });
+
+  t.case('commitments verify never reports an unsigned anchoring claim as anchored', async (c) => {
+    const { bundle, key } = await signedBundle(c);
+    bundle.integrity.anchored = true; // outside the signed hash: anyone can flip it
+    const dir = c.tmp();
+    writeFileSync(join(dir, 'bundle.json'), JSON.stringify(bundle));
+    writeFileSync(join(dir, 'key.json'), JSON.stringify(key));
+    writeFileSync(join(dir, 'requests.json'), '[]');
+    const r = await c.bin('aer', ['commitments', 'verify', '--requests', join(dir, 'requests.json'), '--bundle', join(dir, 'bundle.json'), '--key', join(dir, 'key.json')], { env: c.env(c.home(), { AER_COMMITMENT_KEY: randomBytes(32).toString('hex') }) });
+    const res = parseJson(c, r, 'commitments verify');
+    c.assert.equal(res.bundle_signature.hash_match, true, 'the flip does not break the hash');
+    c.assert.equal(res.bundle_signature.anchored, false, 'anchored from an unsigned claim');
+    c.assert.equal(res.bundle_signature.anchor_status, 'claimed', 'anchor_status');
+  });
+
+  t.case('login backs off on slow_down and on 429, then completes', async (c) => {
+    const sink = await c.sink();
+    const polls = [];
+    const answers = [
+      [400, { error: 'slow_down' }],
+      [429, { error: 'rate_limited' }],
+    ];
+    sink.route('POST', '/v1/cli/device/token', (req, res, ctx) => {
+      polls.push(Date.now());
+      const next = answers.shift();
+      if (next) return ctx.json(next[0], next[1]);
+      return false; // the default route mints the key
+    });
+    sink.device.pendingPolls = 0;
+    const home = c.home();
+    const r = await c.bin('aer', ['login', '--no-browser'], { env: c.env(home, { AER_BASE_URL: sink.url }), timeoutMs: 90_000 });
+    c.assert.exit(r, 0, 'login');
+    c.assert.equal(polls.length, 3, 'polls');
+    const gaps = [polls[1] - polls[0], polls[2] - polls[1]];
+    // interval 1 s; each slow_down or 429 adds 5 s, so about 6 s then 11 s.
+    c.assert.ok(gaps[0] >= 5500 && gaps[1] >= 10500 && gaps[1] > gaps[0], `poll gaps ${gaps.join(' ms, ')} ms`);
+    const stored = JSON.parse(readFileSync(join(home, '.config', 'aer', 'credentials.json'), 'utf8'))[sink.url];
+    c.assert.equal(stored?.api_key, sink.device.apiKey, 'stored key');
+    c.note(`poll gaps ${gaps.join(' ms, ')} ms`);
+  }, { timeoutMs: 120_000 });
+
+  t.case('login opens the verification page in a browser when a display is present', async (c) => {
+    // The opener is stubbed on PATH: the CLI runs xdg-open (open on macOS)
+    // with the URL as its own argument, never through a shell.
+    const sink = await c.sink();
+    const bin = c.tmp('opener-');
+    const log = join(bin, 'opened.log');
+    const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    writeFileSync(join(bin, opener), `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(log)}\n`, { mode: 0o755 });
+    const home = c.home();
+    const base = c.env(home, { AER_BASE_URL: sink.url, DISPLAY: ':99' });
+    const r = await c.bin('aer', ['login'], { env: { ...base, PATH: `${bin}:${base.PATH}` }, timeoutMs: 60_000 });
+    c.assert.exit(r, 0, 'login');
+    const deadline = Date.now() + 5000;
+    while (!existsSync(log) && Date.now() < deadline) await new Promise((res) => setTimeout(res, 50));
+    c.assert.ok(existsSync(log), 'the browser opener was never run');
+    c.assert.equal(readFileSync(log, 'utf8').trim(), `${sink.url}/cli/activate`, 'opened URL');
+
+    const log2 = join(bin, 'opened.log');
+    writeFileSync(log2, '');
+    sink.device.polls = 0;
+    const nb = await c.bin('aer', ['login', '--no-browser'], { env: { ...base, PATH: `${bin}:${base.PATH}` }, timeoutMs: 60_000 });
+    c.assert.exit(nb, 0, 'login --no-browser');
+    await new Promise((res) => setTimeout(res, 300));
+    c.assert.equal(readFileSync(log2, 'utf8'), '', '--no-browser still opened a browser');
+  });
+
+  t.case('logout --all revokes and removes every stored credential', async (c) => {
+    const a = await c.sink();
+    const b = await c.sink();
+    const home = c.home();
+    storeCredential(home, a.url, { api_key: 'aer_cli_all_a' });
+    const file = storeCredential(home, b.url, { api_key: 'aer_cli_all_b' });
+    const r = await c.bin('aer', ['logout', '--all'], { env: c.env(home), timeoutMs: 30_000 });
+    c.assert.exit(r, 0, 'logout --all');
+    c.assert.equal(bearerOf(a.find('POST', '/v1/cli/logout')[0] ?? { headers: {} }), 'aer_cli_all_a', 'first host revoked');
+    c.assert.equal(bearerOf(b.find('POST', '/v1/cli/logout')[0] ?? { headers: {} }), 'aer_cli_all_b', 'second host revoked');
+    c.assert.equal(Object.keys(JSON.parse(readFileSync(file, 'utf8'))).length, 0, 'credentials left behind');
+    const again = await c.bin('aer', ['logout', '--all'], { env: c.env(home) });
+    c.assert.exit(again, 0, 'logout --all with nothing stored');
+    c.assert.includes(again.stdout, 'Not logged in anywhere', 'message');
+  });
+
+  t.case('link without flags in a terminal offers a picker and writes the chosen agent', async (c) => {
+    // The picker runs only when stdin and stdout are a TTY, so this runs the
+    // CLI under a pseudo-terminal from util-linux script(1) and answers the
+    // prompt on its stdin.
+    const probe = await c.run('script', ['--version'], { env: c.env(c.home()) }).catch(() => null);
+    if (!probe || probe.code !== 0 || !/util-linux/.test(probe.stdout + probe.stderr)) return { skip: 'needs util-linux script(1) for a pseudo-terminal' };
+    const sink = await c.sink();
+    const { tenantId, agents } = withTenant(sink);
+    const home = c.home();
+    storeCredential(home, sink.url, { api_key: 'aer_cli_link', tenant_id: tenantId });
+    const proj = c.tmp('proj-');
+    const env = c.env(home, { AER_BASE_URL: sink.url, TERM: 'dumb' });
+    const cmd = `${join(c.install.binDir, 'aer')} link`;
+    const r = await c.run('script', ['-qec', cmd, '/dev/null'], { cwd: proj, env, input: '1\n', timeoutMs: 60_000 });
+    c.assert.exit(r, 0, `aer link under a pty; output: ${r.stdout.slice(-300)}`);
+    c.assert.includes(r.stdout, 'Pick an agent', 'picker shown');
+    c.assert.includes(r.stdout, agents[1].agent_id, 'agents listed');
+    const cfg = JSON.parse(readFileSync(join(proj, 'aer.config.json'), 'utf8'));
+    c.assert.equal(cfg.agent_id, agents[1].agent_id, 'chosen agent');
+    c.assert.equal(cfg.tenant_id, tenantId, 'tenant');
+
+    const proj2 = c.tmp('proj-');
+    const bad = await c.run('script', ['-qec', cmd, '/dev/null'], { cwd: proj2, env, input: 'nope\n', timeoutMs: 60_000 });
+    c.assert.nonZero(bad, 'an answer that is not a number');
+    c.assert.ok(!existsSync(join(proj2, 'aer.config.json')), 'a config was written without a choice');
+  });
 }
+
