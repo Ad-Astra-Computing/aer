@@ -257,7 +257,7 @@ class JwksCache {
       const found = entry.keys.find((k) => k.kid === kid);
       if (found) return found;
     }
-    // Stale, missing, or unknown kid -> refetch (rate-limited for a fresh set).
+    // Stale, missing or unknown kid -> refetch (rate-limited for a fresh set).
     if (!entry || !fresh || (nowMs - entry.lastFetch >= MIN_REFETCH_MS)) {
       try {
         entry = await this.fetch(url, fetchImpl, nowMs);
