@@ -92,6 +92,12 @@ degrades to a name-only event and never breaks the host SDK call.
 
 - **Kill switch**: `AER_DISABLE=1` installs nothing. No patches, no session, no
   config reads beyond env.
+- **Off inside an agent's tool shell**: Claude Code exports its own environment,
+  `AER_*` credentials included, into every command it runs. A Node process started
+  there (a test, a build script, your app run by the agent) would otherwise record
+  into the agent's account. When `CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT` is set,
+  the collector does not start and prints one line saying so. Set
+  `AER_RECORD_IN_AGENT_SHELL=1` to record such a process on purpose.
 - **Never throws into the host**: capture failures are swallowed and counted.
 - **Lazy**: the session opens on the first captured event, never for a plain
   script that does nothing instrumentable.
