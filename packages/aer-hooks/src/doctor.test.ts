@@ -75,6 +75,31 @@ describe('diagnoseVersion', () => {
     expect(diagnoseVersion('unknown', '0.5.0')).toBeUndefined();
   });
 
+  it('says "wired" by default, since most callers have a harness config', () => {
+    const f = diagnoseVersion('0.1.3', '0.5.0');
+    expect(f?.detail).toContain('wired');
+  });
+
+  it('says "on PATH" instead of "wired" when no harness config references it', () => {
+    const f = diagnoseVersion('0.1.3', '0.5.0', { wired: false });
+    expect(f?.detail).toContain('on PATH');
+    expect(f?.detail).not.toContain('wired');
+  });
+
+  it('reports an unreadable version distinctly from a real stale one, and still suggests the upgrade', () => {
+    const f = diagnoseVersion('unreadable', '0.5.0');
+    expect(f?.reason).toBe('outdated_collector');
+    expect(f?.detail).toContain('could not be read');
+    expect(f?.detail).not.toContain('0.0.0');
+    expect(f?.fix).toContain('aer-hooks install');
+  });
+
+  it('says "on PATH" for an unreadable version too, when nothing wires it', () => {
+    const f = diagnoseVersion('unreadable', '0.5.0', { wired: false });
+    expect(f?.detail).toContain('on PATH');
+    expect(f?.detail).not.toContain('wired');
+  });
+
   // Review P2: a "current" version below the pinned B1 floor (e.g. read
   // wrong through a consumer's bundle) must not make an installed release
   // that predates B1 look clean.
