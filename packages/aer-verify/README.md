@@ -11,8 +11,11 @@ and the browser.
 
 ## Install
 
+Every package here is pre-1.0, so install the `next` dist-tag until this
+README says otherwise:
+
 ```
-npm install @adastracomputing/aer-verify
+npm install @adastracomputing/aer-verify@next
 ```
 
 Zero runtime dependencies. Uses Web Crypto (`crypto.subtle`), available in Node
@@ -46,6 +49,21 @@ const result = await verifyAerBundle(bundle, {
   pinnedKeys: [{ signing_key_id: '…', public_key_hex: '…', status: 'active' }],
 });
 result.checks.key_pinned; // true
+```
+
+### Require a pinned key, or require anchoring
+
+`policy.requirePinnedKey` and `policy.requireAnchor` turn an optional check
+into one the overall verdict fails without. Passing `pinnedKeys` already
+requires the bundle's key to be one of them; `requirePinnedKey` makes that
+mandatory even when you passed none. `requireAnchor` fails the verdict on a
+bundle that verifies but was never anchored to the transparency log.
+
+```ts
+const result = await verifyAerBundle(bundle, {
+  pinnedKeys: [{ signing_key_id: '…', public_key_hex: '…', status: 'active' }],
+  policy: { requirePinnedKey: true, requireAnchor: true },
+});
 ```
 
 ## Result

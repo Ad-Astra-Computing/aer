@@ -11,11 +11,11 @@ Point it at a Node project and it wires in the AER auto-collector
 unattended by a coding agent.
 
 ```bash
-npx @adastracomputing/aer init                       # detect + write config, env, docs, manifest; wire NODE_OPTIONS
-npx @adastracomputing/aer init --dry-run --json      # print the plan + integration manifest, write nothing
-npx @adastracomputing/aer init --yes --tenant <id> --agent <id> --env <id>
-npx @adastracomputing/aer doctor                     # check the integration is correct (exit 1 on problems)
-npx @adastracomputing/aer smoke                      # run a tiny instrumented workload end to end
+npx @adastracomputing/aer@next init                       # detect + write config, env, docs, manifest; wire NODE_OPTIONS
+npx @adastracomputing/aer@next init --dry-run --json      # print the plan + integration manifest, write nothing
+npx @adastracomputing/aer@next init --yes --tenant <id> --agent <id> --env <id>
+npx @adastracomputing/aer@next doctor                     # check the integration is correct (exit 1 on problems)
+npx @adastracomputing/aer@next smoke                      # run a tiny instrumented workload end to end
 ```
 
 `init` detects the package manager, runnable scripts and installed LLM SDKs
@@ -34,10 +34,10 @@ before anything is written or any request is sent.
 ## Sign in once per machine: `aer login`
 
 ```bash
-npx @adastracomputing/aer login                      # opens https://aer.run/device, prints a code to type
-npx @adastracomputing/aer login --no-browser          # never try to open a browser (SSH, containers)
-npx @adastracomputing/aer whoami                      # base URL, tenant, role, key prefix, expiry
-npx @adastracomputing/aer logout                      # revoke the key aer login minted, forget it locally
+npx @adastracomputing/aer@next login                      # opens https://aer.run/device, prints a code to type
+npx @adastracomputing/aer@next login --no-browser          # never try to open a browser (SSH, containers)
+npx @adastracomputing/aer@next whoami                      # base URL, tenant, role, key prefix, expiry
+npx @adastracomputing/aer@next logout                      # revoke the key aer login minted, forget it locally
 ```
 
 `login` runs the OAuth device authorization flow: it prints a verification
@@ -59,21 +59,21 @@ Running `aer login` again for a host you are already logged into revokes the
 previous key first, so repeated logins do not pile up live keys server-side.
 
 Every tenant command, including `aer import claude-code`, resolves
-credentials in this order: an explicit flag, then the environment
-(`AER_TENANT_API_KEY` / `AER_API_KEY`, as before), then `aer.config.json`,
-then the credentials file `aer login` wrote for the base URL in use. An
-explicit environment key always wins over a stored one, with one exception:
-if that key came from the environment (or a flag) and the base URL came only
-from `aer.config.json` in the current directory and differs from the
+credentials in this order: the environment (`AER_TENANT_API_KEY` /
+`AER_API_KEY`, as before), then `aer.config.json`, then the credentials file
+`aer login` wrote for the base URL in use. No command takes the key as a
+flag. An environment key always wins over a stored one, with one exception:
+if that key came from the environment and the base URL came only from
+`aer.config.json` in the current directory and differs from the
 default, the command refuses rather than send your key to a host a cloned
 repo chose. Set `AER_BASE_URL` yourself to confirm you mean it.
 
 ## Link a project: `aer link`
 
 ```bash
-npx @adastracomputing/aer link                        # interactive agent picker (needs a terminal)
-npx @adastracomputing/aer link --agent <id>
-npx @adastracomputing/aer link --create-agent my-agent
+npx @adastracomputing/aer@next link                        # interactive agent picker (needs a terminal)
+npx @adastracomputing/aer@next link --agent <id>
+npx @adastracomputing/aer@next link --create-agent my-agent
 ```
 
 Writes or updates `aer.config.json` in the current directory using the
@@ -89,7 +89,7 @@ Downloads the canonical bundle and the public signing key, recomputes the hash
 and checks the Ed25519 signature and transparency anchor locally.
 
 ```bash
-AER_BASE_URL=https://api.aer.run npx @adastracomputing/aer verify <aer-id>
+AER_BASE_URL=https://api.aer.run npx @adastracomputing/aer@next verify <aer-id>
 ```
 
 ## Other commands
@@ -160,7 +160,9 @@ Behavior:
 ## Requirements
 
 Node 22 or newer. The published binary is a single self-contained file with no
-runtime dependencies.
+runtime dependencies. This package is pre-1.0: `npx` needs `@next` to reach the
+version documented above, since `latest` moves only once a release has run
+somewhere real.
 
 ## License
 

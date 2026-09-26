@@ -6,8 +6,11 @@ ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Install
 
+Every package here is pre-1.0, so install the `next` dist-tag until this
+README says otherwise:
+
 ```
-npm install @adastracomputing/aer-sdk-ts
+npm install @adastracomputing/aer-sdk-ts@next
 ```
 
 For zero-code capture, use `@adastracomputing/aer-auto-node` instead; this SDK

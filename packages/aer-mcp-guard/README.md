@@ -26,8 +26,11 @@ ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Install
 
+Every package here is pre-1.0, so install the `next` dist-tag until this
+README says otherwise:
+
 ```
-npm install @adastracomputing/aer-mcp-guard
+npm install @adastracomputing/aer-mcp-guard@next
 ```
 
 ## Hono
@@ -61,6 +64,14 @@ if (!result.ok) {
   return new Response(JSON.stringify(result.jsonRpcError), { status: result.status });
 }
 // result.claims.agent_id / agent_session_id / tenant_id …
+```
+
+By default the guard reads the token from `X-AER-Attestation` only. Pass
+`allowBearer: true` to also accept `Authorization: Bearer`, for a client that
+cannot set a custom header:
+
+```ts
+honoMcpGuard({ audience: 'mcp://payments-prod', allowBearer: true });
 ```
 
 ## Revocation (optional)

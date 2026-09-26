@@ -30,8 +30,11 @@ captures argument values or result content unless you explicitly opt in.
 
 ## Install
 
+Every package here is pre-1.0, so install the `next` dist-tag until this
+README says otherwise:
+
 ```
-npm i -g @adastracomputing/aer-mcp-recorder
+npm install -g @adastracomputing/aer-mcp-recorder@next
 ```
 
 ## Claude Code config
