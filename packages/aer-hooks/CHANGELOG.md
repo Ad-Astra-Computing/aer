@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1
+
+### Patch Changes
+
+- [`2fba316`](https://github.com/Ad-Astra-Computing/aer/commit/2fba31694fe8fdbf23461f479cc71a50fa2843f4) - `aer doctor` and `aer-hooks status` no longer call an `aer-hook` binary
+  "wired" when nothing actually points at it: they now say it was found "on
+  PATH" instead, and reserve "wired" for a binary a harness config really
+  references. An install too old to print its own version is reported as
+  unreadable rather than as a specific version number nobody actually read off
+  it, and the message still tells you to upgrade.
+
 ## 0.4.0
 
 ### Minor Changes
