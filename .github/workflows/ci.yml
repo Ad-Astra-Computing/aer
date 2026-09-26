@@ -42,6 +42,10 @@ jobs:
       # landed in one published package and not the other.
       - run: node scripts/check-vendored.mjs
 
+      # Checked before the build, which would regenerate them and hide a
+      # release PR that bumped a version without its baked-in copy.
+      - run: node scripts/write-versions.mjs --check
+
       - run: pnpm -r build
 
       - run: pnpm -r typecheck

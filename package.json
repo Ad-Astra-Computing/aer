@@ -10,7 +10,7 @@
     "test": "pnpm -r build && pnpm -r test",
     "typecheck": "node scripts/check-vendored.mjs && pnpm -r typecheck",
     "changeset": "changeset",
-    "version-packages": "changeset version",
+    "version-packages": "changeset version && node scripts/write-versions.mjs",
     "release": "pnpm -r build && changeset publish --tag next",
     "promote": "node scripts/promote-latest.mjs",
     "check:vendored": "node scripts/check-vendored.mjs"
