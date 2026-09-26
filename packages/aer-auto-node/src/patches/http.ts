@@ -11,6 +11,8 @@ import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { CollectorEvent } from '../session.js';
 import type { Attestor } from '../attestor.js';
 import { safeHost } from '../redaction.js';
+import { looksLikeModelCall } from '../adapters/coverage.js';
+import type { RequestObserver } from './index.js';
 import { responseBytesField } from './response-size.js';
 
 type Capture = (event: CollectorEvent) => void;
@@ -25,7 +27,7 @@ const noop = (): void => undefined;
 
 type RequestFn = typeof http.request;
 
-export function installHttpPatch(capture: Capture, attestor?: Attestor): () => void {
+export function installHttpPatch(capture: Capture, attestor?: Attestor, onRequest?: RequestObserver): () => void {
   const slot = globalThis as unknown as PatchSlot;
   if (slot[PATCHED]) return noop;
 
@@ -44,6 +46,12 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor): () => v
         event_type: 'http.requested',
         payload: { host: meta.host, method: meta.method },
       });
+      if (onRequest) {
+        try {
+          const q = meta.rawPath.indexOf('?');
+          onRequest(meta.host, looksLikeModelCall(q < 0 ? meta.rawPath : meta.rawPath.slice(0, q)));
+        } catch { /* never break the host request */ }
+      }
       // Attestation injection (HTTPS + configured protected hosts only). The
       // sync API can't await a mint, so we inject a cached token if present and
       // warm the cache otherwise (next request to this host is then covered).

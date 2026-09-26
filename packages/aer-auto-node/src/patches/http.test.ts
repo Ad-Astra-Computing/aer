@@ -88,6 +88,17 @@ describe('installHttpPatch', () => {
     uninstall();
   });
 
+  it('tells the observer whether a request looked like a model call, without recording the path', async () => {
+    const { capture, events } = withCapture();
+    const seen: Array<[string, boolean]> = [];
+    const uninstall = installHttpPatch(capture, undefined, (host, shaped) => seen.push([host, shaped]));
+    await get('/v1/chat/completions?key=x');
+    await get('/healthz');
+    uninstall();
+    expect(seen).toEqual([[`127.0.0.1:${port}`, true], [`127.0.0.1:${port}`, false]]);
+    expect(JSON.stringify(events)).not.toContain('chat/completions');
+  });
+
   it('records a host that is not a host name as unknown rather than passing it through', async () => {
     const { capture, events } = withCapture();
     const uninstall = installHttpPatch(capture);
