@@ -243,25 +243,42 @@ class JwksCache {
   /** Reset (tests). */
   reset(): void { this.entries.clear(); }
 
+  /**
+   * The key for `kid`, or null when a JWKS we could read does not publish it.
+   * Throws AttestationError('jwks_unavailable') when the answer depends on a
+   * JWKS that could not be fetched: a cold cache, an expired one (no
+   * stale-if-error: an unreachable JWKS is a denial), or a kid that is not in
+   * the cached set when the refetch for it fails.
+   */
   async get(url: string, kid: string, fetchImpl: typeof fetch, nowMs: number): Promise<Jwk | null> {
     let entry = this.entries.get(url);
-    const fresh = entry && entry.expiresAt > nowMs;
+    const fresh = entry !== undefined && entry.expiresAt > nowMs;
     if (entry && fresh) {
       const found = entry.keys.find((k) => k.kid === kid);
       if (found) return found;
     }
-    // Stale, missing, or unknown kid → refetch (rate-limited).
+    // Stale, missing, or unknown kid -> refetch (rate-limited for a fresh set).
     if (!entry || !fresh || (nowMs - entry.lastFetch >= MIN_REFETCH_MS)) {
-      entry = await this.fetch(url, fetchImpl, nowMs).catch(() => entry ?? undefined) as CacheEntry | undefined;
+      try {
+        entry = await this.fetch(url, fetchImpl, nowMs);
+      } catch (err) {
+        // An expired set is dropped, never reused: the keys it holds may have
+        // been revoked in the meantime.
+        if (!fresh) this.entries.delete(url);
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new AttestationError('jwks_unavailable', `JWKS could not be fetched: ${detail}`);
+      }
     }
-    return entry?.keys.find((k) => k.kid === kid) ?? null;
+    return entry.keys.find((k) => k.kid === kid) ?? null;
   }
 
   private async fetch(url: string, fetchImpl: typeof fetch, nowMs: number): Promise<CacheEntry> {
     const res = await fetchImpl(url);
-    if (!res.ok) throw new AttestationError('jwks_fetch_failed', `status ${res.status}`);
-    const body = (await res.json()) as { keys?: Jwk[] };
-    const keys = Array.isArray(body.keys) ? body.keys : [];
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const body = (await res.json()) as { keys?: unknown };
+    // A document with no key list is not a JWKS; it cannot say a kid is unknown.
+    if (!body || !Array.isArray(body.keys)) throw new Error('response is not a JWKS');
+    const keys = body.keys as Jwk[];
     const maxAge = parseMaxAge(res.headers.get('cache-control')) ?? 300;
     const entry: CacheEntry = { keys, expiresAt: nowMs + maxAge * 1000, lastFetch: nowMs };
     this.entries.set(url, entry);
