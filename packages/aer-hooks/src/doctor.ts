@@ -98,7 +98,7 @@ export function diagnoseVersion(
     return {
       harness: 'any',
       reason: 'outdated_collector',
-      detail: `${subject}'s version could not be read, which usually means it predates ${effectiveCurrent}`,
+      detail: `could not read the version of ${subject}, so it is probably older than ${effectiveCurrent}`,
       fix,
     };
   }

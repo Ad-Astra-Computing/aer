@@ -49,7 +49,7 @@ describe('staleRegistrations version reporting', () => {
         const findings = await staleRegistrations({ dir });
         const versionFinding = findings.find((f) => f.reason === 'outdated_collector');
         expect(versionFinding).toBeDefined();
-        expect(versionFinding?.detail).toContain('could not be read');
+        expect(versionFinding?.detail).toContain('could not read the version');
         expect(versionFinding?.detail).not.toContain('0.0.0');
         expect(versionFinding?.fix).toContain('aer-hooks install');
       } finally {

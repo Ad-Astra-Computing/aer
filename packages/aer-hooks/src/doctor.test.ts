@@ -89,7 +89,7 @@ describe('diagnoseVersion', () => {
   it('reports an unreadable version distinctly from a real stale one, and still suggests the upgrade', () => {
     const f = diagnoseVersion('unreadable', '0.5.0');
     expect(f?.reason).toBe('outdated_collector');
-    expect(f?.detail).toContain('could not be read');
+    expect(f?.detail).toContain('could not read the version');
     expect(f?.detail).not.toContain('0.0.0');
     expect(f?.fix).toContain('aer-hooks install');
   });
