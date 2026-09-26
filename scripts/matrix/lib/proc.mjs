@@ -6,9 +6,26 @@
  * later case look healthy.
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, delimiter } from 'node:path';
+import { join, delimiter, dirname } from 'node:path';
+
+/** Binaries the matrix tests. A copy of any of them elsewhere must not be found. */
+export const AER_BINS = ['aer', 'aer-hook', 'aer-hooks', 'aer-mcp-recorder'];
+
+/**
+ * The machine's PATH minus every directory that holds an AER binary, with
+ * Node's own directory kept. A developer machine often has an older aer-hook
+ * installed (a nix profile, a global npm), and a case that resolved it
+ * instead of the install under test would report on the wrong code.
+ */
+export function strippedPath() {
+  const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  const kept = dirs.filter((d) => !AER_BINS.some((b) => existsSync(join(d, b))));
+  const nodeDir = dirname(process.execPath);
+  if (!kept.includes(nodeDir)) kept.unshift(nodeDir);
+  return kept;
+}
 
 /**
  * Run a command and collect its output. Never rejects for a non-zero exit:
@@ -86,7 +103,7 @@ export function cleanEnv(home, extra = {}, extraPath = []) {
   mkdirSync(join(home, '.local', 'share'), { recursive: true });
   mkdirSync(join(home, '.local', 'state'), { recursive: true });
   const env = {
-    PATH: [...extraPath, process.env.PATH ?? ''].filter(Boolean).join(delimiter),
+    PATH: [...extraPath, ...strippedPath()].filter(Boolean).join(delimiter),
     HOME: home,
     USERPROFILE: home,
     XDG_CONFIG_HOME: join(home, '.config'),
