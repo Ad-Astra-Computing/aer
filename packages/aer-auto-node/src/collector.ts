@@ -27,7 +27,9 @@ import { fetchUsagePolicy } from './policy-fetch.js';
 import { startFrameworkObserver, type FrameworkObserver } from './frameworks/observe.js';
 
 export const COLLECTOR_NAME = '@adastracomputing/aer-auto-node';
-export const COLLECTOR_VERSION = '0.3.0'; // keep in sync with package.json
+// Baked from package.json at build time by scripts/write-version.mjs.
+export { COLLECTOR_VERSION } from './version.generated.js';
+import { COLLECTOR_VERSION } from './version.generated.js';
 // Event-schema contract this collector build speaks. Declared at session create
 // so collector/API version skew is explicit rather than inferred at ingest.
 export const SCHEMA_CAPABILITY = 'aer-events.v1';
