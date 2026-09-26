@@ -119,19 +119,22 @@ export default function register(registry, env) {
     c.assert.equal(res.ok, true, `denied: ${JSON.stringify(res.jsonRpcError)}`);
   });
 
-  for (const [mode, prep] of [
-    ['unreachable', async (s) => ({ jwksUrl: `http://127.0.0.1:${await deadPort()}${JWKS_PATH}` })],
-    ['HTTP 500', async (s) => { s.fault({ path: /jwks/, status: 500 }); return {}; }],
-    ['empty key set', async (s) => { s.jwks = { keys: [] }; return {}; }],
+  // An outage cannot decide, so it is 503 jwks_unavailable, like an
+  // unreachable introspection endpoint; a readable JWKS without the key is a
+  // bad token, 401 unknown_kid.
+  for (const [mode, status, reason, prep] of [
+    ['unreachable', 503, 'jwks_unavailable', async (s) => ({ jwksUrl: `http://127.0.0.1:${await deadPort()}${JWKS_PATH}` })],
+    ['HTTP 500', 503, 'jwks_unavailable', async (s) => { s.fault({ path: /jwks/, status: 500 }); return {}; }],
+    ['empty key set', 401, 'unknown_kid', async (s) => { s.jwks = { keys: [] }; return {}; }],
   ]) {
-    t.case(`fail closed cold: JWKS ${mode} denies with 401`, async (c) => {
+    t.case(`fail closed cold: JWKS ${mode} denies with ${status} ${reason}`, async (c) => {
       const s = await c.sink();
       const extra = await prep(s);
       const res = await guard(c, { headers: { 'x-aer-attestation': signJwt(s.attestationKey, claims()) }, opts: { ...base(s), ...extra } });
       c.assert.equal(res.ok, false, `JWKS ${mode}: admitted`);
-      c.assert.equal(res.status, 401, 'status');
+      c.assert.equal(res.status, status, 'status');
       c.assert.equal(res.jsonRpcError?.error?.code, -32001, 'error.code');
-      c.note(`reason ${res.jsonRpcError?.error?.data?.reason}`);
+      c.assert.equal(res.jsonRpcError?.error?.data?.reason, reason, 'reason');
     });
   }
 

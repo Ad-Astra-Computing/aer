@@ -63,8 +63,10 @@ const token = input.tokenKind ? tokens[input.tokenKind] : input.token;
 const runs = input.repeat ?? 1;
 const out = [];
 for (let i = 0; i < runs; i++) {
-  if (i > 0 && input.pauseMs) await new Promise((r) => setTimeout(r, input.pauseMs));
+  // Take the JWKS down first, then wait: the sink closes a few ms after it
+  // answers, and a verify sent inside that window would still reach it.
   if (i > 0 && input.betweenUrl) await fetch(input.betweenUrl, { method: 'POST' }).catch(() => {});
+  if (i > 0 && input.pauseMs) await new Promise((r) => setTimeout(r, input.pauseMs));
   try {
     const claims = await verifyAttestation(token, input.opts);
     out.push({ ok: true, agent_id: claims.agent_id });
@@ -175,25 +177,28 @@ export default function register(registry, env) {
   });
 
   // JWKS failure modes, each cold: the process has never fetched a JWKS.
+  // Each mode with the reason it must be reported as: an outage is
+  // jwks_unavailable (could not decide), a readable JWKS without the key is
+  // unknown_kid.
   const jwksModes = [
-    ['unreachable', async (s) => ({ jwksUrl: `http://127.0.0.1:${await deadPort()}${JWKS_PATH}` })],
-    ['HTTP 503', async (s) => { s.sink.fault({ path: /jwks/, status: 503 }); return {}; }],
-    ['non-JSON body', async (s) => {
+    ['unreachable', 'jwks_unavailable', async (s) => ({ jwksUrl: `http://127.0.0.1:${await deadPort()}${JWKS_PATH}` })],
+    ['HTTP 503', 'jwks_unavailable', async (s) => { s.sink.fault({ path: /jwks/, status: 503 }); return {}; }],
+    ['non-JSON body', 'jwks_unavailable', async (s) => {
       s.sink.route('GET', JWKS_PATH, (req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<html>login</html>'); });
       return {};
     }],
-    ['empty key set', async (s) => { s.sink.jwks = { keys: [] }; return {}; }],
-    ['keys is not an array', async (s) => { s.sink.jwks = { keys: { [s.key.kid]: s.key.publicJwk } }; return {}; }],
-    ['connection reset', async (s) => { s.sink.fault({ path: /jwks/, destroy: true }); return {}; }],
+    ['empty key set', 'unknown_kid', async (s) => { s.sink.jwks = { keys: [] }; return {}; }],
+    ['keys is not an array', 'jwks_unavailable', async (s) => { s.sink.jwks = { keys: { [s.key.kid]: s.key.publicJwk } }; return {}; }],
+    ['connection reset', 'jwks_unavailable', async (s) => { s.sink.fault({ path: /jwks/, destroy: true }); return {}; }],
   ];
-  for (const [mode, prep] of jwksModes) {
+  for (const [mode, reason, prep] of jwksModes) {
     t.case(`fail closed cold: JWKS ${mode}`, async (c) => {
       const s = await setup(c);
       const extra = await prep(s);
       const [v] = await verifyCold(c, { token: signJwt(s.key, claims()), opts: { audience: AUDIENCE, jwksUrl: s.jwksUrl, ...extra } });
       c.assert.equal(v.ok, false, `JWKS ${mode}: token accepted`);
       c.assert.equal(v.isAttestationError, true, `JWKS ${mode}: error type ${v.name}: ${v.message}`);
-      c.note(`reason ${v.code}`);
+      c.assert.equal(v.code, reason, `JWKS ${mode}: reason`);
     });
   }
 
@@ -218,6 +223,7 @@ export default function register(registry, env) {
     c.assert.equal(out[0].ok, true, `first verify rejected: ${out[0].code}`);
     c.note(`second verify after the JWKS went away: ${out[1].ok ? 'ACCEPTED from the stale cache' : `denied ${out[1].code}`}`);
     c.assert.equal(out[1].ok, false, 'a JWKS entry past its max-age was reused after the refetch failed (stale-if-error); AGENTS.md says an unreachable JWKS is a denial');
+    c.assert.equal(out[1].code, 'jwks_unavailable', 'reason for the outage');
   });
 
   for (const kind of ['null', 'undefined', 'number', 'object', 'array', 'boolean']) {
