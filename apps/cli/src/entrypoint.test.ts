@@ -20,6 +20,12 @@ import { createHash } from 'node:crypto';
 import { distProblem } from '../../../scripts/require-dist.mjs';
 
 const execFileAsync = promisify(execFile);
+
+// Children never inherit the developer's AER_* settings: a shell (an agent's
+// tool shell in particular) can carry real production credentials.
+const cleanParentEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AER_')));
+
 const pkgRoot = resolve(import.meta.dirname, '..');
 const built = join(pkgRoot, 'dist', 'main.js');
 
@@ -32,7 +38,7 @@ async function run(bin: string, args: string[], cwd = pkgRoot): Promise<Run> {
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, [bin, ...args], {
       cwd,
-      env: { ...process.env, AER_BASE_URL: '' },
+      env: { ...cleanParentEnv(), AER_BASE_URL: '' },
     });
     return { code: 0, out: stdout + stderr };
   } catch (err) {
@@ -56,7 +62,7 @@ async function runWithEnv(bin: string, args: string[], extra: Record<string, str
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, [bin, ...args], {
       cwd: pkgRoot,
-      env: { ...process.env, ...extra },
+      env: { ...cleanParentEnv(), ...extra },
     });
     return { code: 0, out: stdout + stderr };
   } catch (err) {

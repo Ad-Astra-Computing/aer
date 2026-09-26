@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { canonicalHash, stripIntegrity } from '@aer/schemas';
+import { verifyBundleSignature } from './verify.js';
 import {
   verifyCommitments,
   runCommitmentsVerify,
@@ -245,5 +246,36 @@ describe('runCommitmentsVerify (runner)', () => {
     await expect(
       runCommitmentsVerify(['--requests', 'reqs.json'], { baseUrl: 'https://api.test', commitmentKey: KEY_HEX, readFile: async () => REQS }),
     ).rejects.toThrow(/--aer|--bundle/);
+  });
+});
+
+// integrity.anchored sits outside the signed canonical hash, so anyone can
+// flip it without breaking the signature. The bundle check behind
+// `aer commitments verify` used to echo it as `anchored`, so a tampered
+// bundle printed anchored: true while carrying no transparency-log evidence.
+describe('verifyBundleSignature and the unsigned anchoring claim', () => {
+  it('never reports anchored from the claim; a flipped claim is shown as claimed', async () => {
+    const { signed, publicKeyHex, kid } = await signBundle({ aer_id: 'aer-anchor-claim', content_commitments: [] });
+    const flipped = { ...signed, integrity: { ...signed.integrity, anchored: true } };
+    const trustRoot = { aerSigningKeys: [{ signing_key_id: kid, public_key_hex: publicKeyHex }], rekorLogs: [] };
+    const res = await verifyBundleSignature(flipped, {
+      key: { signing_key_id: kid, sig_alg: 'ed25519', public_key_hex: publicKeyHex },
+      trustRoot,
+      fetchImpl: (async () => { throw new Error('no network'); }) as unknown as typeof fetch,
+    });
+    expect(res.verified).toBe(true); // the claim is unsigned: flipping it is not tampering the record
+    expect(res.anchored).toBe(false);
+    expect(res.anchor_status).toBe('claimed');
+  });
+
+  it('reports none for a bundle that makes no claim, and false before any key is found', async () => {
+    const { signed, publicKeyHex, kid } = await signBundle({ aer_id: 'aer-no-claim', content_commitments: [] });
+    const trustRoot = { aerSigningKeys: [{ signing_key_id: kid, public_key_hex: publicKeyHex }], rekorLogs: [] };
+    const ok = await verifyBundleSignature(signed, { key: { signing_key_id: kid, sig_alg: 'ed25519', public_key_hex: publicKeyHex }, trustRoot, fetchImpl: fetch });
+    expect(ok.anchor_status).toBe('none');
+    const flipped = { ...signed, integrity: { ...signed.integrity, anchored: true } };
+    const noKey = await verifyBundleSignature(flipped, { trustRoot, fetchImpl: fetch });
+    expect(noKey.anchored).toBe(false);
+    expect(noKey.anchor_status).toBe('claimed');
   });
 });

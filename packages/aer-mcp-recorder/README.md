@@ -109,6 +109,11 @@ recorder to flush its last events and close the AER session. If that budget is
 exceeded, the proxy exits `70` and writes one line to stderr noting the record may
 be incomplete, rather than reporting a silent success.
 
+A wrapped command that cannot start at all is reported the way a shell reports
+it: one line to stderr naming the command, then exit `127` when it does not exist
+and `126` when it exists but cannot be executed. Recording failures never change
+any of these codes.
+
 ## Caveat
 
 This records only MCP-mediated activity. It does not see harness-native file edits,

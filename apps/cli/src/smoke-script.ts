@@ -13,7 +13,9 @@ export function buildSmokeScript(target: string): string {
   return (
     `(async () => {` +
     `await fetch(${healthzUrl}).catch(() => {});` +
-    `require('node:child_process').spawnSync(process.execPath, ['-e', '0']);` +
+    // An awaited async spawn: every collector version records it, where
+    // spawnSync went unrecorded by older collectors.
+    `await new Promise((r) => { const c = require('node:child_process').spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' }); c.on('exit', r); c.on('error', r); });` +
     `})();`
   );
 }

@@ -39,7 +39,7 @@ Configuration: non-secret identity lives in `aer.config.json`; the only secret,
 ```
 
 ```bash
-export AER_API_KEY=…          # the only secret env var
+export AER_API_KEY=…          # the only secret env var (AER_TENANT_API_KEY also works)
 # optional CI overrides: AER_TENANT_ID / AER_AGENT_ID / AER_ENV_ID / AER_BASE_URL
 ```
 
@@ -92,6 +92,12 @@ degrades to a name-only event and never breaks the host SDK call.
 
 - **Kill switch**: `AER_DISABLE=1` installs nothing. No patches, no session, no
   config reads beyond env.
+- **Off inside an agent's tool shell**: Claude Code exports its own environment,
+  `AER_*` credentials included, into every command it runs. A Node process started
+  there (a test, a build script, your app run by the agent) would otherwise record
+  into the agent's account. When `CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT` is set,
+  the collector does not start and prints one line saying so. Set
+  `AER_RECORD_IN_AGENT_SHELL=1` to record such a process on purpose.
 - **Never throws into the host**: capture failures are swallowed and counted.
 - **Lazy**: the session opens on the first captured event, never for a plain
   script that does nothing instrumentable.
@@ -168,6 +174,11 @@ Patch-based capture observes **`globalThis.fetch`** (the common case) and
 binds to the original function before the patch applies and is not captured; use
 default-import property access (`cp.spawn(...)`) or `globalThis.fetch` so the
 patched function is resolved at call time.
+
+The synchronous forms `spawnSync`, `execSync` and `execFileSync` are captured the
+same way as their asynchronous counterparts: a `process.exec` event before the
+call and a `process.exit` event with the exit code after it, including when the
+call throws.
 
 `exec` and `execFile` are the one exception to "not captured": Node's own `exec()`
 implementation calls the shared, patched `execFile` property internally regardless
