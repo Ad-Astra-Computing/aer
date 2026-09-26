@@ -76,7 +76,7 @@ export function mintTlsCert() {
 // ---------------------------------------------------------------------------
 // Targets and the workload project.
 
-async function startTarget(c, { tls } = {}) {
+export async function startTarget(c, { tls } = {}) {
   const hits = [];
   const handler = async (req, res) => {
     const chunks = [];
@@ -104,15 +104,15 @@ async function startTarget(c, { tls } = {}) {
   return { hits, port, certFile, url: tls ? `https://localhost:${port}` : `http://127.0.0.1:${port}` };
 }
 
-const IDS = () => ({ tenant_id: randomUUID(), agent_id: randomUUID(), env_id: randomUUID() });
+export const IDS = () => ({ tenant_id: randomUUID(), agent_id: randomUUID(), env_id: randomUUID() });
 
 /**
  * Run `workload` (module source) under the register hook, in a fresh project
  * whose node_modules is the install. `config` is written as aer.config.json.
  */
-async function runWorkload(c, { config, workload, env = {}, input, timeoutMs = 60_000 }) {
+export async function runWorkload(c, { config, workload, env = {}, input, timeoutMs = 60_000, nodeModules }) {
   const proj = c.tmp('proj-');
-  symlinkSync(join(c.install.dir, 'node_modules'), join(proj, 'node_modules'), 'dir');
+  symlinkSync(nodeModules ?? join(c.install.dir, 'node_modules'), join(proj, 'node_modules'), 'dir');
   writeFileSync(join(proj, 'package.json'), JSON.stringify({ name: 'mx-workload', version: '1.0.0', private: true, type: 'module' }));
   if (config) writeFileSync(join(proj, 'aer.config.json'), JSON.stringify({ schema: 'aer.config.v1', ...config }, null, 2));
   writeFileSync(join(proj, 'workload.mjs'), workload);
@@ -130,15 +130,15 @@ async function runWorkload(c, { config, workload, env = {}, input, timeoutMs = 6
 }
 
 /** A workload that fetches `url` once and reports status plus egress header. */
-const fetchOnce = (url, init = {}) => `
+export const fetchOnce = (url, init = {}) => `
   const r = await fetch(${JSON.stringify(url)}, ${JSON.stringify(init)});
   const body = await r.text();
   console.log(JSON.stringify({ status: r.status, egress: r.headers.get('x-aer-egress'), body: body.slice(0, 200) }));
 `;
 
-const byType = (events, t) => events.filter((e) => e?.event_type === t);
+export const byType = (events, t) => events.filter((e) => e?.event_type === t);
 
-function decodeJwt(token) {
+export function decodeJwt(token) {
   const [h, p, s] = token.split('.');
   return {
     header: JSON.parse(Buffer.from(h, 'base64url').toString('utf8')),
@@ -148,7 +148,7 @@ function decodeJwt(token) {
   };
 }
 
-function assertCompletedOnce(c, sink) {
+export function assertCompletedOnce(c, sink) {
   const opens = sink.find('POST', '/v1/sessions');
   c.assert.equal(opens.length, 1, 'session opens');
   const completes = sink.find('POST', /^\/v1\/sessions\/[^/]+\/complete$/);
@@ -157,7 +157,7 @@ function assertCompletedOnce(c, sink) {
   c.assert.equal(s.status, 'completed', 'session status at the sink');
 }
 
-const protectedConfig = (sink, target, resource) => ({
+export const protectedConfig = (sink, target, resource) => ({
   ...IDS(),
   base_url: sink.url,
   protected_resources: [{ host: 'localhost', audience: 'mcp://matrix-protected', ...resource }],
@@ -250,7 +250,7 @@ export default function register(registry) {
       c.assert.match(e.payload.args_redacted ?? '', /^<\d+ args redacted>$/, 'args redacted');
     }
     const q = byType(sink.events(), 'http.requested')[0];
-    c.assert.match(q.payload.path_redacted ?? '', /\?<redacted>$/, 'query string marker');
+    c.assert.equal(JSON.stringify(Object.keys(q.payload).sort()), JSON.stringify(['host', 'method']), 'http.requested carries only host and method');
   });
 
   t.case('redaction: a URL is recorded as its host only (README and AGENTS.md claim)', async (c) => {
