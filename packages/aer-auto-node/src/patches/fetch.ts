@@ -2,12 +2,12 @@
 //
 // Rules (ADR-008 / spec §4): idempotent, preserves + restores the original,
 // never throws into the host (capture is best-effort, the original call always
-// runs and its result/error is passed through), no bodies/headers, query
-// string redacted.
+// runs and its result/error is passed through), no bodies/headers, and a URL
+// is recorded as its host only: never its path, query or userinfo.
 
 import type { CollectorEvent } from '../session.js';
 import type { Attestor } from '../attestor.js';
-import { redactUrlPath } from '../redaction.js';
+import { safeHost } from '../redaction.js';
 import { responseBytesField } from './response-size.js';
 
 type Capture = (event: CollectorEvent) => void;
@@ -41,7 +41,7 @@ export function installFetchPatch(capture: Capture, attestor?: Attestor): () => 
     const start = Date.now();
     safeCapture(capture, {
       event_type: 'http.requested',
-      payload: { host: meta.host, method: meta.method, path_redacted: meta.path },
+      payload: { host: meta.host, method: meta.method },
     });
     // Attestation injection: HTTPS + configured protected hosts only. Build a
     // sender that attaches X-AER-Attestation; the default is the untouched call
@@ -124,7 +124,7 @@ function blockedResponse(reason: string): Response {
   });
 }
 
-interface RequestMeta { host: string; method: string; path: string; secure: boolean; url: string }
+interface RequestMeta { host: string; method: string; secure: boolean; url: string }
 
 function safeExtract(input: unknown, init?: { method?: string }): RequestMeta {
   try {
@@ -144,9 +144,9 @@ function safeExtract(input: unknown, init?: { method?: string }): RequestMeta {
     const parsed = new URL(url);
     // url carries the REAL (unredacted) target for the DPoP htu claim; the htu
     // normalizer strips its query, and it's only used for protected https hosts.
-    return { host: parsed.host, method: method.toUpperCase(), path: redactUrlPath(parsed), secure: parsed.protocol === 'https:', url: parsed.href };
+    return { host: safeHost(parsed.host), method: method.toUpperCase(), secure: parsed.protocol === 'https:', url: parsed.href };
   } catch {
-    return { host: 'unknown', method: (init?.method ?? 'GET').toUpperCase(), path: '/', secure: false, url: '' };
+    return { host: 'unknown', method: (init?.method ?? 'GET').toUpperCase(), secure: false, url: '' };
   }
 }
 

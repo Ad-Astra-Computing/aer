@@ -10,7 +10,7 @@ import { Writable } from 'node:stream';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { CollectorEvent } from '../session.js';
 import type { Attestor } from '../attestor.js';
-import { redactUrlPath, redactPathString } from '../redaction.js';
+import { safeHost } from '../redaction.js';
 import { responseBytesField } from './response-size.js';
 
 type Capture = (event: CollectorEvent) => void;
@@ -42,7 +42,7 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor): () => v
       const start = Date.now();
       safeCapture(capture, {
         event_type: 'http.requested',
-        payload: { host: meta.host, method: meta.method, path_redacted: meta.path },
+        payload: { host: meta.host, method: meta.method },
       });
       // Attestation injection (HTTPS + configured protected hosts only). The
       // sync API can't await a mint, so we inject a cached token if present and
@@ -127,9 +127,11 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor): () => v
   };
 }
 
-// `path` is redacted (telemetry-safe); `rawPath` keeps the real path for the DPoP
-// htu claim (only used for protected https hosts; the proof signer strips query).
-interface RequestMeta { host: string; method: string; path: string; rawPath: string; secure?: boolean }
+// Only `host` and `method` are recorded. `rawPath` keeps the real path for the
+// DPoP htu claim, which goes to the protected resource in the proof header and
+// never into an event (only used for protected https hosts; the proof signer
+// strips the query).
+interface RequestMeta { host: string; method: string; rawPath: string; secure?: boolean }
 
 function safeExtract(args: unknown[]): RequestMeta {
   try {
@@ -156,15 +158,15 @@ function safeExtract(args: unknown[]): RequestMeta {
     const secureField = proto === undefined ? {} : { secure: proto === 'https:' };
     if (optHost !== undefined && optHost !== null) {
       const rawPath = String((options['path'] as string | undefined) ?? (url ? url.pathname + url.search : '/'));
-      return { host: hostFromOptions(options), method, path: redactPathString(rawPath), rawPath, ...secureField };
+      return { host: safeHost(hostFromOptions(options)), method, rawPath, ...secureField };
     }
-    if (url) return { host: url.host, method, path: redactUrlPath(url), rawPath: url.pathname + url.search, ...secureField };
+    if (url) return { host: safeHost(url.host), method, rawPath: url.pathname + url.search, ...secureField };
 
     const host = hostFromOptions(options);
     const rawPath = String((options['path'] as string | undefined) ?? '/');
-    return { host, method, path: redactPathString(rawPath), rawPath, ...secureField };
+    return { host: safeHost(host), method, rawPath, ...secureField };
   } catch {
-    return { host: 'unknown', method: 'GET', path: '/', rawPath: '/' };
+    return { host: 'unknown', method: 'GET', rawPath: '/' };
   }
 }
 
