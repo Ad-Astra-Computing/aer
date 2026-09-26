@@ -155,10 +155,50 @@ export default function register(registry) {
     c.assert.exit(r, 143, 'signal death');
   });
 
-  t.case('a missing command exits non-zero with a message', async (c) => {
-    const r = await c.bin('aer-mcp-recorder', ['--', '/nonexistent/mx-no-such-binary'], { env: c.env(c.home()), input: '', timeoutMs: 20_000 });
-    c.assert.nonZero(r, 'missing command');
-    c.assert.ok(!r.timedOut, 'hung on a missing command');
+  t.case('a missing command exits 127 with one stderr line, sink up or not', async (c) => {
+    const sink = await c.sink();
+    for (const env of [c.env(c.home()), recEnv(c, c.home(), sink.url)]) {
+      const r = await c.bin('aer-mcp-recorder', ['--', '/nonexistent/mx-no-such-binary', '--mx-arg'], { env, input: '', timeoutMs: 20_000 });
+      c.assert.ok(!r.timedOut, 'hung on a missing command');
+      c.assert.exit(r, 127, 'missing command');
+      const lines = r.stderr.trim().split('\n');
+      c.assert.equal(lines.length, 1, `stderr lines: ${r.stderr.trim()}`);
+      c.assert.includes(lines[0], '/nonexistent/mx-no-such-binary', 'names the command');
+      c.assert.excludes(r.stderr, '--mx-arg', 'printed an argument');
+    }
+  });
+
+  t.case('a command that is not executable exits 126', async (c) => {
+    const dir = c.tmp('noexec-');
+    const file = join(dir, 'server.sh');
+    writeFileSync(file, '#!/bin/sh\necho hi\n', { mode: 0o644 });
+    const r = await c.bin('aer-mcp-recorder', ['--', file], { env: c.env(c.home()), input: '', timeoutMs: 20_000 });
+    c.assert.exit(r, 126, 'non-executable command');
+    c.assert.includes(r.stderr, file, 'names the command');
+  });
+
+  t.case('a clean exit whose record cannot be flushed in time exits 70 with one line', async (c) => {
+    // The sink holds /complete open far past AER_CLOSE_TIMEOUT_MS. The wrapped
+    // server exited 0, but the record may be incomplete, so the proxy must
+    // not report a clean success.
+    const cn = canaries('REC');
+    const s = setup(c, cn);
+    const home = c.home();
+    const sink = await c.sink();
+    sink.fault({ method: 'POST', path: /\/complete$/, delayMs: 20_000, status: 200 });
+    const plain = await direct(c, s, home, 0, cn);
+    const r = await c.bin('aer-mcp-recorder', ['--', process.execPath, s.server, '0'], {
+      cwd: s.dir, env: recEnv(c, home, sink.url, { MX_RESULT: cn.result, AER_CLOSE_TIMEOUT_MS: '1500' }), input: s.input, timeoutMs: 30_000,
+    });
+    c.assert.exit(r, 70, 'exit after a timed-out flush');
+    c.assert.ok(r.ms < 15_000, `took ${r.ms} ms; the close budget was 1500 ms`);
+    c.assert.includes(r.stderr, 'may be incomplete', 'diagnostic');
+    c.assert.ok(Buffer.compare(plain.stdoutBuf, r.stdoutBuf) === 0, 'proxied stdout differs');
+    // A failing child still wins over the flush verdict.
+    const failing = await c.bin('aer-mcp-recorder', ['--', process.execPath, s.server, '3'], {
+      cwd: s.dir, env: recEnv(c, home, sink.url, { AER_CLOSE_TIMEOUT_MS: '1500' }), input: s.input, timeoutMs: 30_000,
+    });
+    c.assert.exit(failing, 3, 'child exit code with a timed-out flush');
   });
 
   t.case('bodies-off: argument values and result content never reach the sink', async (c) => {
