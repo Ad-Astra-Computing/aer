@@ -189,7 +189,8 @@ export async function runSuites(registry, env, { only } = {}) {
       if (ctx.notes.length) r.notes = ctx.notes;
       if (c.issue) r.issue = c.issue;
       results.push(r);
-      env.log(`  ${status.padEnd(5)} ${suite.name} :: ${c.name} (${ms} ms)${status === 'PASS' ? '' : `\n        ${String(detail).split('\n').join('\n        ')}`}`);
+      const extra = status === 'PASS' ? '' : [detail, ...ctx.notes.map((n) => `note: ${n}`)].join('\n');
+      env.log(`  ${status.padEnd(5)} ${suite.name} :: ${c.name} (${ms} ms)${extra ? `\n        ${extra.split('\n').join('\n        ')}` : ''}`);
     }
   }
   return results;
