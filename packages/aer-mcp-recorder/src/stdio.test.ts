@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createStdioProxy, DEFAULT_CLOSE_TIMEOUT_MS } from './stdio.js';
 import type { ProxyChild, SpawnFn } from './stdio.js';
 import { McpRecorder } from './recorder.js';
@@ -325,5 +328,82 @@ describe('createStdioProxy fail-open', () => {
     parentIn.end(); // harness closed stdin -> child stdin.end()
     fake.exit(0);
     await expect(proxy.done).resolves.toBe(0);
+  });
+});
+
+// A wrapped command that could not start used to leave the proxy with no
+// exit event to wait for: node drained its loop and exited 0, silently, and
+// the harness saw a server that "exited cleanly" without ever running.
+describe('a wrapped command that cannot start', () => {
+  async function runReal(command: string): Promise<{ code: number; stderr: string }> {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      const { done } = createStdioProxy({
+        command,
+        args: ['--secret-arg-value'],
+        recorder: null,
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        handleSignals: false,
+      });
+      const code = await done;
+      return { code, stderr: lines.join('') };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('exits 127 with one stderr line when the command does not exist, like a shell', async () => {
+    const r = await runReal('/nonexistent/aer-no-such-server');
+    expect(r.code).toBe(127);
+    expect(r.stderr.trim().split('\n')).toHaveLength(1);
+    expect(r.stderr).toContain('aer-mcp-recorder: cannot start /nonexistent/aer-no-such-server');
+    expect(r.stderr).not.toContain('--secret-arg-value');
+  });
+
+  it('exits 126 when the command exists but cannot be executed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aer-rec-noexec-'));
+    const file = join(dir, 'server.sh');
+    writeFileSync(file, '#!/bin/sh\necho hi\n', { mode: 0o644 });
+    const r = await runReal(file);
+    expect(r.code).toBe(126);
+    expect(r.stderr).toContain(`aer-mcp-recorder: cannot start ${file}`);
+  });
+
+  it('still closes the recorder, and a failing sink does not change the exit code', async () => {
+    const closed: string[] = [];
+    const sink: EventSink = {
+      emit() { throw new Error('sink down'); },
+      async close() { closed.push('close'); throw new Error('sink down'); },
+    };
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as typeof process.stderr.write);
+    try {
+      const { done } = createStdioProxy({
+        command: '/nonexistent/aer-no-such-server',
+        args: [],
+        recorder: new McpRecorder({ sink }),
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        handleSignals: false,
+      });
+      expect(await done).toBe(127);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('an error after the child started keeps the child exit code', async () => {
+    const fake = makeFakeChild();
+    const { done } = createStdioProxy({
+      command: 'x', args: [], recorder: null, spawn: fake.spawn,
+      stdin: new PassThrough(), stdout: new PassThrough(), handleSignals: false,
+    });
+    // The fake child has a pid, so it started; a later error is not a start failure.
+    fake.exit(5);
+    expect(await done).toBe(5);
   });
 });

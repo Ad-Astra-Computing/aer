@@ -132,9 +132,6 @@ export function createStdioProxy(opts: StdioProxyOptions): StdioProxyHandle {
     /* ignore */
   });
 
-  child.on('error', () => {
-    /* spawn/runtime error; the exit handler resolves done */
-  });
 
   const forwardSignal = (sig: NodeJS.Signals): void => {
     try {
@@ -151,6 +148,34 @@ export function createStdioProxy(opts: StdioProxyOptions): StdioProxyHandle {
   }
 
   const done = new Promise<number>((resolve) => {
+    let settled = false;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      resolve(code);
+    };
+
+    // A command that never started emits 'error' and no 'exit'. Without this
+    // the proxy had nothing left to wait for and node exited 0, so a harness
+    // saw a server that "exited cleanly" without ever running. Exit the way a
+    // shell does: 127 for not found, 126 for found but not executable. A
+    // runtime error on a child that did start is left to the exit handler.
+    child.on('error', (err: Error) => {
+      if (child.pid !== undefined) return;
+      const errno = (err as NodeJS.ErrnoException).code;
+      const notFound = errno === 'ENOENT' || errno === 'ENOTDIR';
+      const code = notFound ? 127 : 126;
+      writeDiagnostic(`cannot start ${command}: ${notFound ? 'command not found' : (errno ?? 'spawn failed')}`);
+      if (handleSignals) {
+        process.removeListener('SIGINT', onSigint);
+        process.removeListener('SIGTERM', onSigterm);
+      }
+      try { (parentIn as NodeJS.ReadableStream & { pause?: () => void }).pause?.(); } catch { /* ignore */ }
+      // Nothing was recorded; still close the recorder so a session that did
+      // open is not left running. Its outcome never changes the exit code.
+      void closeRecorder(recorder, closeTimeoutMs).then(() => finish(code));
+    });
+
     child.on('exit', (code, signal) => {
       if (handleSignals) {
         process.removeListener('SIGINT', onSigint);
@@ -176,10 +201,10 @@ export function createStdioProxy(opts: StdioProxyOptions): StdioProxyHandle {
           writeDiagnostic(
             `shutdown flush did not finish within ${closeTimeoutMs}ms; the AER record for this session may be incomplete`,
           );
-          resolve(70);
+          finish(70);
           return;
         }
-        resolve(childExitCode);
+        finish(childExitCode);
       });
     });
   });
