@@ -28,6 +28,12 @@ Flags: `--yes --dry-run --json --session <process|task|server> --entry <script>
 --tenant/--agent/--env/--base-url`. An unrecognized `--session` value is a
 usage error (exit 64), not a silent fallback to `process`.
 
+`smoke` runs a tiny instrumented workload (one fetch, one subprocess), then
+asks the API whether a new session for the configured agent arrived and
+completed. It succeeds only when one did; a workload that ran but recorded
+nothing exits 1. The collector, `doctor` and `smoke` all read the key from
+`AER_API_KEY`, then `AER_TENANT_API_KEY`.
+
 `--help` (or `-h`) after any command prints usage and exits immediately,
 before anything is written or any request is sent.
 

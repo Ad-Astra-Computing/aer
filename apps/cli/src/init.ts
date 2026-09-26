@@ -7,6 +7,7 @@
 // aer.config.json (ADR-008).
 
 import { join } from 'node:path';
+import { collectorApiKey } from './smoke-verify.js';
 
 export interface FsLike {
   readFile(path: string): string | null;
@@ -296,7 +297,7 @@ export function runDoctor(fs: FsLike, opts: DoctorOptions): DoctorReport {
   // (runLiveChecks in doctor-live.ts) and the CLI help text both already
   // treat the two as interchangeable - this config-only check must agree,
   // or `aer doctor` can report a false failure while auth itself succeeds.
-  const keyOk = !!(opts.env['AER_API_KEY'] ?? opts.env['AER_TENANT_API_KEY']);
+  const keyOk = !!collectorApiKey(opts.env);
   checks.push({
     name: 'api_key_present',
     ok: keyOk,
