@@ -9,7 +9,7 @@
  */
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { run, cleanEnv, delay } from './proc.mjs';
+import { run, cleanEnv, delay, withNetwork } from './proc.mjs';
 
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const PNPM = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
@@ -156,5 +156,6 @@ export function npmEnvFor(workRoot) {
   const home = join(workRoot, 'npm-home');
   mkdirSync(home, { recursive: true });
   // One cache per run, shared by every install in it; never the user's.
-  return cleanEnv(home, { npm_config_cache: join(workRoot, 'npm-cache') });
+  // npm needs the registry, so this env alone keeps the network.
+  return withNetwork(cleanEnv(home, { npm_config_cache: join(workRoot, 'npm-cache') }));
 }

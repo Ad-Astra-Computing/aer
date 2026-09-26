@@ -9,7 +9,7 @@
 import { cpSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { canaries, assertNoCanaries } from '../lib/harness.mjs';
-import { run } from '../lib/proc.mjs';
+import { run, withNetwork } from '../lib/proc.mjs';
 import { deadPort } from '../lib/sink.mjs';
 
 const PYTHON_REF = 'github:NixOS/nixpkgs/nixos-unstable#python312';
@@ -81,7 +81,8 @@ async function venv(c, env) {
     expected = tag.replace('sdk-py-v', '');
     c.note(`installed from ${tag}`);
   }
-  const pip = await run(python, ['-m', 'pip', 'install', '--quiet', target], { env: penv, timeoutMs: 600_000 });
+  // pip may fetch build requirements, so this one step keeps the network.
+  const pip = await run(python, ['-m', 'pip', 'install', '--quiet', target], { env: withNetwork(penv), timeoutMs: 600_000 });
   c.assert.exit(pip, 0, `pip install ${target}`);
   const pyv = await run(python, ['--version'], { env: penv });
   c.note(`${pyv.stdout.trim()}; aer-sdk ${expected}`);

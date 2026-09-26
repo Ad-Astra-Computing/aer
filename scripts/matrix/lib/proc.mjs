@@ -10,6 +10,58 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, delimiter, dirname } from 'node:path';
 
+/** The production API. No case process may ever be pointed at it. */
+export const PRODUCTION_HOST = 'api.aer.run';
+
+/**
+ * A proxy nothing listens on. Every case process gets it with
+ * NODE_USE_ENV_PROXY, so an outbound request to anything but the loopback
+ * sinks fails to connect instead of reaching a real service. A client that
+ * falls back to its default base URL (https://api.aer.run) is refused here
+ * even though the case never named that host.
+ */
+const BLACKHOLE_PROXY = 'http://127.0.0.1:9';
+const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy', 'NODE_USE_ENV_PROXY'];
+
+/** Raised when a case would hand a child process a production target. */
+export class ProductionTargetError extends Error {}
+
+/**
+ * Remove every AER_* variable from this process's own environment and return
+ * their names. The matrix is often started from a shell that carries real
+ * credentials (an agent's tool shell does), and nothing it spawns may inherit
+ * them, including a spawn that forgot to pass an explicit env.
+ */
+export function scrubOwnEnv() {
+  const removed = Object.keys(process.env).filter((k) => k.startsWith('AER_'));
+  for (const k of removed) delete process.env[k];
+  return removed;
+}
+
+/**
+ * Refuse, loudly, to start a child whose environment or arguments name the
+ * production API or carry an AER_* variable this process was started with.
+ * `allowProduction` is for the explicit --live cases only.
+ */
+export function assertNoProductionTarget(cmd, args, env, { allowProduction = false } = {}) {
+  if (allowProduction) return;
+  const hits = [];
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (typeof v === 'string' && v.includes(PRODUCTION_HOST)) hits.push(`env ${k}`);
+  }
+  for (const a of args ?? []) if (String(a).includes(PRODUCTION_HOST)) hits.push(`argument ${JSON.stringify(a)}`);
+  if (hits.length) {
+    throw new ProductionTargetError(`refusing to run ${cmd}: ${hits.join(', ')} names ${PRODUCTION_HOST}; cases must only ever talk to a local sink`);
+  }
+}
+
+/** Drop the blackhole proxy from an env, for the few steps that need the network (npm, pip). */
+export function withNetwork(env) {
+  const out = { ...env };
+  for (const k of PROXY_VARS) delete out[k];
+  return out;
+}
+
 /** Binaries the matrix tests. A copy of any of them elsewhere must not be found. */
 export const AER_BINS = ['aer', 'aer-hook', 'aer-hooks', 'aer-mcp-recorder'];
 
@@ -41,12 +93,20 @@ export function strippedPath() {
 export function run(cmd, args = [], opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const started = Date.now();
+  // Never the raw parent env: AER_* is scrubbed at startup, and this drops
+  // anything that slipped back in.
+  const env = opts.env ?? Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AER_')));
+  try {
+    assertNoProductionTarget(cmd, args, env, { allowProduction: opts.allowProduction });
+  } catch (err) {
+    return Promise.reject(err);
+  }
   return new Promise((resolve) => {
     let child;
     try {
       child = spawn(cmd, args, {
         cwd: opts.cwd,
-        env: opts.env ?? process.env,
+        env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
@@ -119,6 +179,14 @@ export function cleanEnv(home, extra = {}, extraPath = []) {
     npm_config_update_notifier: 'false',
     npm_config_fund: 'false',
     npm_config_audit: 'false',
+    // Outbound traffic other than to the loopback sinks goes nowhere.
+    NODE_USE_ENV_PROXY: '1',
+    HTTP_PROXY: BLACKHOLE_PROXY,
+    HTTPS_PROXY: BLACKHOLE_PROXY,
+    http_proxy: BLACKHOLE_PROXY,
+    https_proxy: BLACKHOLE_PROXY,
+    NO_PROXY: '127.0.0.1,localhost,::1',
+    no_proxy: '127.0.0.1,localhost,::1',
   };
   for (const [k, v] of Object.entries(extra)) {
     if (v === undefined || v === null) delete env[k];

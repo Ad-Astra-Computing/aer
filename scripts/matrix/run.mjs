@@ -9,7 +9,10 @@
  *   node scripts/matrix/run.mjs --source registry --tag next --upgrade-from latest
  *   node scripts/matrix/run.mjs --only aer-verify,aer-mcp-guard --json
  *
- * Every case talks to a local capture sink. api.aer.run is never contacted.
+ * Every case talks to a local capture sink. api.aer.run is never contacted:
+ * the runner drops its own AER_* variables before anything else, every child
+ * env is refused if it names the production API, and every case process
+ * routes non-loopback traffic to a proxy nothing listens on.
  * Exit status is non-zero when any case fails.
  */
 import { readdirSync, mkdirSync, rmSync, writeFileSync, mkdtempSync, existsSync } from 'node:fs';
@@ -17,6 +20,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRegistry, runSuites, table } from './lib/harness.mjs';
+import { scrubOwnEnv } from './lib/proc.mjs';
 import { packLocal, resolveRegistry, installInto, verifyInstalled, makeInstall, npmEnvFor, publishable } from './lib/install.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -99,6 +103,8 @@ async function main() {
   }
   if (opts.help) { process.stdout.write(`${HELP}\n`); return; }
   const log = (m) => process.stderr.write(`${m}\n`);
+  const scrubbed = scrubOwnEnv();
+  if (scrubbed.length) log(`dropped ${scrubbed.join(', ')} from the matrix environment; no case may inherit them`);
   const out = opts.json ? log : (m) => process.stdout.write(`${m}\n`);
 
   const workRoot = mkdtempSync(join(process.env.MATRIX_TMPDIR ?? tmpdir(), 'aer-matrix-'));
