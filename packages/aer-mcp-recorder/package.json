@@ -52,8 +52,11 @@
     "@adastracomputing/aer-emit": "workspace:*"
   },
   "scripts": {
+    "prebuild": "node scripts/write-version.mjs",
     "build": "tsc -p tsconfig.json",
+    "pretest": "node scripts/write-version.mjs",
     "test": "vitest run",
+    "pretypecheck": "node scripts/write-version.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "prepack": "node ../../scripts/require-dist.mjs"
   },
