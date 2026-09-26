@@ -26,8 +26,11 @@ ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Install
 
+Every package here is pre-1.0, so install the `next` dist-tag until this
+README says otherwise:
+
 ```
-npm install @adastracomputing/aer-mcp-guard
+npm install @adastracomputing/aer-mcp-guard@next
 ```
 
 ## Hono

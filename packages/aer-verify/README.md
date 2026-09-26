@@ -11,8 +11,11 @@ and the browser.
 
 ## Install
 
+Every package here is pre-1.0, so install the `next` dist-tag until this
+README says otherwise:
+
 ```
-npm install @adastracomputing/aer-verify
+npm install @adastracomputing/aer-verify@next
 ```
 
 Zero runtime dependencies. Uses Web Crypto (`crypto.subtle`), available in Node

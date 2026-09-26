@@ -11,7 +11,10 @@ SDK; a dependency snapshot and a signed coverage report; and three session
 strategies (`process`, `task`, `server`) plus `withAerSession` for explicit
 scoping. The fastest way in is the `register` hook shown below.
 
-ESM only: use `import`, not `require`. Requires Node 22 or newer.
+ESM only: use `import`, not `require`. Requires Node 22 or newer. `aer init`
+installs it for you; every package here is pre-1.0, so installing it
+yourself instead means taking it from the `next` dist-tag:
+`npm install @adastracomputing/aer-auto-node@next`.
 
 ## Use
 
