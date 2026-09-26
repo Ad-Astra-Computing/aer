@@ -34,3 +34,17 @@ merges, and against `--source registry --tag next`, with the upgrade run from
 `latest`, before `pnpm promote` moves `latest`. A known issue is reported as
 KNOWN rather than hidden; any FAIL blocks. Run `pnpm matrix --help` for the
 filters and the JSON report.
+
+No case may reach the AER service. The runner drops every `AER_*` variable it
+was started with, refuses to start a child whose environment or arguments name
+`api.aer.run`, and routes each case process's non-loopback traffic to a proxy
+that nothing listens on.
+
+The one exception is `--live`, off by default. A positive `aer verify` verdict
+needs a record signed by a key in the CLI's pinned production trust root, and
+the CLI has no way to swap that root on purpose, since a swappable root would
+let a forged bundle print `verified`. `pnpm matrix --only live --live` checks
+the newest public demo record on `api.aer.run` with the installed CLI, using
+public reads only and no credential. Run it before `pnpm promote`. Positive
+verdicts with self-minted keys are covered offline through the
+`@adastracomputing/aer-verify` library.

@@ -9,7 +9,8 @@
  *   node scripts/matrix/run.mjs --source registry --tag next --upgrade-from latest
  *   node scripts/matrix/run.mjs --only aer-verify,aer-mcp-guard --json
  *
- * Every case talks to a local capture sink. api.aer.run is never contacted:
+ * Every case talks to a local capture sink. Unless --live is given, api.aer.run
+ * is never contacted:
  * the runner drops its own AER_* variables before anything else, every child
  * env is refused if it names the production API, and every case process
  * routes non-loopback traffic to a proxy nothing listens on.
@@ -37,6 +38,10 @@ const HELP = `usage: node scripts/matrix/run.mjs [options]
   --skip-nix                report the Nix suite as SKIP instead of running it
   --skip-python             report the Python SDK suite as SKIP
   --skip-build              local mode: pack the existing dist, do not rebuild
+  --live                    also run the live suite: verify the public demo
+                            record on api.aer.run with the installed CLI and
+                            its pinned production trust root (read-only, no
+                            credentials; off by default)
   --install-dir <dir>       reuse an install prepared by --prepare-only
   --prepare-only            pack and install, print the install dir, exit
   --retry-minutes <n>       how long to retry a registry install on CDN lag (5)
@@ -70,6 +75,7 @@ function parseArgs(argv) {
       case '--skip-nix': o.skipNix = true; break;
       case '--skip-python': o.skipPython = true; break;
       case '--skip-build': o.skipBuild = true; break;
+      case '--live': o.live = true; break;
       case '--install-dir': o.installDir = val(); break;
       case '--prepare-only': o.prepareOnly = true; break;
       case '--retry-minutes': o.retryMinutes = Number(val()); break;

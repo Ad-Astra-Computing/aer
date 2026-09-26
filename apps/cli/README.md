@@ -98,6 +98,12 @@ and checks the Ed25519 signature and transparency anchor locally.
 AER_BASE_URL=https://api.aer.run npx @adastracomputing/aer@next verify <aer-id>
 ```
 
+The signing keys and the transparency-log key the CLI accepts are pinned inside
+the CLI. There is deliberately no flag or variable to replace them: a trust
+root that a published build lets you swap is a way to make a forged record
+print `verified`. To check records signed by your own test keys, use
+`@adastracomputing/aer-verify` and pass the keys as `pinnedKeys`.
+
 ## Other commands
 
 - `aer commitments verify --requests <file.json> (--aer <id> | --bundle <file.json>) [--key <public-key.json>]`:
