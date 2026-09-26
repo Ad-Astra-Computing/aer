@@ -101,7 +101,7 @@ export function shapesOfToolCall(tool: string, input: unknown): ToolShape[] {
     if (line.unknown) shapes.push(exec(UNKNOWN_COMMAND));
     for (const host of line.hosts) {
       const h = bounded(host);
-      if (h !== undefined) shapes.push({ eventType: 'network.connect', payload: { host: h } });
+      if (h !== undefined) shapes.push({ eventType: 'network.connect', payload: { host: h, source: 'shell' } });
     }
     return shapes;
   }

@@ -24,6 +24,11 @@ export interface ShellLineReduction {
   hosts: string[];
   /** Some part of the line could not be read, so the lists may be incomplete. */
   unknown: boolean;
+  /**
+   * Targets a network client was given that could not be reduced to a host
+   * (an expansion, a malformed URL). Counted, never sent as a host-less event.
+   */
+  hostsUnreduced: number;
 }
 
 interface Word {
@@ -422,12 +427,14 @@ function positionals(args: Word[], valued: ReadonlySet<string>, onUrlOption?: (w
   return out;
 }
 
-function hostsFor(program: string, args: Word[]): string[] {
+function hostsFor(program: string, args: Word[]): { hosts: string[]; unreduced: number } {
   const found: string[] = [];
+  let unreduced = 0;
   const add = (w: Word | undefined, read: (text: string) => string | undefined): void => {
-    if (w === undefined || w.unsafe) return;
-    const h = read(w.text);
+    if (w === undefined) return;
+    const h = w.unsafe ? undefined : read(w.text);
     if (h !== undefined) found.push(h);
+    else if (w.unsafe || w.text.includes('://') || program === 'curl' || program === 'wget' || program === 'ssh') unreduced += 1;
   };
   const urlOrBare = (text: string): string | undefined => urlHost(text) ?? (text.includes('://') ? undefined : barewordHost(text));
 
@@ -454,7 +461,7 @@ function hostsFor(program: string, args: Word[]): string[] {
     default:
       break;
   }
-  return found;
+  return { hosts: found, unreduced };
 }
 
 // ── the walk ────────────────────────────────────────────────────────────────
@@ -463,6 +470,7 @@ interface Acc {
   programs: string[];
   hosts: string[];
   unknown: boolean;
+  hostsUnreduced: number;
 }
 
 function note(list: string[], value: string, cap: number): void {
@@ -515,7 +523,9 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number): void {
     return;
   }
   note(acc.programs, program, MAX_PROGRAMS);
-  for (const h of hostsFor(program, args)) note(acc.hosts, h, MAX_HOSTS);
+  const targets = hostsFor(program, args);
+  for (const h of targets.hosts) note(acc.hosts, h, MAX_HOSTS);
+  acc.hostsUnreduced += targets.unreduced;
   if (WRAPPERS.has(program) && depth < MAX_DEPTH) {
     const at = wrappedProgramIndex(program, args);
     if (at !== -1) readProgram(args[at]!, args.slice(at + 1), acc, depth + 1);
@@ -540,7 +550,7 @@ function walk(line: string, acc: Acc, depth: number): void {
  * nothing".
  */
 export function reduceShellLine(line: unknown): ShellLineReduction {
-  const acc: Acc = { programs: [], hosts: [], unknown: false };
+  const acc: Acc = { programs: [], hosts: [], unknown: false, hostsUnreduced: 0 };
   if (typeof line !== 'string') return { ...acc, unknown: true };
   if (line.length > MAX_SCAN) acc.unknown = true;
   walk(line.slice(0, MAX_SCAN), acc, 0);

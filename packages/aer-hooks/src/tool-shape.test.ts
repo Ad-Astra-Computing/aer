@@ -41,9 +41,14 @@ describe('what a tool call reduces to', () => {
       { eventType: 'process.exec', payload: { command: 'cd', command_known: true } },
       { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
       { eventType: 'process.exec', payload: { command: 'sh', command_known: true } },
-      { eventType: 'network.connect', payload: { host: 'evil.example' } },
+      { eventType: 'network.connect', payload: { host: 'evil.example', source: 'shell' } },
     ]);
     expect(JSON.stringify(shapes)).not.toContain('SECRET');
+  });
+
+  it('never sends a connection without a host, even when a client target cannot be read', () => {
+    const shapes = shapesOfToolCall('Bash', { command: 'curl "$URL" && ssh $HOST' });
+    expect(shapes.filter((s) => s.eventType === 'network.connect')).toEqual([]);
   });
 
   it('marks a partly unreadable line as unknown alongside what it could read', () => {
