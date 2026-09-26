@@ -66,6 +66,14 @@ if (!result.ok) {
 // result.claims.agent_id / agent_session_id / tenant_id …
 ```
 
+By default the guard reads the token from `X-AER-Attestation` only. Pass
+`allowBearer: true` to also accept `Authorization: Bearer`, for a client that
+cannot set a custom header:
+
+```ts
+honoMcpGuard({ audience: 'mcp://payments-prod', allowBearer: true });
+```
+
 ## Revocation (optional)
 
 Pass `introspect` to also honor revocation within the token's lifetime (see

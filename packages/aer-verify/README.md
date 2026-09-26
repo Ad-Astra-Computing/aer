@@ -51,6 +51,21 @@ const result = await verifyAerBundle(bundle, {
 result.checks.key_pinned; // true
 ```
 
+### Require a pinned key, or require anchoring
+
+`policy.requirePinnedKey` and `policy.requireAnchor` turn an optional check
+into one the overall verdict fails without. Passing `pinnedKeys` already
+requires the bundle's key to be one of them; `requirePinnedKey` makes that
+mandatory even when you passed none. `requireAnchor` fails the verdict on a
+bundle that verifies but was never anchored to the transparency log.
+
+```ts
+const result = await verifyAerBundle(bundle, {
+  pinnedKeys: [{ signing_key_id: '…', public_key_hex: '…', status: 'active' }],
+  policy: { requirePinnedKey: true, requireAnchor: true },
+});
+```
+
 ## Result
 
 `verifyAerBundle` returns a `VerifiedAer`:

@@ -217,10 +217,33 @@ token and is denied by the resource's verifier (`@adastracomputing/aer-resource-
 {
   "protected_resources": [
     { "host": "mcp.internal", "audience": "mcp://internal-tools" },
-    { "host": ".corp.example", "audience": "https://corp.example" } // leading dot = subdomain suffix
+    { "host": ".corp.example", "audience": "https://corp.example" }, // leading dot = subdomain suffix
+    {
+      "host": "payments.internal",
+      "audience": "https://payments.internal",
+      "scopes": ["payments:read"],
+      "enforcement": "block",
+      "on_unavailable": "fail_closed",
+      "dpop": true
+    }
   ]
 }
 ```
+
+`scopes` narrows what the minted token can do (empty means audience-only, and
+in `block`/`report` mode a token missing any listed scope is treated as no
+valid attestation). `enforcement` stages a resource from `off` (mint and
+attach a token, never deny; the default) through `report` to `block` (deny
+the request outright when no valid token can be attached). `on_unavailable`
+governs `block` mode when minting itself fails because the AER API is down:
+`fail_closed` (the default) denies the request, `fail_open` lets it through
+and records that it did. `dpop` binds the minted token to a per-session
+Ed25519 key: the resource verifier gets `cnf.jkt` at mint and every request
+to that host carries an RFC 9449 proof signed by the same key, so a stolen
+token cannot be replayed from another client. The resource must also require
+DPoP for this to have any effect; `@adastracomputing/aer-resource-node` and
+`@adastracomputing/aer-mcp-guard` both support that on their side with
+`requireDpop`.
 
 - **HTTPS only.** Tokens are never injected over plain `http://`, and never to a
   host that isn't listed (third-party LLM APIs are untouched unless you add them).
