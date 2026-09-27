@@ -476,6 +476,44 @@ export interface AcquireLockOptions {
   staleMs?: number;
   /** Clock injection for tests. */
   now?: () => number;
+  /** Test seam: runs between judging a lock stale and taking it over. */
+  beforeTakeover?: () => void;
+}
+
+/**
+ * Remove a lock judged stale, but only if it is still the one judged. Two
+ * waiters can judge the same dead lock stale; a plain unlink by the slower
+ * one would remove the lock the faster one has just taken. Moving it aside
+ * first and checking what was moved keeps a live holder's lock: one that
+ * turns out fresh is put back.
+ */
+function takeOverStale(lockFile: string, judgedOwner: string, staleMs: number, beforeTakeover?: () => void): void {
+  beforeTakeover?.();
+  const aside = `${lockFile}.${process.pid}.${randomBytes(4).toString('hex')}.stale`;
+  try {
+    fs.renameSync(lockFile, aside);
+  } catch {
+    return; // already gone; the next loop retries
+  }
+  try {
+    const moved = fs.readFileSync(aside, 'utf8');
+    const st = fs.statSync(aside);
+    if (moved !== judgedOwner || Date.now() - st.mtimeMs <= staleMs) {
+      try {
+        fs.linkSync(aside, lockFile);
+      } catch {
+        /* a newer lock is already in place; leave it */
+      }
+    }
+  } catch {
+    /* best-effort */
+  } finally {
+    try {
+      fs.unlinkSync(aside);
+    } catch {
+      /* best-effort */
+    }
+  }
 }
 
 // The lock covers reading and rewriting one small file and never a network
@@ -540,11 +578,7 @@ export async function acquireSessionLock(
       try {
         const st = fs.statSync(lockFile);
         if (Date.now() - st.mtimeMs > staleMs) {
-          try {
-            fs.unlinkSync(lockFile);
-          } catch {
-            /* another process may be clearing it; the next loop retries */
-          }
+          takeOverStale(lockFile, fs.readFileSync(lockFile, 'utf8'), staleMs, opts.beforeTakeover);
           continue;
         }
       } catch {

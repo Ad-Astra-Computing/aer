@@ -14,6 +14,7 @@ import {
   loadPidAlias,
   MAX_OUTBOX_EVENTS,
   sweepStale,
+  lockFileFor,
   type SessionState,
 } from './session-store.js';
 
@@ -213,6 +214,20 @@ describe('session-store', () => {
       const lock2 = await acquireSessionLock('hs-lock-4', env, { staleMs: 1000, maxWaitMs: 2000, pollMs: 10 });
       expect(lock2).not.toBeNull();
       lock2!.release();
+    });
+
+    it('never takes over a lock a live holder made after the stale one was judged stale', async () => {
+      const lockFile = lockFileFor('hs-lock-race', env)!;
+      fs.writeFileSync(lockFile, 'dead-holder');
+      const old = new Date(Date.now() - 10_000);
+      fs.utimesSync(lockFile, old, old);
+      // Another waiter took the stale lock over and a live holder now has it.
+      const lock2 = await acquireSessionLock('hs-lock-race', env, {
+        staleMs: 1000, maxWaitMs: 150, pollMs: 10,
+        beforeTakeover: () => { fs.unlinkSync(lockFile); fs.writeFileSync(lockFile, 'live-holder'); },
+      });
+      expect(lock2).toBeNull();
+      expect(fs.readFileSync(lockFile, 'utf8')).toBe('live-holder');
     });
 
     it('degrades to null (never throws) when nowhere can be written', async () => {
