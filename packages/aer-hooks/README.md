@@ -104,7 +104,7 @@ The harness runs the hook once per event as a separate process. To record a whol
 harness session as one AER session instead of one session per tool call, the first
 event opens an AER session and the later events join it. What the hook needs to
 carry between events (the open session, the next event position, how far the
-transcript has been read, and the events the server has not yet accepted) is kept
+transcript has been read and which events the server has not yet accepted) is kept
 in a small file under your cache dir (`$XDG_CACHE_HOME/aer-hooks` or
 `~/.cache/aer-hooks`). That file holds a short-lived ingest token, so it is written
 owner-only (0600) in an owner-only directory, and the token is removed when the
