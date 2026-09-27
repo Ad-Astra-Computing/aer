@@ -81,7 +81,7 @@ for verifying one.
 ### Set up a Node project
 
 ```sh
-npx @adastracomputing/aer@next init
+npx @adastracomputing/aer init
 ```
 
 On Nix, run the CLI from the flake instead:
@@ -101,6 +101,11 @@ nix build github:Ad-Astra-Computing/aer#node-modules
 ln -s ./result/lib/node_modules node_modules
 ```
 
+### Upgrading
+
+Moving from an earlier release? [Upgrading](./docs/upgrading.md) lists what
+changed in each package and what to re-run.
+
 ## Sign in
 
 Recording a run needs an AER account, from [aer.run](https://aer.run). The
@@ -108,7 +113,7 @@ CLI can hold that credential for you, once per machine, rather than you
 copying a key into an environment variable yourself:
 
 ```sh
-npx @adastracomputing/aer@next login
+npx @adastracomputing/aer login
 ```
 
 This opens `https://aer.run/device` and prints a code to type there. Once
@@ -117,15 +122,15 @@ approved, the tenant key it mints is saved to
 tell the current project which agent to record as:
 
 ```sh
-npx @adastracomputing/aer@next link
+npx @adastracomputing/aer link
 ```
 
 `link` writes `agent_id` and `env_id` into `aer.config.json` for you, picking
 from the tenant's existing agents on a terminal or creating one with
 `--create-agent <name>`. From here, every `aer` subcommand that needs a
 tenant key (`doctor`, `smoke`, `import claude-code` and the tenant-data
-commands) picks it up on its own. `npx @adastracomputing/aer@next whoami`
-shows what is signed in and `npx @adastracomputing/aer@next logout` revokes
+commands) picks it up on its own. `npx @adastracomputing/aer whoami`
+shows what is signed in and `npx @adastracomputing/aer logout` revokes
 it.
 
 Setting `AER_API_KEY` yourself still works and takes priority over a stored
@@ -147,7 +152,7 @@ Check the integration. `doctor` exits non-zero if anything is wrong, so it is
 safe to gate on in CI:
 
 ```sh
-$ npx @adastracomputing/aer@next doctor
+$ npx @adastracomputing/aer doctor
 AER_BASE_URL          ok    https://api.aer.run
 API reachable         ok    ready (200)
 tenant auth           ok
@@ -156,7 +161,7 @@ tenant auth           ok
 Then send a tiny instrumented run end to end and verify what comes out:
 
 ```sh
-npx @adastracomputing/aer@next smoke
+npx @adastracomputing/aer smoke
 ```
 
 ## Record a coding harness
@@ -165,7 +170,7 @@ Claude Code, Codex CLI and opencode are recorded through hooks rather than the
 Node collector, since the agent is the harness rather than a script you launch:
 
 ```sh
-npx @adastracomputing/aer-hooks@next install claude-code
+npx @adastracomputing/aer-hooks install claude-code
 ```
 
 `codex` and `opencode` work the same way. `status` shows what is wired, and
@@ -219,6 +224,7 @@ a stored login.
 - [Bodies-off](./docs/concepts/bodies-off.md)
 - [Verifying a record](./docs/concepts/verifying-a-record.md)
 - [Attestation and admission control](./docs/concepts/attestation.md)
+- [Upgrading from an earlier release](./docs/upgrading.md)
 
 Each package carries its own README with its full API.
 
@@ -231,7 +237,7 @@ you already hold. The command below fetches the bundle and the public key first,
 then does all of the checking locally.
 
 ```sh
-npx @adastracomputing/aer@next verify <aer-id>
+npx @adastracomputing/aer verify <aer-id>
 ```
 
 ## Python SDK

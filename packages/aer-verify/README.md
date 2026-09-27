@@ -11,12 +11,11 @@ and the browser.
 
 ## Install
 
-Every package here is pre-1.0, so install the `next` dist-tag until this
-README says otherwise:
+```
+npm install @adastracomputing/aer-verify
+```
 
-```
-npm install @adastracomputing/aer-verify@next
-```
+Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Computing/aer/blob/main/docs/upgrading.md#aer-verify).
 
 Zero runtime dependencies. Uses Web Crypto (`crypto.subtle`), available in Node
 >= 20, Cloudflare Workers and modern browsers.

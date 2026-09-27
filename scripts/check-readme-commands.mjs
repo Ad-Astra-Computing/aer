@@ -19,18 +19,18 @@ const CLI_README = readFileSync(new URL('apps/cli/README.md', ROOT), 'utf8');
 // first line carries the whole block, because running the second on its own is
 // not what the page tells anyone to do.
 const RUN = new Map([
-  ['npx @adastracomputing/aer@next init', null],
-  ['npx @adastracomputing/aer@next init --dry-run --json', null],
-  ['npx @adastracomputing/aer-hooks@next install claude-code', null],
+  ['npx @adastracomputing/aer init', null],
+  ['npx @adastracomputing/aer init --dry-run --json', null],
+  ['npx @adastracomputing/aer-hooks install claude-code', null],
   ['npm install @adastracomputing/aer@next', null],
-  ['npm install @adastracomputing/aer-verify@next', null],
-  ['npm install @adastracomputing/aer-resource-node@next', null],
-  ['npm install @adastracomputing/aer-mcp-guard@next', null],
-  ['npm install @adastracomputing/aer-sdk-ts@next', null],
-  ['npm install @adastracomputing/aer-emit@next', null],
-  ['npm install @adastracomputing/aer-auto-node@next', null],
-  ['npm install -g @adastracomputing/aer-hooks@next', null],
-  ['npm install -g @adastracomputing/aer-mcp-recorder@next', null],
+  ['npm install @adastracomputing/aer-verify', null],
+  ['npm install @adastracomputing/aer-resource-node', null],
+  ['npm install @adastracomputing/aer-mcp-guard', null],
+  ['npm install @adastracomputing/aer-sdk-ts', null],
+  ['npm install @adastracomputing/aer-emit', null],
+  ['npm install @adastracomputing/aer-auto-node', null],
+  ['npm install -g @adastracomputing/aer-hooks', null],
+  ['npm install -g @adastracomputing/aer-mcp-recorder', null],
   ['nix run github:Ad-Astra-Computing/aer -- init', null],
   [
     'nix profile add github:Ad-Astra-Computing/aer#tools',
@@ -45,22 +45,22 @@ const RUN = new Map([
 // Each skip states why the command cannot run here. "It is awkward" is not a
 // reason; every entry names a credential, a placeholder or another job.
 const SKIP = new Map([
-  ['npx @adastracomputing/aer@next login', 'needs a browser and a person to approve the device code'],
-  ['npx @adastracomputing/aer@next login --no-browser', 'needs a person to approve the device code'],
-  ['npx @adastracomputing/aer@next link', 'needs a login session from the command above'],
-  ['npx @adastracomputing/aer@next link --agent <id>', 'the argument is a placeholder'],
-  ['npx @adastracomputing/aer@next link --create-agent my-agent', 'needs a login session from the command above'],
-  ['npx @adastracomputing/aer@next whoami', 'needs a login session from the command above'],
-  ['npx @adastracomputing/aer@next logout', 'needs a login session from the command above'],
-  ['npx @adastracomputing/aer@next doctor', 'needs a configured project and a tenant API key'],
-  ['npx @adastracomputing/aer@next smoke', 'needs a tenant API key'],
-  ['npx @adastracomputing/aer@next verify <aer-id>', 'the argument is a placeholder'],
+  ['npx @adastracomputing/aer login', 'needs a browser and a person to approve the device code'],
+  ['npx @adastracomputing/aer login --no-browser', 'needs a person to approve the device code'],
+  ['npx @adastracomputing/aer link', 'needs a login session from the command above'],
+  ['npx @adastracomputing/aer link --agent <id>', 'the argument is a placeholder'],
+  ['npx @adastracomputing/aer link --create-agent my-agent', 'needs a login session from the command above'],
+  ['npx @adastracomputing/aer whoami', 'needs a login session from the command above'],
+  ['npx @adastracomputing/aer logout', 'needs a login session from the command above'],
+  ['npx @adastracomputing/aer doctor', 'needs a configured project and a tenant API key'],
+  ['npx @adastracomputing/aer smoke', 'needs a tenant API key'],
+  ['npx @adastracomputing/aer verify <aer-id>', 'the argument is a placeholder'],
   [
-    'AER_BASE_URL=https://api.aer.run npx @adastracomputing/aer@next verify <aer-id>',
+    'AER_BASE_URL=https://api.aer.run npx @adastracomputing/aer verify <aer-id>',
     'the argument is a placeholder',
   ],
   [
-    'npx @adastracomputing/aer@next init --yes --tenant <id> --agent <id> --env <id>',
+    'npx @adastracomputing/aer init --yes --tenant <id> --agent <id> --env <id>',
     'the arguments are placeholders',
   ],
   ['node --import @adastracomputing/aer-auto-node/register your-agent.js', 'the script is a placeholder'],
@@ -70,8 +70,8 @@ const SKIP = new Map([
   ['python3 -m venv .venv', 'run as part of the pip install block'],
   ['. .venv/bin/activate', 'run as part of the pip install block'],
   ['aer-hooks install codex', 'illustrative; identical shape to the claude-code install already run'],
-  ['npx @adastracomputing/aer-hooks@next status', 'needs a wired harness to report on'],
-  ['npx @adastracomputing/aer-hooks@next uninstall claude-code', 'would remove the install just run'],
+  ['npx @adastracomputing/aer-hooks status', 'needs a wired harness to report on'],
+  ['npx @adastracomputing/aer-hooks uninstall claude-code', 'would remove the install just run'],
   [
     'export AER_BASE_URL=https://api.aer.run',
     'part of the ingest example below; the session id, token and file are placeholders',
@@ -126,8 +126,8 @@ function commandsInFencedBlocks(content, langs) {
 
 // A package README's install line is not always in a shell-tagged fence: some
 // sit in a bare ``` block, others inline in prose (a package with no
-// standalone Install section still names the `next` dist-tag install command
-// in a sentence). Match the command shape itself rather than the fence.
+// standalone Install section names its install command in a sentence).
+// Match the command shape itself rather than the fence.
 const INSTALL_LINE = /^(npm i(?:nstall)?(?:\s+-g)?\s+\S|nix profile add\s|pip install\s)/;
 
 function installCommandsIn(content) {
