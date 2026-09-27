@@ -45,3 +45,11 @@ test('a source change without a changeset still fails', () => {
   });
   assert.equal(status, 1);
 });
+
+test('a version file beside a real source change still fails', () => {
+  const status = repoWith((dir) => {
+    writeFileSync(join(dir, 'packages/pkg/src/version.generated.ts'), 'export const V = "1.1.0";\n');
+    writeFileSync(join(dir, 'packages/pkg/src/index.ts'), 'export const x = 1;\n');
+  });
+  assert.equal(status, 1);
+});
