@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - `aer commitments verify` no longer reports `bundle_signature.anchored: true`
+  from the bundle's own `integrity.anchored` flag. That flag is outside the
+  signed hash, so a bundle edited to claim anchoring printed as anchored with
+  no transparency-log evidence at all. `anchored` is now true only when an
+  anchor was verified, which this command does not do, and the new
+  `anchor_status` field shows `claimed` or `none`, the same way `aer verify`
+  reports it.
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - `aer doctor` now warns when it runs inside a Claude Code tool shell
+  (`CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT` set) in a project that uses the
+  Node collector, because the collector stays off there and the program would
+  record nothing. The warning names `AER_RECORD_IN_AGENT_SHELL=1`, the opt-in.
+  It does not fail the check. `doctor --json` carries it in a new `warnings`
+  list.
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - `aer smoke` now checks with the API that its workload produced a completed
+  session for your agent, and exits 1 when nothing was recorded, instead of
+  reporting success whenever the workload itself exited 0. It also hands the
+  collector the same key `aer doctor` checked (`AER_API_KEY`, then
+  `AER_TENANT_API_KEY`), so a project set up with only `AER_TENANT_API_KEY`
+  records instead of silently sending nothing, and its workload's subprocess
+  now shows up in the record. `aer smoke` records even when run from an AI
+  coding agent's tool shell, since running it is an explicit request to record.
+
+### Patch Changes
+
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - `aer audit` and `aer audit --limit N` now list the tenant audit log as the
+  usage text describes, instead of exiting with "needs a subcommand".
+  `aer audit list` keeps working, and an unknown subcommand is reported as a
+  usage error.
+- [`2fba316`](https://github.com/Ad-Astra-Computing/aer/commit/2fba31694fe8fdbf23461f479cc71a50fa2843f4) - `aer --version` now reports the real version everywhere, including the nix
+  flake app, which previously printed "unknown" because it runs the built
+  entry file without a package.json next to it. The version is baked into the
+  bundle at build time instead of read from disk at startup.
+
 ## 0.3.0
 
 ### Minor Changes

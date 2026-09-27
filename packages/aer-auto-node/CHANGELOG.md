@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.5.0
+
+### Minor Changes
+
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - The collector no longer records a process started inside a Claude Code tool
+  shell (`CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT` set) unless you set
+  `AER_RECORD_IN_AGENT_SHELL=1`. Claude Code exports its own environment,
+  including any `AER_*` credentials it was given, into every command it runs,
+  so a test suite or script an agent started there was recorded into the
+  agent's account as a separate short session. The collector now prints one
+  line explaining why it did not start.
+
+### Patch Changes
+
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - The collector now declares its real version when it opens a session and in
+  its closing report. The version was a hand-written number that had fallen
+  behind the package, so 0.4.0 reported itself as 0.3.0. It is now read from
+  the package at build time.
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - HTTP requests are now recorded as their host and method only, as the README
+  describes. The `http.requested` event used to carry a `path_redacted` field
+  that removed the query string but kept the full path, so a token, signed URL
+  or object key in a path reached the record. The field is gone. A host value
+  that is not a host name (for example one carrying a path or credentials in
+  `options.host`) is recorded as `unknown`. The DPoP proof sent to a protected
+  resource still binds the full request URL, as the protocol requires; that
+  header goes to the resource, never into the record.
+
+  The closing report's `unverifiable` verdict for an adapter whose provider
+  was reached through a gateway or a custom base URL now works in a real run.
+  It is decided inside the process from the request path, which is judged in
+  memory and never recorded.
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - `spawnSync`, `execSync` and `execFileSync` are now recorded like `spawn`,
+  `exec` and `execFile`: a `process.exec` event with the program name and an
+  argument count, then a `process.exit` event with the exit code, also when the
+  call throws. Previously a subprocess started synchronously, for example
+  `execSync('git status')`, left no trace in the record.
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - The collector now also reads its API key from `AER_TENANT_API_KEY` when
+  `AER_API_KEY` is not set, the same fallback `aer doctor`, `aer-emit` and
+  `aer-hooks` already accept. Before, a project configured with only
+  `AER_TENANT_API_KEY` passed `aer doctor` and then recorded nothing.
+  `AER_API_KEY` still wins when both are set.
+
 ## 0.4.0
 
 ### Minor Changes
