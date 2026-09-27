@@ -397,3 +397,20 @@ describe('what the API requires to open a session', () => {
     expect(lines).toEqual([expect.stringMatching(/AER_ENV_ID/)]);
   });
 });
+
+describe('state left behind', () => {
+  it('a session start clears what sessions that never came back left in the cache', async () => {
+    fs.mkdirSync(path.join(cache, 'aer-hooks'), { recursive: true });
+    const stale = path.join(cache, 'aer-hooks', `${'a'.repeat(32)}.json`);
+    const drop = path.join(cache, 'aer-hooks', 'drop-orphan.json');
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    for (const p of [stale, drop]) {
+      fs.writeFileSync(p, '{}');
+      fs.utimesSync(p, old, old);
+    }
+    await fire({ session_id: 'cc-sweep', cwd: dir, hook_event_name: 'SessionStart' });
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(drop)).toBe(false);
+    expect(fs.existsSync(storeFile('cc-sweep'))).toBe(true);
+  });
+});

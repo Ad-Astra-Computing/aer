@@ -28,6 +28,7 @@ import {
   freshState,
   enqueue,
   stateRoot,
+  sweepStale,
   acquireSessionLock,
   savePidAlias,
   loadPidAlias,
@@ -878,6 +879,8 @@ async function orchestrateAndEmit(
     await deliverDirect(event, ctx, evidence, completes(event));
     return;
   }
+  // Once per harness session: clear what sessions that never came back left.
+  if (event.kind === 'session_start') sweepStale(env);
 
   const { ageMs, quietMs } = parseCheckpointMs(env);
   const queued = await withState(ctx, (st, at) => {

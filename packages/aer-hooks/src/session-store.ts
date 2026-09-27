@@ -266,6 +266,42 @@ export function deleteState(storeKey: string, env: NodeJS.ProcessEnv = process.e
   }
 }
 
+/** Most files one sweep removes, so a crowded directory never stalls a hook. */
+const SWEEP_MAX_UNLINKS = 200;
+const SWEPT_NAME = /^(?:[0-9a-f]{32}\.json|(?:drop|pid)-[^/]+\.json|.+\.tmp|.+\.lock)$/;
+
+/**
+ * Remove state that sessions which never came back left behind: files of
+ * ours untouched for longer than the TTL. A state file is kept after its
+ * record completes, so a resumed session never re-reads its transcript;
+ * without this sweep nothing else would ever remove it. Plain files only,
+ * never through a link, at most SWEEP_MAX_UNLINKS per call. Returns how many
+ * went.
+ */
+export function sweepStale(env: NodeJS.ProcessEnv = process.env, now: number = Date.now()): number {
+  const root = stateRoot(env);
+  if (root === null) return 0;
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync(root)) {
+      if (removed >= SWEEP_MAX_UNLINKS) break;
+      if (!SWEPT_NAME.test(name)) continue;
+      const file = path.join(root, name);
+      try {
+        const st = fs.lstatSync(file);
+        if (!st.isFile() || now - st.mtimeMs <= TTL_MS) continue;
+        fs.unlinkSync(file);
+        removed += 1;
+      } catch {
+        /* gone already, or not ours to remove */
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+  return removed;
+}
+
 /**
  * Queue events for the server, dropping the oldest past the cap. Returns how
  * many were dropped so the caller can count them where the record reports.

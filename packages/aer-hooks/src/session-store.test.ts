@@ -13,6 +13,7 @@ import {
   savePidAlias,
   loadPidAlias,
   MAX_OUTBOX_EVENTS,
+  sweepStale,
   type SessionState,
 } from './session-store.js';
 
@@ -121,6 +122,34 @@ describe('session-store', () => {
     expect(() => saveState('hs', state(), env2)).not.toThrow();
     expect(saveState('hs', state(), env2)).toBe(false);
     expect(fs.readdirSync(real)).toHaveLength(0);
+  });
+
+  it('sweeps state left by sessions that never came back, bounded per pass', () => {
+    saveState('live', { ...state(), lastActivityAt: Date.now() }, env);
+    const root = path.join(dir, 'aer-hooks');
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const names = [
+      ...Array.from({ length: 240 }, (_, i) => `${String(i).padStart(32, '0')}.json`),
+      'drop-abc.json', 'pid-123.json', 'x.json.99.tmp', 'y.json.lock',
+    ];
+    for (const n of names) {
+      fs.writeFileSync(path.join(root, n), '{}');
+      fs.utimesSync(path.join(root, n), old, old);
+    }
+    fs.mkdirSync(path.join(root, 'old-dir'));
+    fs.utimesSync(path.join(root, 'old-dir'), old, old);
+    const outside = path.join(dir, 'outside.json');
+    fs.writeFileSync(outside, '{}');
+    fs.symlinkSync(outside, path.join(root, 'link.json'));
+
+    expect(sweepStale(env)).toBe(200);
+    expect(sweepStale(env)).toBe(names.length - 200);
+    expect(sweepStale(env)).toBe(0);
+    const left = fs.readdirSync(root).sort();
+    expect(left).toContain('old-dir');
+    expect(left).toContain('link.json');
+    expect(fs.existsSync(outside)).toBe(true);
+    expect(loadState('live', env)?.session?.id).toBe('s1');
   });
 
   it('never throws when nowhere can be written', () => {
