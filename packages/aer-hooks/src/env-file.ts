@@ -16,7 +16,7 @@ export type EnvFileResult = { values: Record<string, string> } | { refused: stri
 /**
  * The value of one assignment. A quoted value runs to its closing quote and
  * anything after it (a comment) is ignored; in an unquoted value a `#`
- * starts a comment.
+ * starts a comment at the start or after whitespace.
  */
 function valueOf(raw: string): string {
   const q = raw[0];
@@ -24,7 +24,9 @@ function valueOf(raw: string): string {
     const end = raw.indexOf(q, 1);
     if (end !== -1) return raw.slice(1, end);
   }
-  const hash = raw.indexOf('#');
+  // As in a shell: `#` opens a comment only at the start of the value or
+  // after whitespace, so `abc#def` keeps its `#`.
+  const hash = raw.search(/(?:^|\s)#/);
   return (hash === -1 ? raw : raw.slice(0, hash)).trimEnd();
 }
 
