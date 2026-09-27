@@ -13,10 +13,19 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
 
 ## What it gives you
 
-- `EventSink`: `emit(eventType, payload)` and `close()`.
+- `EventSink`: `emit(eventType, payload, eventId?)` and `close()`. `eventId` lets a
+  caller that can derive a stable id for an event make re-emitting it idempotent at
+  ingest; omitted, the sink assigns a fresh random id.
 - `NullSink`: a no-op sink used when AER is not configured.
 - `createHttpSink(opts)`: opens a session lazily on the first emit, batches events
-  and completes the session on close.
+  and completes the session on close. `opts.clientRef` (paired with
+  `deriveClientRef`) makes a repeated session open reuse the running session
+  instead of minting a duplicate. `opts.onComplete(ok)` reports whether the
+  closing `/complete` call succeeded. `opts.collector` names which collector
+  opened the session, for a reader that needs to tell a harness recording from a
+  wrapped process.
+- `deriveClientRef(harness, rootHarnessSessionId, agentId)`: derives the
+  deterministic `client_ref` a caller passes to `createHttpSink`.
 - `sinkFromEnv(env?, overrides?)`: builds a sink from the standard `AER_*` env
   vars, or a `NullSink` when unconfigured.
 - `resolvePrincipal(id, kind, display)`: normalizes the on-whose-behalf principal
@@ -27,7 +36,9 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
 Every network call is best-effort. A failed session open, event POST or complete is
 swallowed, logged to stderr at most once and never thrown. Emitting is never in the
 critical path of the producer's real work. An idle producer that never emits never
-touches the network.
+touches the network. A batch of events that fails three retries, or is refused with
+a 4xx, is dropped with one stderr line; `close()` still resolves and `onComplete`
+still reports `true` once `/complete` succeeds.
 
 ## Environment
 
