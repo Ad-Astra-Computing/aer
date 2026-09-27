@@ -24,9 +24,9 @@ sink is unreachable, the proxy still forwards the stream unchanged and the child
 and exit code are unaffected. Recording is strictly best-effort and never in the
 critical path. Your tools never break because you wrapped them.
 
-**Redaction by default.** By default the recorder captures tool names, argument key
-names (not values), the result error flag and result size, plus timing. It never
-captures argument values or result content unless you explicitly opt in.
+**Bodies off.** The recorder captures tool names, argument key names (not
+values), the result error flag and result size, plus timing. It never captures
+argument values or result content, and there is no setting that turns that on.
 
 ## Install
 
