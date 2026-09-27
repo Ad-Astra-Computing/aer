@@ -109,6 +109,16 @@ export function strippedPath() {
  * @returns {Promise<{ code: number|null, signal: string|null, stdout: string,
  *           stderr: string, stdoutBuf: Buffer, timedOut: boolean, ms: number }>}
  */
+// Node 22 prints this once per process when NODE_USE_ENV_PROXY turns on the
+// network guard above (the agent is stable on Node 24). It comes from the
+// harness, not the package under test, so it is the one line dropped from
+// captured stderr; every other warning still counts against a case.
+const GUARD_WARNING = /^\(node:\d+\) \[UNDICI-EHPA\] Warning: EnvHttpProxyAgent is experimental[^\n]*\n(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?/gm;
+
+export function dropGuardWarning(stderr) {
+  return stderr.replace(GUARD_WARNING, '');
+}
+
 export function run(cmd, args = [], opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const started = Date.now();
@@ -152,7 +162,7 @@ export function run(cmd, args = [], opts = {}) {
         code,
         signal,
         stdout: stdoutBuf.toString('utf8'),
-        stderr: Buffer.concat(errc).toString('utf8'),
+        stderr: dropGuardWarning(Buffer.concat(errc).toString('utf8')),
         stdoutBuf,
         timedOut,
         ms: Date.now() - started,
