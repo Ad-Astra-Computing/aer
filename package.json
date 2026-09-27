@@ -13,7 +13,8 @@
     "version-packages": "changeset version && node scripts/write-versions.mjs",
     "release": "pnpm -r build && changeset publish --tag next",
     "promote": "node scripts/promote-latest.mjs",
-    "check:vendored": "node scripts/check-vendored.mjs"
+    "check:vendored": "node scripts/check-vendored.mjs",
+    "matrix": "node scripts/matrix/run.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

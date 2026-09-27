@@ -7,6 +7,7 @@
 // aer.config.json (ADR-008).
 
 import { join } from 'node:path';
+import { collectorApiKey } from './smoke-verify.js';
 
 export interface FsLike {
   readFile(path: string): string | null;
@@ -243,10 +244,13 @@ export function applyInit(fs: FsLike, plan: InitPlan): void {
 
 export interface DoctorOptions { cwd: string; env: Record<string, string | undefined> }
 export interface DoctorCheck { name: string; ok: boolean; detail: string }
-export interface DoctorReport { ok: boolean; checks: DoctorCheck[] }
+/** Something worth knowing that does not fail the check. */
+export interface DoctorWarning { name: string; detail: string }
+export interface DoctorReport { ok: boolean; checks: DoctorCheck[]; warnings?: DoctorWarning[] }
 
 export function runDoctor(fs: FsLike, opts: DoctorOptions): DoctorReport {
   const checks: DoctorCheck[] = [];
+  const warnings: DoctorWarning[] = [];
   const pkg = readJson(fs, join(opts.cwd, 'package.json')) ?? {};
   const deps = {
     ...(pkg['dependencies'] as Record<string, string> | undefined ?? {}),
@@ -296,14 +300,25 @@ export function runDoctor(fs: FsLike, opts: DoctorOptions): DoctorReport {
   // (runLiveChecks in doctor-live.ts) and the CLI help text both already
   // treat the two as interchangeable - this config-only check must agree,
   // or `aer doctor` can report a false failure while auth itself succeeds.
-  const keyOk = !!(opts.env['AER_API_KEY'] ?? opts.env['AER_TENANT_API_KEY']);
+  const keyOk = !!collectorApiKey(opts.env);
   checks.push({
     name: 'api_key_present',
     ok: keyOk,
     detail: keyOk ? 'API key is set' : 'export AER_API_KEY=<key> (or AER_TENANT_API_KEY)',
   });
 
-  return { ok: checks.every((c) => c.ok), checks };
+  // The collector does not start inside a Claude Code tool shell unless the
+  // user opts in, so the program would run and record nothing. Not a failure:
+  // the same project records fine from a normal shell.
+  const agentShell = opts.env['CLAUDECODE'] === '1' || Boolean(opts.env['CLAUDE_CODE_ENTRYPOINT']);
+  if (nodeCollectorInUse && agentShell && opts.env['AER_RECORD_IN_AGENT_SHELL'] !== '1') {
+    warnings.push({
+      name: 'agent_shell',
+      detail: 'this is a Claude Code tool shell, where the Node collector stays off and records nothing. Set AER_RECORD_IN_AGENT_SHELL=1 to record programs started here, or run them from your own shell.',
+    });
+  }
+
+  return { ok: checks.every((c) => c.ok), checks, warnings };
 }
 
 // ── doc builders ─────────────────────────────────────────────────────────────

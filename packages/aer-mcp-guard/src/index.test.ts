@@ -107,6 +107,16 @@ describe('guardMcpRequest', () => {
     if (!r.ok) { expect(r.status).toBe(503); expect(r.jsonRpcError.error.data.reason).toBe('introspection_unavailable'); }
   });
 
+  it('denies with 503 jwks_unavailable when the JWKS cannot be fetched, never admits', async () => {
+    // Like introspection_unavailable: the guard could not decide, so the
+    // caller should retry later rather than treat the token as bad.
+    const { token, jwk } = await mint();
+    const down = vi.fn(async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
+    const r = await guardMcpRequest(header(token), opts(jwk, down));
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.status).toBe(503); expect(r.jsonRpcError.error.data.reason).toBe('jwks_unavailable'); }
+  });
+
   it('reads Authorization: Bearer only when allowBearer is set', async () => {
     const { token, jwk } = await mint();
     const bearer = (n: string) => (n.toLowerCase() === 'authorization' ? `Bearer ${token}` : undefined);
@@ -119,6 +129,8 @@ describe('statusForReason', () => {
   it('maps reasons to HTTP statuses', () => {
     expect(statusForReason('revoked')).toBe(403);
     expect(statusForReason('introspection_unavailable')).toBe(503);
+    expect(statusForReason('jwks_unavailable')).toBe(503);
+    expect(statusForReason('unknown_kid')).toBe(401);
     expect(statusForReason('expired')).toBe(401);
     expect(statusForReason('bad_signature')).toBe(401);
     expect(statusForReason('missing_attestation')).toBe(401);

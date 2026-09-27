@@ -53,7 +53,7 @@ await client.close();
 - **Auto-populates** `event_id` (UUIDv7), `timestamp_observed` (UTC ms), `source_type: 'sdk'` and `severity_hint: 'info'` on every emission.
 - **Batches** up to `batchSize` (default 50) events before POSTing.
 - **Periodic flush** on `flushIntervalMs` (default 500 ms). The interval timer is `unref`'d, so it will not keep a Node process alive.
-- **Backoff+retry** on 5xx up to `maxRetries` (default 3). 4xx is surfaced immediately; there is no point retrying a validation error.
+- **Backoff+retry** on 5xx and network errors (refused, reset, timed out) up to `maxRetries` (default 3), with the same exponential backoff. A batch keeps its event ids across attempts, so one the server did receive is not stored twice. 4xx is surfaced immediately; there is no point retrying a validation error. A failure that outlasts the retries rejects `flush()` / `complete()`.
 - **Failure handling** on flush: failed chunk is pushed back to the front of the queue so `close()` or the next flush can try again.
 - **`close()`** drains the buffer before returning. Nothing is dropped on shutdown (as long as `close()` completes).
 

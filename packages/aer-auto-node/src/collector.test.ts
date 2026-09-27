@@ -396,3 +396,42 @@ describe('a wrapper replaced after we installed it is reported', () => {
     expect(rows.find((r) => r['name'] === 'openai')).toMatchObject({ coverage: 'unverifiable' });
   });
 });
+
+// A model call that no adapter recorded, made to a host no adapter claims (a
+// gateway or a custom base URL), makes a quiet adapter unverifiable rather
+// than idle. The decision used to read the request path off the recorded
+// event, which the collector never had in practice and no longer records.
+// The patches now judge the path in memory and pass only the verdict on.
+describe('model calls no adapter recorded', () => {
+  async function reportFor(urls: string[]): Promise<{ row: Record<string, unknown> | undefined; wire: string }> {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const { transport, emitted } = recordingTransport();
+    const collector = createCollector(resolveConfig({ env: {} }), {
+      transport,
+      adapterInstaller: () => ({ enabled: ['vercel-provider'], uninstall: () => undefined, stats: new AdapterStats() }),
+    });
+    try {
+      for (const u of urls) await globalThis.fetch(u, { method: 'POST' });
+      await collector.complete();
+    } finally {
+      collector.uninstall();
+      globalThis.fetch = realFetch;
+    }
+    const reports = emitted().filter((e) => e.event_type === 'collector.report');
+    const rows = (reports[reports.length - 1]?.payload as Record<string, unknown>)['adapters'] as Array<Record<string, unknown>>;
+    return { row: rows?.find((r) => r['name'] === 'vercel-provider'), wire: JSON.stringify(emitted()) };
+  }
+
+  it('reports unverifiable after a gateway model call the adapter did not see, and records no path', async () => {
+    const { row, wire } = await reportFor(['https://ai-gateway.vercel.sh/v1/ai/language-model']);
+    expect(row).toMatchObject({ coverage: 'unverifiable' });
+    expect(wire).not.toContain('/v1/ai/');
+    expect(wire).not.toContain('model_shaped');
+  });
+
+  it('stays idle when the only traffic is plainly not a model call', async () => {
+    const { row } = await reportFor(['https://registry.npmjs.org/aer/-/aer-1.0.0.tgz']);
+    expect(row).toMatchObject({ coverage: 'idle' });
+  });
+});

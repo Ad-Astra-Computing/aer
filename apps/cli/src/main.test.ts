@@ -286,3 +286,57 @@ describe('aer smoke refuses an untrusted cfg base URL before spawning anything',
     expect(stderr()).toMatch(/AER_BASE_URL/);
   });
 });
+
+describe('aer audit', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let calls: string[];
+
+  beforeEach(() => {
+    calls = [];
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitCalled(code ?? 0);
+    }) as never);
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubEnv('AER_TENANT_API_KEY', 'aer_test_key');
+    vi.stubEnv('AER_BASE_URL', 'http://127.0.0.1:9');
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ events: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('bare `aer audit` lists the audit log, as the usage text documents', async () => {
+    await main(['audit']);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(calls).toEqual(['http://127.0.0.1:9/v1/audit']);
+  });
+
+  it('`aer audit --limit N` passes the limit', async () => {
+    await main(['audit', '--limit', '5']);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(calls).toEqual(['http://127.0.0.1:9/v1/audit?limit=5']);
+  });
+
+  it('`aer audit list [--limit N]` keeps working', async () => {
+    await main(['audit', 'list', '--limit', '3']);
+    await main(['audit', 'list']);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(calls).toEqual(['http://127.0.0.1:9/v1/audit?limit=3', 'http://127.0.0.1:9/v1/audit']);
+  });
+
+  it('an unknown audit subcommand is a usage error, not a silent list', async () => {
+    await expect(main(['audit', 'purge'])).rejects.toThrow(ProcessExitCalled);
+    expect(calls).toEqual([]);
+  });
+});

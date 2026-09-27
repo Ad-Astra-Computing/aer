@@ -21,4 +21,10 @@ describe('buildSmokeScript', () => {
     const out = execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     expect(out).toBeDefined();
   });
+
+  it('runs its subprocess with an awaited spawn, which every collector version records', () => {
+    const script = buildSmokeScript('https://api.aer.run');
+    expect(script).toContain(".spawn(process.execPath");
+    expect(script).not.toContain('spawnSync');
+  });
 });

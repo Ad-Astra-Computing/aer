@@ -28,6 +28,12 @@ Flags: `--yes --dry-run --json --session <process|task|server> --entry <script>
 --tenant/--agent/--env/--base-url`. An unrecognized `--session` value is a
 usage error (exit 64), not a silent fallback to `process`.
 
+`smoke` runs a tiny instrumented workload (one fetch, one subprocess), then
+asks the API whether a new session for the configured agent arrived and
+completed. It succeeds only when one did; a workload that ran but recorded
+nothing exits 1. The collector, `doctor` and `smoke` all read the key from
+`AER_API_KEY`, then `AER_TENANT_API_KEY`.
+
 `--help` (or `-h`) after any command prints usage and exits immediately,
 before anything is written or any request is sent.
 
@@ -91,6 +97,12 @@ and checks the Ed25519 signature and transparency anchor locally.
 ```bash
 AER_BASE_URL=https://api.aer.run npx @adastracomputing/aer@next verify <aer-id>
 ```
+
+The signing keys and the transparency-log key the CLI accepts are pinned inside
+the CLI. There is deliberately no flag or variable to replace them: a trust
+root that a published build lets you swap is a way to make a forged record
+print `verified`. To check records signed by your own test keys, use
+`@adastracomputing/aer-verify` and pass the keys as `pinnedKeys`.
 
 ## Other commands
 

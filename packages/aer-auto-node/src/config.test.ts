@@ -70,6 +70,17 @@ describe('resolveConfig', () => {
     expect((cfg as unknown as { api_key?: string }).api_key).toBeUndefined();
   });
 
+  it('accepts AER_TENANT_API_KEY when AER_API_KEY is unset, like aer doctor and aer-emit', () => {
+    // aer doctor passed with only AER_TENANT_API_KEY set, and aer smoke then
+    // ran a collector that had no key and recorded nothing.
+    expect(resolveConfig({ env: { AER_TENANT_API_KEY: 'tenant-key' } }).apiKey).toBe('tenant-key');
+    expect(resolveConfig({ env: { AER_API_KEY: '', AER_TENANT_API_KEY: 'tenant-key' } }).apiKey).toBe('tenant-key');
+  });
+
+  it('prefers AER_API_KEY when both are set', () => {
+    expect(resolveConfig({ env: { AER_API_KEY: 'api-key', AER_TENANT_API_KEY: 'tenant-key' } }).apiKey).toBe('api-key');
+  });
+
   it('lets env override non-secret identity for CI', () => {
     const cfg = resolveConfig({
       env: {

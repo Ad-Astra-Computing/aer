@@ -18,6 +18,7 @@ import { runClaudeCodeImport } from './import/run.js';
 import { verifyAer } from './verify.js';
 import { runCommitmentsVerify } from './commitments-verify.js';
 import { buildSmokeScript } from './smoke-script.js';
+import { collectorApiKey, listSessionIds, awaitNewSession } from './smoke-verify.js';
 import { formatCliError, sanitizeForTerminal } from './cli-error.js';
 import {
   listWebhooks,
@@ -287,7 +288,7 @@ async function cmdDoctor(args: string[]): Promise<void> {
   const baseUrl = env['AER_BASE_URL'] ?? cfg.base_url;
   const live = await runLiveChecks({
     baseUrl,
-    apiKey: env['AER_API_KEY'] ?? env['AER_TENANT_API_KEY'],
+    apiKey: collectorApiKey(env),
     agentId: env['AER_AGENT_ID'] ?? cfg.agent_id,
   });
 
@@ -300,9 +301,10 @@ async function cmdDoctor(args: string[]): Promise<void> {
   const checks = [...config.checks, ...live.checks];
   const ok = config.ok && live.ok; // stale hook registrations are WARN, not a failing check
   if (args.includes('--json')) {
-    console.log(JSON.stringify({ ok, checks, hooks: { stale_registrations: staleHooks } }, null, 2));
+    console.log(JSON.stringify({ ok, checks, warnings: config.warnings ?? [], hooks: { stale_registrations: staleHooks } }, null, 2));
   } else {
     for (const c of checks) console.error(`${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}`);
+    for (const w of config.warnings ?? []) console.error(`WARN: ${w.detail}`);
     for (const f of staleHooks) console.error(`WARN: ${f.detail} - fix: ${f.fix}`);
     console.error(ok ? '\nOK' : '\nFAILED');
   }
@@ -310,9 +312,11 @@ async function cmdDoctor(args: string[]): Promise<void> {
 }
 
 async function cmdSmoke(): Promise<void> {
-  // Best-effort connectivity check: run a trivial instrumented workload that
-  // makes one fetch + one subprocess, and report. Requires AER_API_KEY + a
-  // valid aer.config.json identity (run `aer doctor` first).
+  // Run a trivial instrumented workload (one fetch, one subprocess), then ask
+  // the API whether a new session for this agent arrived and completed. Only
+  // that counts as success: a workload exits 0 whether or not anything was
+  // recorded. Requires an API key and a valid aer.config.json identity (run
+  // `aer doctor` first).
   const doctor = runDoctor(realFs, { cwd: process.cwd(), env: process.env });
   if (!doctor.ok) {
     console.error('smoke: not configured, run `aer doctor` and fix the failing checks first.');
@@ -328,14 +332,55 @@ async function cmdSmoke(): Promise<void> {
     process.exit(64);
   }
   const target = auth.baseUrl;
+  // The key the collector reads, which doctor checked. The tenant commands
+  // prefer AER_TENANT_API_KEY; the collector does not, and smoke tests the
+  // collector.
+  const apiKey = collectorApiKey(process.env) as string;
+  const agentId = process.env['AER_AGENT_ID'] || cfg.agent_id;
+  let before: Set<string>;
+  try {
+    before = await listSessionIds({ baseUrl: target, apiKey, agentId });
+  } catch (e) {
+    console.error(`smoke: cannot list this agent's sessions at ${target} (${(e as Error).message}); run \`aer doctor\`.`);
+    process.exit(1);
+  }
   const script = buildSmokeScript(target);
   const code: number = await new Promise((resolve) => {
-    const child = spawn(process.execPath, ['--import', REGISTER, '-e', script], { stdio: 'inherit' });
+    const child = spawn(process.execPath, ['--import', REGISTER, '-e', script], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        // Hand the collector exactly what was checked above.
+        AER_API_KEY: apiKey,
+        AER_BASE_URL: target,
+        // Running smoke is an explicit request to record, including from an
+        // agent's tool shell, where the collector otherwise stays off.
+        AER_RECORD_IN_AGENT_SHELL: '1',
+      },
+    });
     child.on('exit', (c) => resolve(c ?? -1));
     child.on('error', () => resolve(-1));
   });
-  console.error(code === 0 ? 'smoke: instrumented workload ran (check the AER console for a new session).' : `smoke: workload exited ${code}`);
-  if (code !== 0) process.exit(1);
+  if (code !== 0) {
+    console.error(`smoke: workload exited ${code}`);
+    process.exit(1);
+  }
+  let session: { id: string; status: string } | null;
+  try {
+    session = await awaitNewSession({ baseUrl: target, apiKey, agentId, before });
+  } catch (e) {
+    console.error(`smoke: the workload ran, but the session check failed: ${(e as Error).message}`);
+    process.exit(1);
+  }
+  if (!session) {
+    console.error(`smoke: the workload ran, but no session reached ${target}. Nothing was recorded; check the [aer:auto] lines above.`);
+    process.exit(1);
+  }
+  if (session.status !== 'completed') {
+    console.error(`smoke: session ${session.id} was opened but is ${session.status}, not completed.`);
+    process.exit(1);
+  }
+  console.error(`smoke: recorded session ${session.id} and it completed.`);
 }
 
 // argv is the command's own arguments (no node/script path), so tests can
@@ -681,7 +726,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (command === 'agents' || command === 'sessions' || command === 'findings' || command === 'audit' || command === 'aers' || command === 'baseline') {
     // A command without its subcommand used to fall through to the whole usage
     // text, which reads as the tool ignoring you. Name what is missing.
-    if (sub === undefined || sub.startsWith('-')) {
+    // `aer audit` is the one of these with a bare form: the usage text
+    // documents `aer audit [--limit N]`, and `aer audit list` is kept.
+    if (command !== 'audit' && (sub === undefined || sub.startsWith('-'))) {
       console.error(`aer ${command} needs a subcommand, for example: aer ${command} list\n`);
       usage();
     }
@@ -794,9 +841,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       }), null, 2));
       return;
     }
-    if (command === 'audit') {
-      // /audit takes optional --limit; sub may be '--limit' or the value
-      const args = sub ? [sub, ...rest] : rest;
+    if (command === 'audit' && (sub === undefined || sub === 'list' || sub.startsWith('-'))) {
+      // `aer audit [--limit N]` and `aer audit list [--limit N]`.
+      const args = sub && sub !== 'list' ? [sub, ...rest] : rest;
       const limitArg = readFlag(args, '--limit');
       const limit = limitArg ? parseInt(limitArg, 10) : undefined;
       console.log(JSON.stringify(await listAudit({

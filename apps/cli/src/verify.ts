@@ -46,7 +46,14 @@ export interface BundleSignatureResult {
   hash_match: boolean;
   signature_valid: boolean;
   verified: boolean;
+  /**
+   * Always false here: this check has no transparency-log evidence, so it
+   * cannot confirm an anchor. Never the bundle's own integrity.anchored,
+   * which is outside the signature and can be flipped by anyone.
+   */
   anchored: boolean;
+  /** `claimed` when the bundle asserts anchoring (unverified), else `none`. */
+  anchor_status: AnchorStatus;
   canonical_hash: string;
   signing_key_id: string;
   reason?: string;
@@ -104,14 +111,16 @@ export async function verifyBundleSignature(
   const trustRoot = opts.trustRoot ?? builtinTrustRoot();
   const integrity = bundle['integrity'] as AerBundle['integrity'] | undefined;
   if (!integrity || typeof integrity.hash !== 'string' || typeof integrity.signature !== 'string' || typeof integrity.signing_key_id !== 'string') {
-    return { hash_match: false, signature_valid: false, verified: false, anchored: false, canonical_hash: '', signing_key_id: '', reason: 'bundle_missing_integrity' };
+    return { hash_match: false, signature_valid: false, verified: false, anchored: false, anchor_status: 'none', canonical_hash: '', signing_key_id: '', reason: 'bundle_missing_integrity' };
   }
+  // The claim is display only: it is outside the signed hash.
+  const claimStatus: AnchorStatus = integrity.anchored === true ? 'claimed' : 'none';
 
   let keyData = opts.key;
   if (!keyData) {
     if (!opts.baseUrl) {
       return {
-        hash_match: false, signature_valid: false, verified: false, anchored: !!integrity.anchored,
+        hash_match: false, signature_valid: false, verified: false, anchored: false, anchor_status: claimStatus,
         canonical_hash: '', signing_key_id: integrity.signing_key_id,
         reason: 'signature_unverifiable_no_key_source',
       };
@@ -119,7 +128,7 @@ export async function verifyBundleSignature(
     const base = opts.baseUrl.replace(/\/$/, '');
     const keyRes = await opts.fetchImpl(`${base}/v1/keys/${encodeURIComponent(integrity.signing_key_id)}`);
     if (!keyRes.ok) {
-      return { hash_match: false, signature_valid: false, verified: false, anchored: !!integrity.anchored, canonical_hash: '', signing_key_id: integrity.signing_key_id, reason: `key_not_found: ${keyRes.status}` };
+      return { hash_match: false, signature_valid: false, verified: false, anchored: false, anchor_status: claimStatus, canonical_hash: '', signing_key_id: integrity.signing_key_id, reason: `key_not_found: ${keyRes.status}` };
     }
     keyData = (await keyRes.json()) as KeyResponse;
   }
@@ -130,10 +139,10 @@ export async function verifyBundleSignature(
     hash_match: res.checks.hash_match,
     signature_valid: res.checks.signature_valid,
     verified: res.ok,
-    // Phase 1 preserves the historical behaviour of echoing the (unsigned) anchor
-    // claim; Phase 2 replaces this with the cryptographically verified value once
-    // the CLI fetches anchor.json and the core verifies the Rekor inclusion proof.
-    anchored: res.checks.anchor.claim === true,
+    // No anchor evidence is passed, so this is never true. It used to echo
+    // the unsigned integrity.anchored, which a tampered bundle can set.
+    anchored: res.anchored,
+    anchor_status: res.checks.anchor.status,
     canonical_hash: res.canonical_hash,
     signing_key_id: res.signing_key_id,
   };

@@ -186,7 +186,9 @@ export function countUnattributedModelTraffic(
     const raw = payload?.['host'];
     if (typeof raw !== 'string') continue;
     if (claimedHosts.has(raw.split(':')[0]?.toLowerCase() ?? '')) continue;
-    if (looksLikeModelCall(payload?.['path_redacted'])) n += 1;
+    // Judged from the path inside the transport patch, in memory; the path
+    // itself is never recorded.
+    if (payload?.['model_shaped'] === true) n += 1;
   }
   return n;
 }

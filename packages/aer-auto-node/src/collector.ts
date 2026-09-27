@@ -14,7 +14,7 @@ import {
   type CollectorEvent,
   type SessionTransport,
 } from './session.js';
-import { installTransportPatches, type InstalledPatches } from './patches/index.js';
+import { installTransportPatches, type InstalledPatches, type RequestObserver } from './patches/index.js';
 import { adapterRows } from './adapters/coverage.js';
 import { replacedAdapters, patchRegistryMark, pendingObservations } from './adapters/llm-core.js';
 import { installAdapters, patchRemainingCopies, type InstalledAdapters, type AdapterStats, type PolicyOption, type CommitOption } from './adapters/index.js';
@@ -27,7 +27,9 @@ import { fetchUsagePolicy } from './policy-fetch.js';
 import { startFrameworkObserver, type FrameworkObserver } from './frameworks/observe.js';
 
 export const COLLECTOR_NAME = '@adastracomputing/aer-auto-node';
-export const COLLECTOR_VERSION = '0.3.0'; // keep in sync with package.json
+// Baked from package.json at build time by scripts/write-version.mjs.
+export { COLLECTOR_VERSION } from './version.generated.js';
+import { COLLECTOR_VERSION } from './version.generated.js';
 // Event-schema contract this collector build speaks. Declared at session create
 // so collector/API version skew is explicit rather than inferred at ingest.
 export const SCHEMA_CAPABILITY = 'aer-events.v1';
@@ -84,7 +86,7 @@ export interface CreateCollectorDeps {
    * Override patch installation. Defaults to installing the real global
    * transport patches. Tests pass a fake (or `false`) to avoid mutating globals.
    */
-  patchInstaller?: ((capture: (e: CollectorEvent) => void, transports: string[], attestor?: Attestor) => InstalledPatches) | false;
+  patchInstaller?: ((capture: (e: CollectorEvent) => void, transports: string[], attestor?: Attestor, onRequest?: RequestObserver) => InstalledPatches) | false;
   /**
    * Override SDK adapter installation. Defaults to detecting + patching
    * installed SDKs. Tests pass `false` to avoid touching real modules.
@@ -146,7 +148,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       closingReport: () => buildCollectorReport(
         config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
         adapterEvidence(
-          config, enabledPatches, enabledAdapters, adapterStats, hostCounts, uninstalled,
+          config, enabledPatches, enabledAdapters, adapterStats, hostCounts, modelShapedCounts, uninstalled,
           replacedAdapters(patchMark),
         ),
         observer,
@@ -239,6 +241,13 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   // Outbound requests per host, so the closing report can say whether the
   // provider traffic this session made was actually recorded by an adapter.
   const hostCounts = new Map<string, number>();
+  // Of those, requests whose path looked like a model call. The patches judge
+  // the path in memory and hand over only this verdict; nothing about the
+  // path is recorded.
+  const modelShapedCounts = new Map<string, number>();
+  const onRequest: RequestObserver = (host, modelShaped) => {
+    if (modelShaped) modelShapedCounts.set(host, (modelShapedCounts.get(host) ?? 0) + 1);
+  };
   const capture = (e: CollectorEvent): void => {
     if (e.event_type === 'http.requested') {
       const host = (e.payload as Record<string, unknown> | undefined)?.['host'];
@@ -294,7 +303,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   teardowns.push(() => observer.stop());
   if (deps.patchInstaller !== false) {
     const installer = typeof deps.patchInstaller === 'function' ? deps.patchInstaller : installTransportPatches;
-    const installed = installer(capture, config.capture.transport, attestor);
+    const installed = installer(capture, config.capture.transport, attestor, onRequest);
     enabledPatches.push(...installed.enabled);
     teardowns.push(installed.uninstall);
   }
@@ -436,6 +445,7 @@ function adapterEvidence(
   enabledAdapters: readonly string[],
   adapterStats: AdapterStats | undefined,
   hostCounts: ReadonlyMap<string, number>,
+  modelShapedCounts: ReadonlyMap<string, number>,
   uninstalled: boolean,
   replacedSinceStart: readonly string[],
 ): Array<Record<string, unknown>> {
@@ -451,9 +461,13 @@ function adapterEvidence(
     || enabledPatches.includes('https')
     || enabledPatches.includes('fetch');
   // One synthetic event per request, so a host seen n times counts n times.
-  const events: Array<{ event_type: string; payload: { host: string } }> = [];
+  // These never leave the process; model_shaped exists only here.
+  const events: Array<{ event_type: string; payload: { host: string; model_shaped?: true } }> = [];
   for (const [host, n] of hostCounts) {
-    for (let i = 0; i < n; i += 1) events.push({ event_type: 'http.requested', payload: { host } });
+    const shaped = modelShapedCounts.get(host) ?? 0;
+    for (let i = 0; i < n; i += 1) {
+      events.push({ event_type: 'http.requested', payload: i < shaped ? { host, model_shaped: true } : { host } });
+    }
   }
   const counts = adapterStats?.snapshot() ?? {};
   const calls: Record<string, number> = {};

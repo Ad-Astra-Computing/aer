@@ -188,6 +188,38 @@ describe('runDoctor', () => {
     expect(failed).toContain('api_key_present');
   });
 
+  describe('in a Claude Code tool shell', () => {
+    // The collector stays off there unless AER_RECORD_IN_AGENT_SHELL=1, so an
+    // all-green doctor followed by a run that records nothing is the trap.
+    const wired = () => memFs({
+      '/proj/package.json': JSON.stringify({
+        scripts: { start: 'NODE_OPTIONS="--import @adastracomputing/aer-auto-node/register" node dist/main.js' },
+        dependencies: { '@adastracomputing/aer-auto-node': '^0.5.0' },
+      }),
+      '/proj/aer.config.json': JSON.stringify({ schema: 'aer.config.v1', tenant_id: 't', agent_id: 'a', env_id: 'e' }),
+    });
+
+    for (const marker of [{ CLAUDECODE: '1' }, { CLAUDE_CODE_ENTRYPOINT: 'cli' }]) {
+      it(`warns, without failing, when ${Object.keys(marker)[0]} is set and the opt-in is not`, () => {
+        const report = runDoctor(wired(), { cwd: CWD, env: { AER_API_KEY: 'k', ...marker } });
+        expect(report.ok).toBe(true);
+        expect(report.warnings).toHaveLength(1);
+        expect(report.warnings[0]?.name).toBe('agent_shell');
+        expect(report.warnings[0]?.detail).toContain('AER_RECORD_IN_AGENT_SHELL=1');
+      });
+    }
+
+    it('says nothing once the opt-in is set, or outside an agent shell', () => {
+      expect(runDoctor(wired(), { cwd: CWD, env: { AER_API_KEY: 'k', CLAUDECODE: '1', AER_RECORD_IN_AGENT_SHELL: '1' } }).warnings).toEqual([]);
+      expect(runDoctor(wired(), { cwd: CWD, env: { AER_API_KEY: 'k' } }).warnings).toEqual([]);
+    });
+
+    it('says nothing for a project without the Node collector', () => {
+      const fs = memFs({ '/proj/package.json': JSON.stringify({ scripts: {} }) });
+      expect(runDoctor(fs, { cwd: CWD, env: { AER_API_KEY: 'k', CLAUDECODE: '1' } }).warnings).toEqual([]);
+    });
+  });
+
   it('passes for a hooks-only user: no Node collector, but API key present', () => {
     // The reported bug: `aer doctor` said FAILED for a hooks-only user because
     // it always ran the Node-collector checks. With a key set and no Node

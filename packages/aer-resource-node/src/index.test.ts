@@ -432,3 +432,52 @@ describe('defaults', () => {
     expect(DEFAULT_JWKS_URL).toBe('https://api.aer.run/.well-known/aer-attestation-jwks.json');
   });
 });
+
+// AGENTS.md: "Fail closed. An unreachable JWKS is a denial." The cache used
+// to keep serving an expired JWKS when the refetch failed, and every outage
+// was reported as unknown_kid, which reads as a forged or rotated token.
+describe('JWKS outages', () => {
+  const down = (kind: 'reject' | '503' | 'html' | 'shape') => vi.fn(async () => {
+    if (kind === 'reject') throw new TypeError('fetch failed');
+    if (kind === '503') return new Response('unavailable', { status: 503 });
+    if (kind === 'html') return new Response('<html>login</html>', { status: 200 });
+    return new Response(JSON.stringify({ keys: { not: 'an array' } }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  for (const kind of ['reject', '503', 'html', 'shape'] as const) {
+    it(`denies with jwks_unavailable on a cold cache when the JWKS ${kind === 'reject' ? 'is unreachable' : kind === '503' ? 'answers 503' : kind === 'html' ? 'is not JSON' : 'has no key list'}`, async () => {
+      const { token, jwk } = await mint();
+      await expect(verifyAttestation(token, opts(jwk, down(kind)))).rejects.toMatchObject({ code: 'jwks_unavailable' });
+    });
+  }
+
+  it('denies once the cached JWKS has expired and the refetch fails', async () => {
+    const { token, jwk } = await mint();
+    let now = NOW_MS;
+    const ok = vi.fn(async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200, headers: { 'cache-control': 'max-age=60' } })) as unknown as typeof fetch;
+    await expect(verifyAttestation(token, opts(jwk, ok, { now: () => now }))).resolves.toBeTruthy();
+    now = NOW_MS + 61_000;
+    await expect(verifyAttestation(token, opts(jwk, down('reject'), { now: () => now }))).rejects.toMatchObject({ code: 'jwks_unavailable' });
+  });
+
+  it('still verifies from a cache within its max-age without refetching', async () => {
+    const { token, jwk } = await mint();
+    let now = NOW_MS;
+    const ok = vi.fn(async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200, headers: { 'cache-control': 'max-age=60' } })) as unknown as typeof fetch;
+    await verifyAttestation(token, opts(jwk, ok, { now: () => now }));
+    now = NOW_MS + 30_000;
+    const failing = down('reject');
+    await expect(verifyAttestation(token, opts(jwk, failing, { now: () => now }))).resolves.toBeTruthy();
+    expect(failing).not.toHaveBeenCalled();
+  });
+
+  it('an unknown kid with the JWKS unreachable is jwks_unavailable, with it reachable unknown_kid', async () => {
+    const { jwk } = await mint();
+    const other = await mint();
+    let now = NOW_MS;
+    const ok = vi.fn(async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200, headers: { 'cache-control': 'max-age=600' } })) as unknown as typeof fetch;
+    await expect(verifyAttestation(other.token, opts(jwk, ok, { now: () => now }))).rejects.toMatchObject({ code: 'unknown_kid' });
+    now = NOW_MS + 20_000; // past the refetch rate limit, cache still fresh
+    await expect(verifyAttestation(other.token, opts(jwk, down('503'), { now: () => now }))).rejects.toMatchObject({ code: 'jwks_unavailable' });
+  });
+});

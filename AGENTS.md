@@ -138,6 +138,12 @@ Tests never build: they read `dist` and fail when it is missing or older than
 its sources, so build first. Packages are published only by `release.yml`. A
 hand `pnpm publish` ships without provenance and without the test gate.
 
+Before a release pull request merges, `pnpm matrix` must pass: it installs the
+packed tarballs into a throwaway directory and drives every package as a
+customer would. Before `pnpm promote`, run it again with
+`--source registry --tag next --upgrade-from latest`. See
+[CONTRIBUTING.md](./CONTRIBUTING.md).
+
 These invariants hold everywhere and breaking one is a defect, not a tradeoff:
 
 - **Bodies-off.** Never record prompts, model output, tool arguments, tool

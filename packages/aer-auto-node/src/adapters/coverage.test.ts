@@ -198,9 +198,11 @@ describe('a model call is recognised by its shape, not its vendor', () => {
 });
 
 describe('adapterRows counts traffic no adapter claims', () => {
+  // The collector's own shape: the path is judged in the patch and only the
+  // verdict reaches adapterRows.
   const req = (host: string, path = '/v1/chat/completions') => ({
     event_type: 'http.requested',
-    payload: { host, path_redacted: path },
+    payload: looksLikeModelCall(path) ? { host, model_shaped: true } : { host },
   });
 
   it('will not call the vercel adapter idle when the gateway was used', () => {

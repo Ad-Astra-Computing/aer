@@ -40,6 +40,12 @@ control-plane host. Leave it alone unless AER announces an issuer change.
 the canonical AER API host. 30s clock tolerance. JWKS is cached (honoring
 `max-age`) and refetched on an unknown `kid`.
 
+Verification fails closed when the JWKS cannot be read. A cold cache, a cache
+past its `max-age` or a `kid` missing from the cached set, each combined with a
+failed fetch (network error, non-2xx, a body that is not a JWKS), throws
+`AttestationError('jwks_unavailable')`. An expired JWKS is never reused as a
+fallback. `unknown_kid` means the JWKS was read and does not publish the key.
+
 ## Revocation check (optional introspection)
 
 Offline verify (signature plus short TTL) is the default and needs no network call
