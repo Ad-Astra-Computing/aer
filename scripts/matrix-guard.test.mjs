@@ -42,3 +42,11 @@ test('a passing harness suite lets the run continue', async () => {
   assert.equal(ran(), true);
   assert.equal(results.aborted, undefined);
 });
+
+test('only the proxy guard warning is dropped from captured stderr', async () => {
+  const { dropGuardWarning } = await import('./matrix/lib/proc.mjs');
+  const guard = '(node:123) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\n';
+  assert.equal(dropGuardWarning(guard + 'real line\n'), 'real line\n');
+  assert.equal(dropGuardWarning('(node:1) [DEP0040] DeprecationWarning: x\n'), '(node:1) [DEP0040] DeprecationWarning: x\n');
+  assert.equal(dropGuardWarning('no warning\n'), 'no warning\n');
+});
