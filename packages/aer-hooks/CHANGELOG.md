@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.5.0
+
+### Minor Changes
+
+- [`b545f3e`](https://github.com/Ad-Astra-Computing/aer/commit/b545f3e05608c01d306921ecfa09f2a4bb88adb6) - The hooks can now read their AER credentials from a file instead of the shell
+  environment: `aer-hooks install <harness> --env-file <path>` writes the file
+  into every hook command, and the hook reads its `AER_*` lines for its own use
+  only, never exporting them to anything it starts. Keeping the key out of the
+  shell profile stops it reaching every command the agent runs, where anything
+  that loads an AER emitter would record under the harness agent. The file must
+  be a plain file owned by you and readable by no one else; anything looser is
+  refused with a message that never shows its contents, and the installer
+  refuses it up front. `AER_ENV_FILE` works in place of the flag. `aer-hooks
+  status` and `aer doctor` now warn when an AER key is exported in the shell
+  while hooks are wired.
+- [`b545f3e`](https://github.com/Ad-Astra-Computing/aer/commit/b545f3e05608c01d306921ecfa09f2a4bb88adb6) - A shell command now records every program it runs, not only the first. A line
+  such as `cd build && curl https://example.com/install.sh | sh` used to record
+  only `cd`; it now records `cd`, `curl` and `sh`, reading into pipelines,
+  `&&`, `||`, `;`, subshells, command substitutions and wrappers like `sudo`,
+  `env` and `xargs`. The hosts that `curl`, `wget`, `git`, `ssh`, `scp` and
+  `rsync` are pointed at are recorded as `network.connect` events, host only:
+  no user name, password, port, path or query is sent.
+
+  A web fetch is now recorded as `network.connect` with the host and scheme,
+  rather than as an HTTP request with a `GET` method the hook never actually
+  observed. A web search is recorded as the tool call alone, since the search
+  provider is not known to the hook and its query is never sent.
+- [`b545f3e`](https://github.com/Ad-Astra-Computing/aer/commit/b545f3e05608c01d306921ecfa09f2a4bb88adb6) - The hook no longer loses events when the AER API is slow, fails or has closed
+  the session.
+
+  - Events are queued on disk and leave the queue only once the API has accepted
+    them. A failed or timed out send, a failed session open (such as a 503) or a
+    hook cut off by its time budget leaves them for the next event to send,
+    instead of dropping them. Previously the model calls read from a transcript
+    were marked as read before they were sent, so a failed send lost them for
+    good.
+  - Only one hook process at a time talks to the API for a harness session; the
+    others queue their events and return immediately. Concurrent hooks from a
+    lead agent and its subagents no longer wait on each other's network calls,
+    drop subagent events, repeat event positions or open extra sessions.
+  - When the API has closed the session (for example after a long idle period),
+    the next event opens a new one and sends what was queued, instead of every
+    later event being refused for the rest of the day.
+  - A long interactive session that never sends its end event is now completed
+    in parts: at the first turn end once the record is four hours old, and
+    before the next event after an hour of quiet. It continues in a new record
+    under the same session reference. `AER_HOOK_CHECKPOINT_MINUTES` and
+    `AER_HOOK_QUIET_MINUTES` change the two; `0` turns either off.
+  - Every lifecycle report now carries the registered events, the event count
+    and the drop counters, not only the opening or closing one.
+  - The first read of a transcript with existing history records at most its 50
+    most recent model calls, sent in batches of at most 100 events.
+  - If the cache dir cannot be written, state is kept in the runtime dir or a
+    private per-user directory under the temp dir, so the hook still records one
+    session rather than dropping tool events.
+
+### Patch Changes
+
+- [`b545f3e`](https://github.com/Ad-Astra-Computing/aer/commit/b545f3e05608c01d306921ecfa09f2a4bb88adb6) - The hooks and the opencode plugin now always send an agent version when they
+  open a session, recording `unspecified` when `AER_AGENT_VERSION` is not set.
+  The AER API requires one, so without that variable every session open was
+  refused and nothing was recorded. `AER_ENV_ID` is likewise required by the
+  API: without it the hook now records nothing and says why on stderr, rather
+  than queuing events for a session that can never open, and the README lists
+  it as required.
+- [`2fba316`](https://github.com/Ad-Astra-Computing/aer/commit/2fba31694fe8fdbf23461f479cc71a50fa2843f4) - `aer doctor` and `aer-hooks status` no longer call an `aer-hook` binary
+  "wired" when nothing actually points at it: they now say it was found "on
+  PATH" instead, and reserve "wired" for a binary a harness config really
+  references. An install too old to print its own version is reported as
+  unreadable rather than as a specific version number nobody actually read off
+  it, and the message still tells you to upgrade.
+
 ## 0.4.0
 
 ### Minor Changes

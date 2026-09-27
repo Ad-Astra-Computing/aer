@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+### Patch Changes
+
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - A wrapped command that cannot start is now reported instead of exiting 0 in
+  silence. `aer-mcp-recorder` prints one line to stderr naming the command and
+  exits `127` when it does not exist or `126` when it cannot be executed, the
+  same codes a shell uses. Recording failures still never change the exit code.
+- [`2fba316`](https://github.com/Ad-Astra-Computing/aer/commit/2fba31694fe8fdbf23461f479cc71a50fa2843f4) - `aer-mcp-recorder --version` (and `-V`) now prints the installed version
+  instead of falling through to the usage text, matching every other AER
+  binary. The version reported also now tracks the package's own release
+  rather than a hand-written number that had drifted out of date.
+
 ## 0.3.1
 
 ### Patch Changes

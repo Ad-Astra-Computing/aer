@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+### Patch Changes
+
+- [`f0fcbcb`](https://github.com/Ad-Astra-Computing/aer/commit/f0fcbcb177b9c08467ef070df5e6a03416f70aa2) - Sending events now retries a network error (connection refused or reset, a
+  DNS failure, the request timeout) with the same bounded backoff as a 5xx
+  answer, as the README states. Previously the first dropped connection
+  rejected the flush. A failure that outlasts `maxRetries` still rejects
+  `flush()` and `complete()`, so the caller is told.
+
 ## 0.2.0
 
 ### Minor Changes
