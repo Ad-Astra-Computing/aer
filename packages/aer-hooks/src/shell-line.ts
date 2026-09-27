@@ -386,6 +386,22 @@ const WGET_VALUED = new Set([
   '--wait', '--quota', '--directory-prefix', '--execute', '--user-agent', '--level', '--accept', '--reject',
   '--domains', '--header', '--user', '--password', '--post-data', '--post-file', '--body-data', '--method',
 ]);
+// Options known to take no value, so the word after one is still a target.
+const CURL_FLAGS = new Set([
+  '-s', '-S', '-L', '-f', '-k', '-v', '-i', '-I', '-O', '-J', '-G', '-N', '-R', '-q', '-Z', '-g', '-j', '-l', '-n',
+  '-0', '-1', '-2', '-3', '-4', '-6', '-#',
+  '--silent', '--show-error', '--location', '--location-trusted', '--fail', '--fail-with-body', '--insecure',
+  '--verbose', '--include', '--head', '--remote-name', '--remote-name-all', '--remote-header-name', '--compressed',
+  '--get', '--http1.0', '--http1.1', '--http2', '--http3', '--ipv4', '--ipv6', '--no-buffer', '--globoff',
+  '--progress-bar', '--netrc', '--no-progress-meter', '--create-dirs', '--raw', '--tcp-nodelay',
+]);
+const WGET_FLAGS = new Set([
+  '-q', '-v', '-c', '-N', '-S', '-r', '-k', '-p', '-m', '-b', '-x', '-d', '-4', '-6',
+  '--quiet', '--verbose', '--no-verbose', '--continue', '--timestamping', '--server-response', '--recursive',
+  '--convert-links', '--page-requisites', '--mirror', '--background', '--no-check-certificate', '--spider',
+  '--no-clobber', '--no-parent', '--force-directories', '--no-directories', '--show-progress', '--no-cache',
+  '--inet4-only', '--inet6-only', '--debug',
+]);
 const SSH_VALUED = new Set(['-b', '-B', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J', '-L', '-l', '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w']);
 const SCP_VALUED = new Set(['-c', '-F', '-i', '-J', '-l', '-o', '-P', '-S', '-X']);
 const GIT_GLOBAL_VALUED = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
@@ -397,8 +413,17 @@ const GIT_REMOTE_COMMANDS = new Set(['clone', 'fetch', 'pull', 'push', 'remote',
  * `--header=x`) takes no following word. `onUrlOption` sees a value given to
  * `--url`, which names a target rather than a setting.
  */
-function positionals(args: Word[], valued: ReadonlySet<string>, onUrlOption?: (w: Word) => void): Word[] {
+function positionals(
+  args: Word[],
+  valued: ReadonlySet<string>,
+  onUrlOption?: (w: Word) => void,
+  flags?: ReadonlySet<string>,
+  ambiguous?: Set<Word>,
+): Word[] {
   const out: Word[] = [];
+  // Set after an option neither list knows: the word after it may be its
+  // value rather than a target, so it is marked rather than trusted.
+  let afterUnknown = false;
   for (let i = 0; i < args.length; i += 1) {
     const w = args[i]!;
     if (w.text === '--') {
@@ -408,20 +433,26 @@ function positionals(args: Word[], valued: ReadonlySet<string>, onUrlOption?: (w
     if (w.text.startsWith('--')) {
       const eq = w.text.indexOf('=');
       const name = eq === -1 ? w.text : w.text.slice(0, eq);
+      afterUnknown = false;
       if (name === '--url') {
         const value = eq === -1 ? args[++i] : { ...w, text: w.text.slice(eq + 1) };
         if (value !== undefined) onUrlOption?.(value);
         continue;
       }
       if (eq === -1 && valued.has(name)) i += 1;
+      else if (eq === -1 && flags !== undefined && !flags.has(name)) afterUnknown = true;
       continue;
     }
     if (w.text.startsWith('-') && w.text.length > 1) {
       // A cluster like -sSo takes a value only when its last flag does and nothing is glued on.
       const last = `-${w.text[w.text.length - 1]}`;
+      afterUnknown = false;
       if (w.text.length === 2 ? valued.has(w.text) : valued.has(last) && !valued.has(w.text.slice(0, 2))) i += 1;
+      else if (flags !== undefined && ![...w.text.slice(1)].every((ch) => flags.has(`-${ch}`))) afterUnknown = true;
       continue;
     }
+    if (afterUnknown) ambiguous?.add(w);
+    afterUnknown = false;
     out.push(w);
   }
   return out;
@@ -442,7 +473,17 @@ function hostsFor(program: string, args: Word[]): { hosts: string[]; unreduced: 
     case 'curl':
     case 'wget': {
       const valued = program === 'curl' ? CURL_VALUED : WGET_VALUED;
-      for (const w of positionals(args, valued, (u) => add(u, urlOrBare))) add(w, urlOrBare);
+      const flags = program === 'curl' ? CURL_FLAGS : WGET_FLAGS;
+      const ambiguous = new Set<Word>();
+      for (const w of positionals(args, valued, (u) => add(u, urlOrBare), flags, ambiguous)) {
+        // A bare word that may be an unknown option's value is taken only
+        // when it is an explicit URL, never on its shape alone.
+        if (ambiguous.has(w)) {
+          if (!w.unsafe && urlHost(w.text) !== undefined) add(w, urlHost);
+          continue;
+        }
+        add(w, urlOrBare);
+      }
       break;
     }
     case 'git': {

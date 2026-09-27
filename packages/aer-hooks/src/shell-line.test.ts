@@ -70,6 +70,17 @@ describe('the hosts a network client was pointed at', () => {
     expect(hosts('curl --url https://u.example.com/a')).toEqual(['u.example.com']);
   });
 
+  it('never takes the value of an option it does not know for a host', () => {
+    expect(hosts('curl --etag-save notes.md https://x.example/a')).toEqual(['x.example']);
+    expect(hosts('curl --tls13-ciphers aes.gcm https://a.example')).toEqual(['a.example']);
+    expect(hosts('wget --some-new-option report.pdf')).toEqual([]);
+    // After a flag it knows takes nothing, a bare target is still the target.
+    expect(hosts('curl -sSL example.org/install.sh')).toEqual(['example.org']);
+    expect(hosts('curl --silent --location example.org')).toEqual(['example.org']);
+    expect(hosts('wget -q dl.example.net/f.tgz')).toEqual(['dl.example.net']);
+    expect(hosts('curl example.org')).toEqual(['example.org']);
+  });
+
   it('reads the remote a git command talks to', () => {
     expect(hosts('git clone https://github.com/org/repo.git')).toEqual(['github.com']);
     expect(hosts('git clone git@github.com:org/private.git')).toEqual(['github.com']);
