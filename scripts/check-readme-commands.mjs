@@ -73,6 +73,15 @@ const SKIP = new Map([
   ['npx @adastracomputing/aer-hooks status', 'needs a wired harness to report on'],
   ['npx @adastracomputing/aer-hooks uninstall claude-code', 'would remove the install just run'],
   [
+    'install -m 600 /dev/null ~/.config/aer/hooks.env',
+    'part of the env-file example; the editor step after it needs a person',
+  ],
+  ['$EDITOR ~/.config/aer/hooks.env', 'needs an interactive editor and real credentials'],
+  [
+    'npx @adastracomputing/aer-hooks install claude-code --env-file ~/.config/aer/hooks.env',
+    'needs the env file populated by the editor step above',
+  ],
+  [
     'export AER_BASE_URL=https://api.aer.run',
     'part of the ingest example below; the session id, token and file are placeholders',
   ],

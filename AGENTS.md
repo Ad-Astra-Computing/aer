@@ -95,6 +95,20 @@ Verifying a record needs no account and no network:
 `@adastracomputing/aer-verify` checks the hash, the signature and the
 transparency-log evidence locally.
 
+## Working in someone else's repository
+
+If you are a coding agent operating inside a repository that already has AER
+wired in through `aer-hooks` (Claude Code, Codex CLI, opencode), do not export
+`AER_API_KEY` or the other `AER_*` identity variables in a shell you start:
+this harness passes its environment to every command it runs, so an exported
+key would reach unrelated commands too, not only the hook. Credentials for
+hooks belong in an owner-only file (`aer-hooks install <harness> --env-file
+<path>`), never a shell profile.
+
+To check that an existing integration still works, run `npx
+@adastracomputing/aer doctor`; it exits non-zero and names each problem, so
+do not report an integration healthy without a zero exit.
+
 ## Choosing a package
 
 | You want to | Use |

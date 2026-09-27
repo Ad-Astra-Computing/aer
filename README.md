@@ -148,6 +148,13 @@ Run your agent with the collector loaded:
 node --import @adastracomputing/aer-auto-node/register your-agent.js
 ```
 
+The collector stays off inside a Claude Code tool shell (`CLAUDECODE=1` or
+`CLAUDE_CODE_ENTRYPOINT` set), since that harness exports its environment into
+every command it runs and a script the coding agent starts would otherwise
+record as a separate session under the same account. Set
+`AER_RECORD_IN_AGENT_SHELL=1` to record such a process on purpose. `aer doctor`
+warns when it detects this.
+
 Check the integration. `doctor` exits non-zero if anything is wrong, so it is
 safe to gate on in CI:
 
@@ -186,6 +193,38 @@ opening one of their own, so a run that spawns subagents still seals into one
 record. `aer doctor` folds the same staleness checks in, so a project that
 also uses the Node collector sees both in one place.
 
+The hooks need `AER_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID` and `AER_ENV_ID`;
+without `AER_ENV_ID` the hook records nothing and says so on stderr, since the
+API refuses to open a session without one. `AER_AGENT_VERSION` is optional
+and defaults to `unspecified`, because a harness does not tell its hooks its
+own version.
+
+A shell command records every program it runs, plus the host of any target
+passed to `curl`, `wget`, `git`, `ssh`, `scp` or `rsync`. Never the full
+command, an argument, a path or a query. A session that runs for hours is
+completed in parts rather than left open indefinitely: at the first turn end
+once the record is four hours old, and before the next event after an hour of
+quiet. `AER_HOOK_CHECKPOINT_MINUTES` and `AER_HOOK_QUIET_MINUTES` change
+either; `0` turns one off. The parts share one session reference, so they read
+back as one run.
+
+### Keep the key out of the agent's shell
+
+A harness passes its environment to every command its agent runs, so a key
+exported in your shell profile reaches all of them, not only the hook. Put
+the credentials in a file only you can read instead:
+
+```sh
+install -m 600 /dev/null ~/.config/aer/hooks.env
+$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_ENV_ID=...
+npx @adastracomputing/aer-hooks install claude-code --env-file ~/.config/aer/hooks.env
+```
+
+`AER_ENV_FILE=<path>` works in place of the flag. The hook reads only the
+file's `AER_*` lines and never exports them, so nothing it starts inherits
+the key. `aer-hooks status` and `aer doctor` warn when an AER key is exported
+in the shell they run in while hooks are wired.
+
 On Nix, install the tools first so the hook binary is on `PATH`, then wire the
 harness:
 
@@ -208,6 +247,10 @@ also run `aer login`:
 | `AER_API_KEY` | Yes, to record | The only secret. Never commit it |
 | `AER_BASE_URL` | No | Defaults to `https://api.aer.run` |
 | `AER_DISABLE` | No | Set to turn the collector off without code changes |
+
+`aer-hooks` also needs `AER_TENANT_ID`, `AER_AGENT_ID` and `AER_ENV_ID`; see
+[Record a coding harness](#record-a-coding-harness) above for why those
+belong in an owner-only file rather than the shell.
 
 Non-secret identity (tenant, agent and environment) lives in
 `aer.config.json`, written by `init` or `aer link`. The `aer` CLI itself
