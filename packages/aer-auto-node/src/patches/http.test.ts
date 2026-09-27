@@ -57,9 +57,56 @@ describe('installHttpPatch', () => {
 
     const req = events.find((e) => e.event_type === 'http.requested');
     const done = events.find((e) => e.event_type === 'http.completed');
-    expect(req?.payload).toMatchObject({ host: `127.0.0.1:${port}`, method: 'GET' });
-    expect(String(req?.payload['path_redacted'])).toBe('/hello?<redacted>');
+    expect(req?.payload).toEqual({ host: `127.0.0.1:${port}`, method: 'GET' });
     expect(done?.payload).toMatchObject({ status: 200 });
+    uninstall();
+  });
+
+  it('records a request as its host only, for every call shape', async () => {
+    // A path can carry a secret as easily as a query string, so neither is
+    // recorded, whether it arrives as options.path, a URL string or a URL.
+    const { capture, events } = withCapture();
+    const uninstall = installHttpPatch(capture);
+    const canary = 'CANARYhttp91c2';
+    const done = (req: http.ClientRequest): Promise<void> => new Promise((resolve, reject) => {
+      req.on('response', (res) => { res.resume(); res.on('end', () => resolve()); });
+      req.on('error', reject);
+      req.end();
+    });
+    await done(http.request({ host: '127.0.0.1', port, path: `/a/${canary}?t=${canary}`, auth: `u:${canary}` }));
+    await done(http.request(`http://127.0.0.1:${port}/b/${canary}?t=${canary}`));
+    await done(http.request(new URL(`http://u:${canary}@127.0.0.1:${port}/c/${canary}#${canary}`)));
+    await done(http.request(`http://127.0.0.1:${port}/d/${canary}`, { method: 'POST' }));
+    const requested = events.filter((e) => e.event_type === 'http.requested');
+    expect(requested.map((e) => e.payload)).toEqual([
+      { host: `127.0.0.1:${port}`, method: 'GET' },
+      { host: `127.0.0.1:${port}`, method: 'GET' },
+      { host: `127.0.0.1:${port}`, method: 'GET' },
+      { host: `127.0.0.1:${port}`, method: 'POST' },
+    ]);
+    expect(JSON.stringify(events)).not.toContain(canary);
+    uninstall();
+  });
+
+  it('tells the observer whether a request looked like a model call, without recording the path', async () => {
+    const { capture, events } = withCapture();
+    const seen: Array<[string, boolean]> = [];
+    const uninstall = installHttpPatch(capture, undefined, (host, shaped) => seen.push([host, shaped]));
+    await get('/v1/chat/completions?key=x');
+    await get('/healthz');
+    uninstall();
+    expect(seen).toEqual([[`127.0.0.1:${port}`, true], [`127.0.0.1:${port}`, false]]);
+    expect(JSON.stringify(events)).not.toContain('chat/completions');
+  });
+
+  it('records a host that is not a host name as unknown rather than passing it through', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installHttpPatch(capture);
+    const req = http.request({ host: '127.0.0.1/secret-in-host', port, path: '/' });
+    req.on('error', () => undefined);
+    req.destroy();
+    const requested = events.find((e) => e.event_type === 'http.requested');
+    expect(requested?.payload['host']).toBe('unknown');
     uninstall();
   });
 

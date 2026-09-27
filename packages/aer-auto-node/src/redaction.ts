@@ -1,18 +1,15 @@
-// Redaction helpers. Defaults are privacy-preserving: query strings and process
-// arguments can carry tokens, keys, and PII, so we keep structure (path, arg
-// count) and drop values.
+// Redaction helpers. Defaults are privacy-preserving: a URL is recorded as its
+// host and nothing else, because a path can carry a token, a signed URL or an
+// object key as easily as a query string does; process arguments become a
+// count.
 
-export function redactUrlPath(url: URL): string {
-  // Keep the path; signal (but never reveal) the query string.
-  return url.search ? `${url.pathname}?<redacted>` : url.pathname;
-}
+// A host name or IP literal with an optional port. Anything else (a path or
+// userinfo smuggled into an options.host, say) is not a host.
+const HOST_RE = /^(?:[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,252})|\[[0-9A-Fa-f:.]{2,45}\])(?::\d{1,5})?$/;
 
-// Redact a raw path string (e.g. node:http's `options.path`): keep everything
-// up to the query string, signal the rest.
-export function redactPathString(path: string): string {
-  const q = path.indexOf('?');
-  if (q < 0) return path || '/';
-  return `${path.slice(0, q) || '/'}?<redacted>`;
+/** The host to record for a request, or 'unknown' when it is not a host. */
+export function safeHost(host: unknown): string {
+  return typeof host === 'string' && HOST_RE.test(host) ? host : 'unknown';
 }
 
 export function redactArgs(args: readonly string[]): string {

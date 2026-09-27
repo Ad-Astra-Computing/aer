@@ -99,7 +99,7 @@ On denial the guard returns an HTTP status plus a JSON-RPC 2.0 error
 | --- | --- |
 | **401** | no token / malformed / bad signature / expired / wrong audience or issuer |
 | **403** | token valid but revoked (introspection reports inactive) |
-| **503** | introspection unreachable and fail-closed (token liveness unknown) |
+| **503** | introspection unreachable and fail-closed (token liveness unknown), or the JWKS unreachable (`jwks_unavailable`) |
 
 The request **body is never consumed**, so SSE and streaming Streamable-HTTP
 requests pass through untouched. The JSON-RPC `id` is echoed only when your

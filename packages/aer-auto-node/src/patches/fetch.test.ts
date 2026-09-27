@@ -97,14 +97,24 @@ describe('installFetchPatch', () => {
     uninstall();
   });
 
-  it('redacts the query string (no secrets in path_redacted)', async () => {
+  it('records a URL as its host only: no path, query, fragment or userinfo', async () => {
+    // A path can carry a secret as easily as a query (a signed URL, a token in
+    // a webhook path, an S3 key), so none of it is recorded.
     globalThis.fetch = (async () => new Response(null, { status: 204 })) as unknown as typeof fetch;
     const { capture, events } = withCapture();
     const uninstall = installFetchPatch(capture);
-    await globalThis.fetch('https://x.test/users?token=abc123&id=7');
-    const req = events.find((e) => e.event_type === 'http.requested');
-    expect(String(req?.payload['path_redacted'])).not.toContain('abc123');
-    expect(String(req?.payload['path_redacted'])).toContain('/users');
+    const canary = 'CANARYpath7f3a';
+    await globalThis.fetch(`https://u:pw${canary}@x.test:8443/hooks/${canary}/users?token=${canary}#${canary}`);
+    await globalThis.fetch(new URL(`https://x.test/a/${canary}`));
+    await globalThis.fetch(new Request(`https://x.test/b/${canary}?q=${canary}`, { method: 'PUT' }));
+    const requested = events.filter((e) => e.event_type === 'http.requested');
+    expect(requested.map((e) => e.payload)).toEqual([
+      { host: 'x.test:8443', method: 'GET' },
+      { host: 'x.test', method: 'GET' },
+      { host: 'x.test', method: 'PUT' },
+    ]);
+    expect(JSON.stringify(events)).not.toContain(canary);
+    expect(JSON.stringify(events)).not.toContain('/users');
     uninstall();
   });
 
@@ -365,6 +375,31 @@ describe('installFetchPatch', () => {
       expect(h.get('x-aer-attestation')).toBe('jwt-1');
       expect(h.get('dpop')).toBe('proof:POST:https://mcp.internal/tools?x=1:jwt-1');
       expect((init as RequestInit).redirect).toBe('manual'); // never auto-follow with a bound proof
+      uninstall();
+    });
+
+    it('the DPoP proof binds the full URL, but no event records its path', async () => {
+      // htu must name the request URL for the resource to accept the proof.
+      // That header goes to the resource; the AER record still gets the host.
+      const orig = vi.fn(async () => new Response('', { status: 200 }));
+      globalThis.fetch = orig as unknown as typeof fetch;
+      const att = createAttestor({
+        resources: [{ host: 'mcp.internal', audience: 'mcp://aud', scopes: [], enforcement: 'off', onUnavailable: 'fail_closed', dpop: true }],
+        getAttestationFor: async () => 'jwt-1',
+        peekAttestationFor: () => 'jwt-1',
+        dpopProofFor: (m, u, t) => `proof:${m}:${u}:${t}`,
+      });
+      const { capture, events } = withCapture();
+      const uninstall = installFetchPatch(capture, att);
+      const canary = 'CANARYdpop55e1';
+
+      await globalThis.fetch(`https://mcp.internal/tools/${canary}`, { method: 'POST' });
+
+      const [, init] = orig.mock.calls[0]!;
+      const h = new Headers((init as RequestInit).headers as ConstructorParameters<typeof Headers>[0]);
+      expect(h.get('dpop')).toContain(`/tools/${canary}`);
+      expect(events.length).toBeGreaterThan(0);
+      expect(JSON.stringify(events)).not.toContain(canary);
       uninstall();
     });
 

@@ -10,6 +10,14 @@ import { installChildProcessPatch } from './child-process.js';
 
 type Capture = (event: CollectorEvent) => void;
 
+/**
+ * Told about every outbound request, in memory only: the host as recorded and
+ * whether the path looked like a model call. The path itself never leaves the
+ * patch, and neither this verdict nor anything derived from the path is put
+ * on an event.
+ */
+export type RequestObserver = (host: string, modelShaped: boolean) => void;
+
 export interface InstalledPatches {
   /** Names of active patches (e.g. ['fetch','http','https','child_process']). */
   enabled: string[];
@@ -21,18 +29,19 @@ export function installTransportPatches(
   capture: Capture,
   transportNames: string[],
   attestor?: Attestor,
+  onRequest?: RequestObserver,
 ): InstalledPatches {
   const want = new Set(transportNames);
   const enabled: string[] = [];
   const uninstalls: Array<() => void> = [];
 
   if (want.has('fetch')) {
-    uninstalls.push(installFetchPatch(capture, attestor));
+    uninstalls.push(installFetchPatch(capture, attestor, onRequest));
     enabled.push('fetch');
   }
   // node:http + node:https share one installer.
   if (want.has('http') || want.has('https')) {
-    uninstalls.push(installHttpPatch(capture, attestor));
+    uninstalls.push(installHttpPatch(capture, attestor, onRequest));
     if (want.has('http')) enabled.push('http');
     if (want.has('https')) enabled.push('https');
   }

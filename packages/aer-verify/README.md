@@ -110,6 +110,19 @@ the record, which fails the overall verdict) or `none`. A claim is never
 trusted without evidence; `builtinTrustRoot()` supplies the pinned production
 log key.
 
+The bundle's own `integrity.anchored` flag is not covered by the signature: the
+canonical hash is computed with the whole `integrity` block removed, so anyone
+can flip the flag without breaking the signature. It is reported only as
+`checks.anchor.claim`, for display. It can never make `anchored` true or the
+status `verified`; those come only from evidence that binds the locally
+recomputed hash under a pinned AER key and a pinned log key. The one place it
+is read is when evidence is present but incomplete (the log body is not stored
+yet, or the signing key is not pinned): a bundle that claims anchoring is then
+`claimed` and one that does not is `invalid`. Flipping the flag there moves a
+record only between those two states and never to `verified`; it gives nobody
+anything that editing the bundle does not already give them. Treat `claimed` as
+an unverified assertion and use `policy.requireAnchor` when anchoring matters.
+
 ## License
 
 Apache-2.0

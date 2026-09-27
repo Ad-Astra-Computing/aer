@@ -1,8 +1,9 @@
 // Configuration resolution for the AER auto-instrumentation collector.
 //
 // Precedence: env overrides > aer.config.json > built-in defaults.
-// The ONLY secret is AER_API_KEY, which comes exclusively from the environment
-// and is never read from (or written to) the config file. All non-secret
+// The ONLY secret is AER_API_KEY (AER_TENANT_API_KEY is accepted as a fallback
+// name for it, as aer doctor and aer-emit do), which comes exclusively from the
+// environment and is never read from (or written to) the config file. All non-secret
 // identity (tenant/agent/env/base_url) lives in the config file, with optional
 // env overrides for CI.
 
@@ -195,8 +196,9 @@ export function resolveConfig(opts: ResolveOptions = {}): AerAutoConfig {
       asString(env['AER_AGENT_VERSION']) ?? asString(file['agent_version']) ?? '0.0.0',
     baseUrl:
       asString(env['AER_BASE_URL']) ?? asString(file['base_url']) ?? DEFAULT_BASE_URL,
-    // Secret: env only. Never sourced from the config file.
-    apiKey: asString(env['AER_API_KEY']),
+    // Secret: env only. Never sourced from the config file. AER_TENANT_API_KEY
+    // is the same secret under the name the CLI's tenant commands use.
+    apiKey: asString(env['AER_API_KEY']) ?? asString(env['AER_TENANT_API_KEY']),
     // Secret: env only. Never sourced from the config file.
     commitmentKey: asString(env['AER_COMMITMENT_KEY']),
     session: {

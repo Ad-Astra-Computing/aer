@@ -13,6 +13,11 @@ import { distProblem } from '../../../scripts/require-dist.mjs';
 // the sibling package went out without it.
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// Children never inherit the developer's AER_* settings: a shell (an agent's
+// tool shell in particular) can carry real production credentials.
+const cleanParentEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AER_')));
 const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')) as {
   version: string;
   bin: Record<string, string>;
@@ -32,7 +37,7 @@ function run(entry: string, args: string[]): { out: string; code: number } {
       encoding: 'utf8',
       timeout: 20_000,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, AER_BASE_URL: '', AER_TENANT_API_KEY: '' },
+      env: { ...cleanParentEnv(), AER_BASE_URL: '', AER_TENANT_API_KEY: '' },
     });
     return { out, code: 0 };
   } catch (e) {

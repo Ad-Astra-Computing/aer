@@ -14,6 +14,19 @@ export interface BootstrapDeps {
   installHooks?: (collector: Collector) => void;
 }
 
+/**
+ * Whether this process runs inside an AI coding agent's tool shell. Claude
+ * Code exports its own environment, AER_* credentials included, into every
+ * command it runs, so a test or build script an agent starts there would
+ * otherwise record into the agent's account as if it were the user's run.
+ */
+export function inAgentToolShell(env: Record<string, string | undefined>): boolean {
+  return env['CLAUDECODE'] === '1' || Boolean(env['CLAUDE_CODE_ENTRYPOINT']);
+}
+
+/** The explicit opt-in to record inside an agent tool shell anyway. */
+export const AGENT_SHELL_OPT_IN = 'AER_RECORD_IN_AGENT_SHELL';
+
 /** A session can only be opened with the API key (secret) plus full identity. */
 export function isConfigured(config: AerAutoConfig): boolean {
   return Boolean(config.apiKey && config.tenantId && config.agentId && config.envId);
@@ -32,6 +45,14 @@ export function bootstrap(deps: BootstrapDeps = {}): Collector | null {
     // Graceful no-op: the host app runs unaffected; `aer doctor` explains the gap.
     console.warn(
       '[aer:auto] not started: missing AER_API_KEY and/or tenant/agent/env identity. Run `npx @adastracomputing/aer doctor`.',
+    );
+    return null;
+  }
+
+  if (inAgentToolShell(env) && env[AGENT_SHELL_OPT_IN] !== '1') {
+    // One line, no values: the credentials in play are not ours to print.
+    console.warn(
+      `[aer:auto] not started: this process runs inside a Claude Code tool shell, whose AER_* settings belong to the agent, not to this program. Set ${AGENT_SHELL_OPT_IN}=1 to record it anyway.`,
     );
     return null;
   }

@@ -1,27 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { redactUrlPath, redactArgs, redactPathString } from './redaction.js';
+import { safeHost, redactArgs } from './redaction.js';
 
-describe('redactUrlPath', () => {
-  it('keeps the path and drops the query string', () => {
-    expect(redactUrlPath(new URL('https://x.test/v1/users?token=secret&id=7'))).toBe('/v1/users?<redacted>');
+describe('safeHost', () => {
+  it('keeps a host name, an IP and a port', () => {
+    expect(safeHost('api.openai.com')).toBe('api.openai.com');
+    expect(safeHost('127.0.0.1:8443')).toBe('127.0.0.1:8443');
+    expect(safeHost('[::1]:80')).toBe('[::1]:80');
   });
-  it('returns just the path when there is no query', () => {
-    expect(redactUrlPath(new URL('https://x.test/v1/users'))).toBe('/v1/users');
-  });
-  it('redacts but signals the presence of a fragment-free query', () => {
-    expect(redactUrlPath(new URL('https://x.test/?a=1'))).toBe('/?<redacted>');
-  });
-});
-
-describe('redactPathString', () => {
-  it('keeps the path and drops the query', () => {
-    expect(redactPathString('/v1/x?token=secret')).toBe('/v1/x?<redacted>');
-  });
-  it('passes through a query-less path', () => {
-    expect(redactPathString('/v1/x')).toBe('/v1/x');
-  });
-  it('defaults empty to root', () => {
-    expect(redactPathString('')).toBe('/');
+  it('refuses anything carrying a path, userinfo, a query or whitespace', () => {
+    for (const bad of ['x.test/secret', 'u:pw@x.test', 'x.test?t=1', 'x.test#f', 'x test', '', undefined, 7]) {
+      expect(safeHost(bad)).toBe('unknown');
+    }
   });
 });
 

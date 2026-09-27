@@ -123,6 +123,33 @@ describe('createAerClient.emit', () => {
     expect(attempt).toBe(3);
   });
 
+  it('retries a network error with the same backoff as a 5xx, and loses nothing', async () => {
+    // The README promised this; a dropped connection used to reject the flush
+    // on the first attempt.
+    let attempt = 0;
+    respondWith = () => {
+      attempt += 1;
+      if (attempt <= 2) return HttpResponse.error();
+      return HttpResponse.json({ accepted: 1, rejected: 0, errors: [] }, { status: 202 });
+    };
+    const c = makeClient({ maxRetries: 3, retryBaseMs: 5 });
+    await c.emit('session.started', {});
+    await expect(c.flush()).resolves.toBeDefined();
+    expect(attempt).toBe(3);
+  });
+
+  it('surfaces a network error that outlasts the retries to the caller', async () => {
+    let attempt = 0;
+    respondWith = () => {
+      attempt += 1;
+      return HttpResponse.error();
+    };
+    const c = makeClient({ maxRetries: 2, retryBaseMs: 5 });
+    await c.emit('session.started', {});
+    await expect(c.flush()).rejects.toThrow();
+    expect(attempt).toBe(3);
+  });
+
   it('does not retry on 4xx', async () => {
     let attempt = 0;
     respondWith = () => {

@@ -386,3 +386,87 @@ describe('a refused reduction is distinguishable from a program called unknown',
     expect(payload['command_known']).toBeUndefined();
   });
 });
+
+// spawnSync, execSync and execFileSync used to go unrecorded: an agent that
+// shelled out with execSync (a common way to run git) left no trace at all.
+describe('synchronous child_process calls', () => {
+  const secret = 'sk-sync-secret-4b1d';
+
+  it('records spawnSync with its exit code and no argument values', () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    const r = cp.spawnSync(process.execPath, ['-e', 'process.exit(4)', secret]);
+    uninstall();
+    expect(r.status).toBe(4);
+    expect(events.map((e) => e.event_type)).toEqual(['process.exec', 'process.exit']);
+    expect(events[0]?.payload).toMatchObject({ command: 'node', args_redacted: '<3 args redacted>' });
+    expect(events[1]?.payload).toMatchObject({ exit_code: 4 });
+    expect(typeof events[1]?.payload['duration_ms']).toBe('number');
+    expect(JSON.stringify(events)).not.toContain(secret);
+  });
+
+  it('records execSync once, by program name, never the line', () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    const out = cp.execSync(`API_KEY=${secret} ${process.execPath} -e "process.stdout.write('ok')"`);
+    uninstall();
+    expect(String(out)).toBe('ok');
+    expect(events.map((e) => e.event_type)).toEqual(['process.exec', 'process.exit']);
+    expect(events[0]?.payload['command']).toBe('node');
+    expect(events[1]?.payload).toMatchObject({ exit_code: 0 });
+    expect(JSON.stringify(events)).not.toContain(secret);
+  });
+
+  it('records a failing execSync and rethrows the same error', () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    let thrown: unknown;
+    try { cp.execSync(`${process.execPath} -e "process.exit(2)"`, { stdio: 'ignore' }); } catch (err) { thrown = err; }
+    uninstall();
+    expect((thrown as { status?: number }).status).toBe(2);
+    expect(events.map((e) => e.event_type)).toEqual(['process.exec', 'process.exit']);
+    expect(events[1]?.payload).toMatchObject({ exit_code: 2 });
+  });
+
+  it('records execFileSync exactly once', () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    cp.execFileSync(process.execPath, ['-e', '0']);
+    uninstall();
+    expect(events.filter((e) => e.event_type === 'process.exec')).toHaveLength(1);
+    expect(events.filter((e) => e.event_type === 'process.exit')).toHaveLength(1);
+  });
+
+  it('records a command that could not start as an error, and still returns or throws as before', () => {
+    const { capture, events } = withCapture();
+    const uninstall = installChildProcessPatch(capture);
+    const r = cp.spawnSync('/nonexistent/aer-no-such-binary', []);
+    let thrown: unknown;
+    try { cp.execFileSync('/nonexistent/aer-no-such-binary', []); } catch (err) { thrown = err; }
+    uninstall();
+    expect((r.error as NodeJS.ErrnoException | undefined)?.code).toBe('ENOENT');
+    expect((thrown as NodeJS.ErrnoException).code).toBe('ENOENT');
+    const exits = events.filter((e) => e.event_type === 'process.exit');
+    expect(exits).toHaveLength(2);
+    for (const e of exits) expect(e.payload['error']).toBe(true);
+  });
+
+  it('never breaks a synchronous call when capture throws', () => {
+    const uninstall = installChildProcessPatch(() => { throw new Error('capture bug'); });
+    const r = cp.spawnSync(process.execPath, ['-e', 'process.exit(0)']);
+    uninstall();
+    expect(r.status).toBe(0);
+  });
+
+  it('restores the synchronous originals on uninstall', () => {
+    const originals = { spawnSync: cp.spawnSync, execSync: cp.execSync, execFileSync: cp.execFileSync };
+    const uninstall = installChildProcessPatch(() => undefined);
+    expect(cp.spawnSync).not.toBe(originals.spawnSync);
+    expect(cp.execSync).not.toBe(originals.execSync);
+    expect(cp.execFileSync).not.toBe(originals.execFileSync);
+    uninstall();
+    expect(cp.spawnSync).toBe(originals.spawnSync);
+    expect(cp.execSync).toBe(originals.execSync);
+    expect(cp.execFileSync).toBe(originals.execFileSync);
+  });
+});
