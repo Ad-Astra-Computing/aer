@@ -62,7 +62,7 @@
   assistant message through the same vendored helper aer-hooks uses for its
   live Claude Code capture, so the two paths cannot drift on what counts as
   bodies-off. No output change.
-- [`80b8cb4`](https://github.com/Ad-Astra-Computing/aer/commit/80b8cb4f6e19f6f267f11a7d45be371fe1774af9) - Harden `aer login` and friends per security review. Refuse an env or flag
+- [`80b8cb4`](https://github.com/Ad-Astra-Computing/aer/commit/80b8cb4f6e19f6f267f11a7d45be371fe1774af9) - Harden `aer login` and friends. Refuse an env or flag
   API key whose base URL came only from a cloned repo's `aer.config.json` and
   differs from the default, unless `AER_BASE_URL` confirms it. Validate the
   server's verification URL (https only, no embedded credentials) before

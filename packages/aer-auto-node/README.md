@@ -12,9 +12,10 @@ strategies (`process`, `task`, `server`) plus `withAerSession` for explicit
 scoping. The fastest way in is the `register` hook shown below.
 
 ESM only: use `import`, not `require`. Requires Node 22 or newer. `aer init`
-installs it for you; every package here is pre-1.0, so installing it
-yourself instead means taking it from the `next` dist-tag:
-`npm install @adastracomputing/aer-auto-node@next`.
+installs it for you; to install it yourself instead:
+`npm install @adastracomputing/aer-auto-node`.
+
+Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Computing/aer/blob/main/docs/upgrading.md#aer-auto-node).
 
 ## Use
 

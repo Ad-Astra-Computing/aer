@@ -10,13 +10,11 @@ ESM only: use `import`, not `require`. Requires Node 22 or newer.
 
 ## Install
 
-Every package here is pre-1.0, so install the `next` dist-tag until this
-README says otherwise. The harness will run `aer-hook` on every event, so
-`aer-hook` has to be on the harness's `PATH` for as long as you want
-recording. Put it there first:
+The harness will run `aer-hook` on every event, so `aer-hook` has to be on
+the harness's `PATH` for as long as you want recording. Put it there first:
 
 ```
-npm install -g @adastracomputing/aer-hooks@next     # npm
+npm install -g @adastracomputing/aer-hooks          # npm
 nix profile add github:Ad-Astra-Computing/aer#tools  # Nix, also installs the aer CLI
 ```
 
@@ -36,27 +34,29 @@ carries its own `timeout`, because that harness shares 1.5 seconds across
 every SessionEnd hook and completing a record takes longer than that. If `aer-hook` is not on `PATH` at install
 time, the installer writes the absolute path of the copy it is running from and
 says so, which keeps recording working but ties the config to that install
-location. `npx @adastracomputing/aer-hooks@next install ...` works the same way, and
+location. `npx @adastracomputing/aer-hooks install ...` works the same way, and
 is the case that needs the absolute path, since `npx` puts nothing on `PATH`.
 
 That command is idempotent: running it again after an upgrade updates the
 existing registration in place, rather than leaving it on an older hook
-lifecycle. `npx @adastracomputing/aer@next doctor` (from the `aer` CLI) also
+lifecycle. `npx @adastracomputing/aer doctor` (from the `aer` CLI) also
 watches for a registration that has fallen behind, whether that is a missing
 `--lifecycle v2`, an `aer-hook` on `PATH` older than the `aer-hooks` release
 the CLI carries or a nix-profile copy of `aer-hook` shadowing the project's
 own, and prints the exact re-run that fixes each one.
 
+Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Computing/aer/blob/main/docs/upgrading.md#aer-hooks).
+
 Check what is wired, and whether each wired command still resolves, with:
 
 ```
-npx @adastracomputing/aer-hooks@next status
+npx @adastracomputing/aer-hooks status
 ```
 
 Remove AER's entries (and only AER's) with:
 
 ```
-npx @adastracomputing/aer-hooks@next uninstall claude-code
+npx @adastracomputing/aer-hooks uninstall claude-code
 ```
 
 ### Codex will not run the hook until you trust it

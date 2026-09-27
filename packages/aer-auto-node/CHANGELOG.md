@@ -116,7 +116,7 @@
   `llm.requested` and `llm.completed` events. Those records are signed and are not
   rewritten; new sessions are complete.
 
-  Security review before publishing found three more, all fixed here.
+  Three more defects found before publishing are fixed here.
 
   The collector crashed at startup on Node older than 22.15. It imported
   `registerHooks` from `node:module` as a named import, and a missing named
