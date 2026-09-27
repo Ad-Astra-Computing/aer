@@ -59,6 +59,9 @@ const identity = (sink) => ({
   // The agent must exist at the sink: doctor checks it against GET /v1/agents.
   AER_AGENT_ID: sink.agents[0].id,
   AER_ENV_ID: randomUUID(),
+  // Releases before the hooks defaulted it sent no agent_version without
+  // this, and the API refuses such an open, so a working old install set it.
+  AER_AGENT_VERSION: 'matrix-upgrade',
 });
 
 const hookPayload = (sessionId, cwd, event, extra = {}) => JSON.stringify({
