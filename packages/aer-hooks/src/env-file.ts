@@ -13,12 +13,19 @@ const LINE_RE = /^\s*(?:export\s+)?(AER_[A-Z0-9_]+)\s*=\s*(.*?)\s*$/;
 
 export type EnvFileResult = { values: Record<string, string> } | { refused: string };
 
-function unquote(raw: string): string {
-  if (raw.length >= 2 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")))) {
-    return raw.slice(1, -1);
+/**
+ * The value of one assignment. A quoted value runs to its closing quote and
+ * anything after it (a comment) is ignored; in an unquoted value a `#`
+ * starts a comment.
+ */
+function valueOf(raw: string): string {
+  const q = raw[0];
+  if (q === '"' || q === "'") {
+    const end = raw.indexOf(q, 1);
+    if (end !== -1) return raw.slice(1, end);
   }
-  const hash = raw.search(/\s#/);
-  return hash === -1 ? raw : raw.slice(0, hash).trimEnd();
+  const hash = raw.indexOf('#');
+  return (hash === -1 ? raw : raw.slice(0, hash)).trimEnd();
 }
 
 /**
@@ -47,7 +54,7 @@ export function readEnvFile(file: string): EnvFileResult {
     const values: Record<string, string> = {};
     for (const line of buf.toString('utf8').split(/\r?\n/)) {
       const m = LINE_RE.exec(line);
-      if (m) values[m[1]!] = unquote(m[2]!);
+      if (m) values[m[1]!] = valueOf(m[2]!);
     }
     return { values };
   } catch {

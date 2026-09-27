@@ -50,6 +50,19 @@ describe('reading the credential file', () => {
     });
   });
 
+  it('reads a quoted value with a comment after it, and treats an unquoted # as a comment', () => {
+    const p = writeFile('comments.env', [
+      'AER_API_KEY="abc" # the key',
+      "AER_TENANT_ID='t#1'   # quoted hash stays",
+      'AER_AGENT_ID=agent-1 # trailing',
+      'AER_ENV_ID=env#not-part',
+      'AER_BASE_URL="http://aer.test"',
+    ].join('\n'));
+    expect(readEnvFile(p)).toEqual({
+      values: { AER_API_KEY: 'abc', AER_TENANT_ID: 't#1', AER_AGENT_ID: 'agent-1', AER_ENV_ID: 'env', AER_BASE_URL: 'http://aer.test' },
+    });
+  });
+
   it('refuses a file other users can read or write, and never repeats its contents', () => {
     for (const mode of [0o640, 0o604, 0o620, 0o644]) {
       const p = writeFile(`loose-${mode.toString(8)}.env`, GOOD, mode);
