@@ -23,6 +23,9 @@ for (const file of changed) {
   // Only source gates a release. A README or a test edit does not need one.
   if (!/^(packages|apps)\/[^/]+\/src\//.test(file)) continue;
   if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(file)) continue;
+  // Regenerated from package.json by the release step, so the version bump
+  // that changed it is the release itself.
+  if (file.endsWith('/src/version.generated.ts')) continue;
   try {
     const manifest = JSON.parse(readFileSync(`${m[1]}/${m[2]}/package.json`, 'utf8'));
     if (!manifest.private) published.add(manifest.name);
