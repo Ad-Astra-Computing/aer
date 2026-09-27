@@ -13,7 +13,7 @@ require editing application code.
 Run this from the project root:
 
 ```sh
-npx @adastracomputing/aer@next init --yes --json
+npx @adastracomputing/aer init --yes --json
 ```
 
 On Nix, without npm:
@@ -53,7 +53,7 @@ Instrumentation loads before the program, so no application code changes:
   "instrumentation": { "register": "@adastracomputing/aer-auto-node/register",
                        "session_strategy": "process" },
   "env_required": ["AER_API_KEY"],
-  "verify_command": "npx @adastracomputing/aer@next doctor"
+  "verify_command": "npx @adastracomputing/aer doctor"
 }
 ```
 
@@ -63,7 +63,7 @@ when proposing a change for a human to approve.
 ## Confirm it, do not assume it
 
 ```sh
-npx @adastracomputing/aer@next doctor --json
+npx @adastracomputing/aer doctor --json
 ```
 
 `doctor` exits non-zero when anything is wrong, so it is safe to gate on, and
@@ -71,14 +71,14 @@ each check reports separately. Do not report success until it exits zero. To
 prove the whole path end to end, including that a record comes out:
 
 ```sh
-npx @adastracomputing/aer@next smoke
+npx @adastracomputing/aer smoke
 ```
 
 ## What you need from a person
 
 An AER account, from [aer.run](https://aer.run). Either the person runs
-`npx @adastracomputing/aer@next login` once on their own machine and
-`npx @adastracomputing/aer@next link` once in the project, or they hand you
+`npx @adastracomputing/aer login` once on their own machine and
+`npx @adastracomputing/aer link` once in the project, or they hand you
 `AER_API_KEY`. Never write a key into a tracked file, a commit, a log line or
 a chat message you print back; do not read `~/.config/aer/credentials.json`
 or any other credential store on the person's behalf.

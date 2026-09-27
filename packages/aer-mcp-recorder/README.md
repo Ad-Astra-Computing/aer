@@ -24,18 +24,17 @@ sink is unreachable, the proxy still forwards the stream unchanged and the child
 and exit code are unaffected. Recording is strictly best-effort and never in the
 critical path. Your tools never break because you wrapped them.
 
-**Redaction by default.** By default the recorder captures tool names, argument key
-names (not values), the result error flag and result size, plus timing. It never
-captures argument values or result content unless you explicitly opt in.
+**Bodies off.** The recorder captures tool names, argument key names (not
+values), the result error flag and result size, plus timing. It never captures
+argument values or result content, and there is no setting that turns that on.
 
 ## Install
 
-Every package here is pre-1.0, so install the `next` dist-tag until this
-README says otherwise:
+```
+npm install -g @adastracomputing/aer-mcp-recorder
+```
 
-```
-npm install -g @adastracomputing/aer-mcp-recorder@next
-```
+Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Computing/aer/blob/main/docs/upgrading.md#aer-mcp-recorder).
 
 ## Claude Code config
 

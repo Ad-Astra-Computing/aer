@@ -4,7 +4,7 @@
 
 ### Minor Changes
 
-- [`958d73b`](https://github.com/Ad-Astra-Computing/aer/commit/958d73bf42c828d6d7067bd6851d962d2d632b24) - Add `deriveClientRef` and a `clientRef` sink option (ADR-023 A1/B2). A
+- [`958d73b`](https://github.com/Ad-Astra-Computing/aer/commit/958d73bf42c828d6d7067bd6851d962d2d632b24) - Add `deriveClientRef` and a `clientRef` sink option. A
   repeated `POST /v1/sessions` open with the same `client_ref` while the prior
   session is still running reuses it instead of minting a duplicate, closing
   the race that produced empty orphaned sessions. Against a server that
