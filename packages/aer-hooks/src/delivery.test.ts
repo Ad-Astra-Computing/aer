@@ -186,6 +186,29 @@ describe('a session the server closed', () => {
   });
 });
 
+describe('the record that replaces one the server closed', () => {
+  it('counts only its own events and starts its own age', async () => {
+    const T0 = Date.parse('2026-09-26T10:00:00Z');
+    const MIN = 60_000;
+    const lead = { session_id: 'cc-replaced', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' }, { now: T0 });
+    await fire({ ...lead, hook_event_name: 'UserPromptSubmit' }, { now: T0 + 50 * MIN });
+    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 100 * MIN });
+    await fire({ ...lead, hook_event_name: 'UserPromptSubmit' }, { now: T0 + 150 * MIN });
+    api.terminate([...api.sessions.keys()][0]!);
+    await fire({ ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }, { now: T0 + 200 * MIN });
+    // Past four hours since the first record began, but not since this one did.
+    await fire({ ...lead, hook_event_name: 'Stop' }, { now: T0 + 245 * MIN });
+    expect(api.completes()).toHaveLength(0);
+    await fire({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }, { now: T0 + 246 * MIN });
+    const second = [...api.sessions.values()][1]!;
+    const reports = second.events.filter((e) => e.event_type === 'collector.report');
+    const closing = reports[reports.length - 1]!;
+    expect(closing.payload['phase']).toBe('session_end');
+    expect(closing.payload['events_emitted']).toBe(second.events.length);
+  });
+});
+
 describe('what the record says about itself', () => {
   it('every lifecycle report carries events_registered, so the last one does too', async () => {
     const proj = path.join(dir, 'proj');

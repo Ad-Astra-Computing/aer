@@ -606,6 +606,23 @@ function decide(state: SessionState | null, now: number, ctx: Ctx): { result: St
   return { result: step, save: state };
 }
 
+/**
+ * The server closed the record: what is still queued starts the one that
+ * replaces it, so that record counts only its own events and its age runs
+ * from now. Drops were already reported on the closed record's reports, so
+ * the count starts again too.
+ */
+function replacementSegment(state: SessionState, now: number, ctx: Ctx): void {
+  const firstQueued = state.outbox.map((e) => e.payload['seq']).find((n): n is number => typeof n === 'number');
+  startSegment(state, now, ctx.storeKey, ctx.env);
+  if (firstQueued !== undefined) state.segmentStartSeq = firstQueued;
+  // Reports already queued were counted against the closed record.
+  for (const e of state.outbox) {
+    const seq = e.payload['seq'];
+    if (e.type === 'collector.report' && typeof seq === 'number') e.payload['events_emitted'] = seq - state.segmentStartSeq + 1;
+  }
+}
+
 /** The session this batch went to is closed or no longer takes this token. */
 function sessionGone(r: CallResult): boolean {
   return !r.ok && (r.status === 401 || r.status === 403 || r.status === 404 || r.status === 409);
@@ -688,9 +705,12 @@ async function deliver(ctx: Ctx): Promise<void> {
         // in a new record instead of being refused for a day.
         const again = !reopened;
         reopened = true;
-        await withState(ctx, (st) => {
+        await withState(ctx, (st, now) => {
           if (st === null) return { result: undefined };
-          if (st.session?.id === step.session.id) delete st.session;
+          if (st.session?.id === step.session.id) {
+            delete st.session;
+            replacementSegment(st, now, ctx);
+          }
           if (st.complete === 'checkpoint') delete st.complete;
           if (!again) releaseLease(st, ctx);
           return { result: undefined, save: st };
