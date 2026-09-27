@@ -156,6 +156,7 @@ export async function aerOpencodePlugin(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<OpencodeHooks> {
   const base = resolveSinkOptionsFromEnv(env);
-  if (!base) return {};
-  return createAerOpencodeHooks({ base, env });
+  // The API refuses an open without an environment; nothing could be recorded.
+  if (!base || base.environmentId === undefined || base.environmentId.length === 0) return {};
+  return createAerOpencodeHooks({ base: { ...base, agentVersion: base.agentVersion ?? 'unspecified' }, env });
 }

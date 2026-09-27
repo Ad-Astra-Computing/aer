@@ -37,7 +37,9 @@ function freshCache(): string {
 
 function baseEnv(cache: string, baseUrl: string): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    // Only what the hook needs, never the developer's shell: it can carry
+    // real AER credentials that would record into the live service.
+    PATH: process.env['PATH'],
     AER_BASE_URL: baseUrl,
     AER_API_KEY: 'aer_probe',
     AER_TENANT_ID: '01950000-0000-7000-8000-0000000000aa',

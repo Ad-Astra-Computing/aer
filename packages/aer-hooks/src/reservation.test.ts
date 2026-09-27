@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireSessionLock, saveSession, loadSession } from './session-store.js';
+import { acquireSessionLock, saveState, loadState, freshState } from './session-store.js';
 import { plannedEventCount } from './cli.js';
 
 let cache: string;
@@ -55,12 +55,22 @@ describe('a lock is released only by the process that holds it', () => {
 });
 
 describe('the stored position survives a lost process', () => {
-  it('records the reservation before the events go out, not after', () => {
+  it('records the reservation before the events go out, not after', async () => {
     // If the position is only written after a successful send, a hook that
     // is killed mid-request leaves the next one reusing its numbers.
-    saveSession('s3', { aerSessionId: 'a', ingestToken: 't', baseUrl: 'u', createdAt: 1, seq: 4 }, env);
-    const stored = loadSession('s3', env, 2);
-    expect(stored?.seq).toBe(4);
+    const { runHook } = await import('./cli.js');
+    const state = { ...freshState(Date.now()), seq: 4, session: { id: 'a', ingestToken: 't', baseUrl: 'http://127.0.0.1:9', openedAt: Date.now() } };
+    saveState('s3', state, env);
+    await runHook(['--harness', 'claude-code', '--lifecycle', 'v2'], {
+      ...env, AER_BASE_URL: 'http://127.0.0.1:9', AER_API_KEY: 'k', AER_TENANT_ID: 't', AER_AGENT_ID: 'a', AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
+    }, {
+      readInput: async () => JSON.stringify({ session_id: 's3', hook_event_name: 'UserPromptSubmit' }),
+      hardTimeoutMs: 2000,
+      logError: () => undefined,
+    });
+    const after = loadState('s3', env);
+    expect(after?.seq).toBe(5);
+    expect(after?.outbox.map((e) => e.payload['seq'])).toEqual([5]);
   });
 });
 
@@ -70,7 +80,7 @@ describe('a completion that fails keeps the way back to the session', () => {
     // token with it: the session stayed open forever and no record was ever
     // produced. Codex kills SessionEnd at 3s, so this is not rare.
     const { runHook } = await import('./cli.js');
-    saveSession('dead-1', { aerSessionId: 'a1', ingestToken: 't1', baseUrl: 'http://127.0.0.1:9', createdAt: Date.now(), seq: 5 }, env);
+    saveState('dead-1', { ...freshState(Date.now()), seq: 5, session: { id: 'a1', ingestToken: 't1', baseUrl: 'http://127.0.0.1:9', openedAt: Date.now() } }, env);
 
     await runHook(['--harness', 'claude-code', '--lifecycle', 'v2'], {
       ...env,
@@ -78,14 +88,19 @@ describe('a completion that fails keeps the way back to the session', () => {
       AER_API_KEY: 'k',
       AER_TENANT_ID: '01950000-0000-7000-8000-0000000000aa',
       AER_AGENT_ID: '01950000-0000-7000-8000-0000000000ac',
+      AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
       AER_HOOK_TIMEOUT_MS: '2000',
     }, {
       readInput: async () => JSON.stringify({ session_id: 'dead-1', hook_event_name: 'SessionEnd', reason: 'other' }),
+      logError: () => undefined,
     });
 
-    // The endpoint refuses at once, so the completion failed. The entry must
-    // still be there for a later attempt or for an operator to see.
-    expect(loadSession('dead-1', env, Date.now())).not.toBeNull();
+    // The endpoint refuses at once, so nothing was sent. The session, the
+    // closing report and the request to complete must all still be there.
+    const after = loadState('dead-1', env, Date.now());
+    expect(after?.session?.id).toBe('a1');
+    expect(after?.complete).toBe('end');
+    expect(after?.outbox.map((e) => e.payload['phase'])).toEqual(['session_end']);
   }, 20_000);
 });
 
@@ -107,6 +122,7 @@ describe('the hook says who is recording', () => {
       AER_API_KEY: 'k',
       AER_TENANT_ID: '01950000-0000-7000-8000-0000000000aa',
       AER_AGENT_ID: '01950000-0000-7000-8000-0000000000ac',
+      AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
     }, {
       fetch: fetchStub,
       readInput: async () => JSON.stringify({ session_id: 'who-1', hook_event_name: 'SessionStart', source: 'startup' }),

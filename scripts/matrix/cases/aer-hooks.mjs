@@ -213,6 +213,9 @@ export default function register(registry) {
       c.assert.ok(start, 'no session_start marker');
       c.assert.equal(start.payload.harness, harness, 'harness on the marker');
       c.assert.ok(Array.isArray(start.payload.events_registered) && start.payload.events_registered.length === 8, `events_registered ${JSON.stringify(start.payload.events_registered)}`);
+      // The server reads the last report it holds, so the closing one must carry it too.
+      const end = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_end');
+      c.assert.equal(JSON.stringify(end?.payload?.events_registered), JSON.stringify(start.payload.events_registered), 'events_registered on the closing report');
     });
 
     t.case(`install ${harness}: refuses a malformed config and leaves it untouched`, async (c) => {
@@ -366,7 +369,9 @@ export default function register(registry) {
     c.assert.equal(byType(sink, 'tool.completed').length, 3, 'tool.completed');
     const exec = byType(sink, 'process.exec')[0];
     c.assert.equal(exec?.payload?.command, 'git', 'process.exec is the executable name only');
-    c.assert.equal(byType(sink, 'http.requested')[0]?.payload?.host, 'example.com', 'http.requested is the host only');
+    const fetched = byType(sink, 'network.connect').find((e) => e.payload?.tool === 'WebFetch');
+    c.assert.equal(fetched?.payload?.host, 'example.com', 'a fetch is the host only');
+    c.assert.equal(fetched?.payload?.method, undefined, 'a fetch claims a method the hook never saw');
     c.assert.ok(byType(sink, 'file.written').length === 1, 'file.written');
     const bashStart = byType(sink, 'tool.started')[0];
     c.assert.equal(JSON.stringify(bashStart.payload.arg_keys), JSON.stringify(['command', 'description']), 'arg_keys');
@@ -488,6 +493,7 @@ export default function register(registry) {
     c.assert.equal(start?.payload?.harness, 'codex', 'harness');
     c.assert.equal(start?.payload?.model, 'model-matrix-c', 'model');
     c.assert.equal(byType(sink, 'process.exec')[0]?.payload?.command, 'curl', 'process.exec command');
+    c.assert.equal(byType(sink, 'network.connect')[0]?.payload?.host, 'example.org', 'the host curl was pointed at');
     c.assert.equal(byType(sink, 'tool.completed').length, 1, 'tool.completed');
     assertNoCanaries(sink.allText(), cn);
   });
@@ -512,7 +518,9 @@ export default function register(registry) {
     const env = hookEnv(c, home, sink.url, { AER_HOOK_TIMEOUT_MS: '1500' });
     const r = await fire(c, env, { session_id: randomUUID(), cwd: c.tmp('proj-'), hook_event_name: 'SessionStart', source: 'startup' });
     c.assert.ok(r.ms < 1500 + 2500, `took ${r.ms} ms against a 1500 ms budget`);
-    c.assert.includes(r.stderr, 'timed out after 1500ms', 'timeout note on stderr');
+    // The hook gives up on the call before its budget runs out, so it can say
+    // what happened to the event rather than being cut off mid-request.
+    c.assert.match(r.stderr, /events are queued and will be sent with a later event|timed out after 1500ms/, 'a note on stderr');
     c.assert.excludes(r.stderr, env.AER_API_KEY, 'stderr leaked the API key');
   });
 
@@ -525,9 +533,13 @@ export default function register(registry) {
     const proj = c.tmp('proj-');
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
     const r2 = await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 't1' });
-    // The failed open leaves its pending marker behind, so the next tool event
-    // waits on it and is dropped as if an opener were still in flight.
     c.assert.ok(byType(sink, 'tool.started').length === 1, `tool event after a failed open was lost; requests: ${sink.requests.map((r) => `${r.method} ${r.path}`).join(', ')}; the hook took ${r2.ms} ms`);
+    // The SessionStart that failed to open was queued, not dropped, and the
+    // next event did not wait out a marker the failed open left behind.
+    c.assert.ok(phases(sink).includes('session_start'), 'the queued session_start never arrived');
+    c.assert.ok(r2.ms < 3_000, `the next event took ${r2.ms} ms after a failed open`);
+    const ids = new Set(sink.find('POST', /\/events$/).map((r) => r.path.split('/')[3]));
+    c.assert.equal(ids.size, 1, 'events spread over sessions');
   });
 
   t.case('aer-hook: unconfigured, malformed or empty input touches no network', async (c) => {
@@ -545,13 +557,14 @@ export default function register(registry) {
   });
 
   t.case('aer-hook: store unwritable, events still record (README fallback)', async (c) => {
-    // README: "If the cache cannot be written the hook still records, it just
-    // falls back to a session per event."
+    // README: when the cache dir cannot be written, state moves to a private
+    // per-user directory under the temp dir and the hook records as usual.
     const home = c.home();
     const sink = await c.sink();
     const blocker = join(c.tmp('blk-'), 'file');
     writeFileSync(blocker, 'not a directory');
-    const env = hookEnv(c, home, sink.url, { XDG_CACHE_HOME: blocker, AER_HOOK_TIMEOUT_MS: '6000' });
+    const tmp = c.tmp('tmpdir-');
+    const env = hookEnv(c, home, sink.url, { XDG_CACHE_HOME: blocker, TMPDIR: tmp, AER_HOOK_TIMEOUT_MS: '6000' });
     const sid = randomUUID();
     const proj = c.tmp('proj-');
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
@@ -561,5 +574,206 @@ export default function register(registry) {
     c.assert.ok(phases(sink).includes('session_start'), 'session_start not recorded');
     c.assert.equal(byType(sink, 'tool.started').length, 1, 'tool.started was dropped with an unwritable store');
     c.assert.equal(byType(sink, 'tool.completed').length, 1, 'tool.completed was dropped with an unwritable store');
+    c.assert.equal(opens(sink).length, 1, 'opens with an unwritable cache dir');
+    const fallback = readdirSync(tmp).find((n) => n.startsWith('aer-hooks-'));
+    c.assert.ok(fallback, `no private fallback dir under ${tmp}`);
+    c.assert.equal(statSync(join(tmp, fallback)).mode & 0o077, 0, 'fallback dir is readable by others');
+  });
+
+  t.case('aer-hook: with nowhere to keep state, each event is still recorded on one session', async (c) => {
+    const home = c.home();
+    const sink = await c.sink();
+    const blocker = join(c.tmp('blk-'), 'file');
+    writeFileSync(blocker, 'not a directory');
+    const env = hookEnv(c, home, sink.url, { XDG_CACHE_HOME: blocker, TMPDIR: blocker, XDG_RUNTIME_DIR: blocker });
+    const sid = randomUUID();
+    const proj = c.tmp('proj-');
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 't1' });
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' });
+    c.assert.equal(sink.sessions.size, 1, 'sessions');
+    c.assert.equal(byType(sink, 'tool.started').length, 1, 'tool.started');
+    c.assert.equal(completes(sink).length, 1, 'completes');
+  });
+
+  // ── delivery under the conditions production has ─────────────────────────
+
+  t.case('aer-hook: concurrent lead and subagent hooks under latency record everything once', async (c) => {
+    const home = c.home();
+    const sink = await c.sink();
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    sink.route('POST', /^\/v1\/sessions$/, async () => { await wait(1500); return false; });
+    sink.route('POST', /\/events$/, async () => { await wait(700); return false; });
+    const env = hookEnv(c, home, sink.url, { AER_HOOK_TIMEOUT_MS: '10000' });
+    const sid = randomUUID();
+    const proj = c.tmp('proj-');
+    const lead = { session_id: sid, cwd: proj, permission_mode: 'default' };
+    const sub = (id) => ({ ...lead, agent_id: id, agent_type: 'Explore' });
+    const start = fire(c, env, { ...lead, hook_event_name: 'SessionStart', source: 'startup' });
+    await wait(300);
+    const rest = [
+      { ...lead, hook_event_name: 'UserPromptSubmit' },
+      { ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'l1' },
+      { ...sub('a1'), hook_event_name: 'SubagentStart' },
+      { ...sub('a2'), hook_event_name: 'SubagentStart' },
+      { ...sub('a1'), hook_event_name: 'PreToolUse', tool_name: 'Grep', tool_input: { pattern: 'x' }, tool_use_id: 's1' },
+      { ...sub('a2'), hook_event_name: 'PreToolUse', tool_name: 'Glob', tool_input: { pattern: 'x' }, tool_use_id: 's2' },
+      { ...sub('a1'), hook_event_name: 'SubagentStop' },
+      { ...sub('a2'), hook_event_name: 'SubagentStop' },
+      { ...lead, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: {}, tool_use_id: 'l1' },
+      { ...lead, hook_event_name: 'Stop' },
+    ];
+    await Promise.all([start, ...rest.map((p) => fire(c, env, p))]);
+    await fire(c, env, { ...lead, hook_event_name: 'SessionEnd', reason: 'other' });
+    c.assert.equal(opens(sink).length, 1, 'opens (each extra open mints a token toward the server cap)');
+    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(byType(sink, 'tool.started').length, 3, 'tool.started');
+    const ph = phases(sink);
+    c.assert.equal(ph.filter((p) => p === 'subagent_start').length, 2, `subagent_start (${ph})`);
+    c.assert.equal(ph.filter((p) => p === 'subagent_end').length, 2, `subagent_end (${ph})`);
+    const seqs = sink.events().map((e) => e.payload?.seq).filter((n) => typeof n === 'number').sort((a, b) => a - b);
+    c.assert.equal(seqs.join(','), seqs.map((_, i) => i + 1).join(','), 'seq is not unique and contiguous');
+    const end = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_end');
+    c.assert.equal(end?.payload?.events_emitted, end?.payload?.seq, 'events_emitted on the closing report');
+    c.assert.equal(end?.payload?.subagent_events_unattached, undefined, 'subagent events went unattached');
+    c.assert.equal(end?.payload?.events_dropped_budget, undefined, 'events were dropped');
+  });
+
+  t.case('aer-hook: a subagent event with no lead is counted on the record, never opens one', async (c) => {
+    const home = c.home();
+    const sink = await c.sink();
+    const env = hookEnv(c, home, sink.url);
+    const sid = randomUUID();
+    const proj = c.tmp('proj-');
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'PreToolUse', tool_name: 'Grep', tool_input: { pattern: 'x' }, tool_use_id: 'o1', agent_id: 'early-1' });
+    c.assert.equal(sink.requests.length, 0, 'an orphan subagent event reached the API');
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' });
+    const reports = byType(sink, 'collector.report');
+    c.assert.equal(reports.map((r) => r.payload?.subagent_events_unattached).join(','), '1,1', 'subagent_events_unattached on every report');
+    c.assert.equal(opens(sink).length, 1, 'opens');
+  });
+
+  t.case('aer-hook: a session the server closed is replaced by the next event', async (c) => {
+    const home = c.home();
+    const sink = await c.sink();
+    const env = hookEnv(c, home, sink.url);
+    const sid = randomUUID();
+    const proj = c.tmp('proj-');
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
+    for (const s of sink.sessions.values()) s.status = 'completed'; // the server watchdog closed it
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 't1' });
+    const o = opens(sink);
+    c.assert.equal(o.length, 2, 'opens');
+    c.assert.equal(o[0].json.client_ref, o[1].json.client_ref, 'client_ref changed on reopen');
+    const second = [...sink.sessions.values()].find((s) => s.status === 'running');
+    c.assert.ok(second && second.events.some((e) => e.event_type === 'tool.started'), 'the tool event did not reach the new session');
+  });
+
+  // ── credentials from a file ───────────────────────────────────────────────
+
+  t.case('aer-hooks install --env-file: the wired command records from the file alone', async (c) => {
+    const home = c.home();
+    const sink = await c.sink();
+    const cfgDir = join(home, '.config', 'aer');
+    mkdirSync(cfgDir, { recursive: true });
+    const id = identity();
+    const file = join(cfgDir, 'hooks.env');
+    writeFileSync(file, Object.entries({ ...id, AER_BASE_URL: sink.url }).map(([k, v]) => `${k}=${v}`).join('\n') + '\n', { mode: 0o600 });
+    chmodSync(file, 0o600);
+    const loose = join(cfgDir, 'loose.env');
+    writeFileSync(loose, `AER_API_KEY=${id.AER_API_KEY}\n`, { mode: 0o644 });
+    chmodSync(loose, 0o644);
+    const env = envFor(c, home);
+    const bad = await c.bin('aer-hooks', ['install', 'claude-code', '--env-file', loose], { env, cwd: home });
+    c.assert.equal(bad.code, 1, 'install accepted a world-readable credential file');
+    c.assert.excludes(bad.stdout + bad.stderr, id.AER_API_KEY, 'install printed the key');
+    const inst = await c.bin('aer-hooks', ['install', 'claude-code', '--env-file', file], { env, cwd: home });
+    c.assert.exit(inst, 0, 'install --env-file');
+    const cmd = wiredCommands(readJson(join(home, '.claude', 'settings.json'))).SessionStart.find((h) => /--harness/.test(h.command)).command;
+    c.assert.includes(cmd, `--env-file '${file}'`, 'wired command');
+    const sid = randomUUID();
+    const proj = c.tmp('proj-');
+    // No AER_* in the environment at all: everything comes from the file.
+    for (const ev of ['SessionStart', 'SessionEnd']) {
+      const r = await c.run('/bin/sh', ['-c', cmd], { env, input: JSON.stringify({ session_id: sid, cwd: proj, hook_event_name: ev }), timeoutMs: 20_000 });
+      c.assert.exit(r, 0, `wired command on ${ev}`);
+      c.assert.excludes(r.stderr, id.AER_API_KEY, 'stderr leaked the key');
+    }
+    c.assert.equal(opens(sink).length, 1, 'opens');
+    c.assert.equal(opens(sink)[0].json.agent_id, id.AER_AGENT_ID, 'agent from the file');
+    c.assert.equal(completes(sink).length, 1, 'completes');
+    // status warns when a key is exported in the shell as well, without showing it.
+    const st = await c.bin('aer-hooks', ['status', '--json'], { env: { ...env, AER_API_KEY: 'exported-matrix-key', AER_BASE_URL: sink.url }, cwd: home });
+    const f = JSON.parse(st.stdout).hooks.stale_registrations.find((s) => s.reason === 'key_in_shell_env');
+    c.assert.ok(f, `no key_in_shell_env finding: ${st.stdout}`);
+    c.assert.excludes(st.stdout, 'exported-matrix-key', 'status printed the key value');
+  });
+
+  // ── the other harness payload shapes ──────────────────────────────────────
+
+  t.case('aer-hook antigravity: recorded agy payloads are one record, opened once, bodies-off', async (c) => {
+    const home = c.home();
+    const sink = await c.sink();
+    const env = hookEnv(c, home, sink.url);
+    const cn = canaries('AG');
+    const proj = c.tmp('proj-');
+    const conv = randomUUID();
+    const base = { artifactDirectoryPath: join(home, 'brain'), conversationId: conv, modelName: 'gemini-matrix-flash', transcriptPath: join(proj, 't.pb'), workspacePaths: [proj] };
+    const agy = ['--harness', 'antigravity'];
+    const steps = [
+      ['PreInvocation', { ...base, initialNumSteps: 1, invocationNum: 0, userPrompt: cn.prompt }],
+      ['PreToolUse', { ...base, stepIdx: 2, toolCall: { name: 'run_command', args: { CommandLine: `curl -s https://agy.example/${cn.path}` } } }],
+      ['PostToolUse', { ...base, stepIdx: 2, toolCall: { name: 'run_command', args: { CommandLine: `curl -s https://agy.example/${cn.path}` } }, error: '' }],
+      ['PreToolUse', { ...base, stepIdx: 3, toolCall: { name: 'write_file', args: { path: join(proj, 'x.txt'), content: cn.file } } }],
+      ['PostToolUse', { ...base, stepIdx: 3, toolCall: { name: 'write_file', args: { path: join(proj, 'x.txt') } }, error: `failed: ${cn.result}` }],
+      ['PostInvocation', { ...base, initialNumSteps: 1, invocationNum: 0 }],
+      ['PreInvocation', { ...base, initialNumSteps: 4, invocationNum: 1, userPrompt: cn.prompt }],
+      ['Stop', { ...base, error: '', executionNum: 1, fullyIdle: true, terminationReason: 'NO_TOOL_CALL' }],
+    ];
+    for (const [ev, payload] of steps) await fire(c, env, payload, [...agy, '--event', ev]);
+    c.assert.equal(opens(sink).length, 1, 'opens');
+    c.assert.equal(completes(sink).length, 1, 'completes');
+    const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
+    c.assert.equal(start?.payload?.harness, 'antigravity', 'harness');
+    c.assert.equal(start?.payload?.model, 'gemini-matrix-flash', 'model');
+    c.assert.equal(byType(sink, 'tool.started').map((e) => e.payload.tool).join(','), 'run_command,write_file', 'tool.started');
+    c.assert.equal(byType(sink, 'file.written')[0]?.payload?.path, join(proj, 'x.txt'), 'file.written');
+    const done = byType(sink, 'tool.completed');
+    c.assert.equal(done.map((e) => e.payload.is_error).join(','), 'false,true', 'tool outcome');
+    assertNoCanaries(sink.allText(), cn);
+  });
+
+  t.case('opencode plugin: the installed package records one session per opencode session, bodies-off', async (c) => {
+    const home = c.home();
+    const sink = await c.sink();
+    const cn = canaries('OC');
+    const id = identity();
+    const r = await c.node(`
+      import { aerOpencodePlugin } from '@adastracomputing/aer-hooks';
+      const hooks = await aerOpencodePlugin({}, {}, ${JSON.stringify({ ...id, AER_BASE_URL: sink.url })});
+      const s = 'ses_matrix_1';
+      await hooks.event({ event: { type: 'session.created', properties: { info: { id: s, title: ${JSON.stringify(cn.prompt)} } } } });
+      await hooks['tool.execute.before']({ tool: 'bash', sessionID: s, callID: 'c1' }, { args: { command: ${JSON.stringify(`git status # ${cn.args}`)} } });
+      await hooks['tool.execute.after']({ tool: 'bash', sessionID: s, callID: 'c1', args: { command: 'x' } }, { title: 't', output: ${JSON.stringify(cn.result)}, metadata: {} });
+      const msg = { id: 'msg_1', role: 'assistant', sessionID: s, modelID: 'model-matrix-oc', providerID: 'prov-matrix', tokens: { input: 321, output: 12 }, time: { created: 1 } };
+      await hooks.event({ event: { type: 'message.updated', properties: { info: msg } } });
+      await hooks.event({ event: { type: 'message.updated', properties: { info: { ...msg, time: { created: 1, completed: 2 } } } } });
+      await hooks.event({ event: { type: 'message.part.updated', properties: { part: { text: ${JSON.stringify(cn.result)} } } } });
+      await hooks.event({ event: { type: 'session.deleted', properties: { info: { id: s } } } });
+      await hooks.dispose?.();
+      console.log(JSON.stringify({ ok: true }));
+    `, { home });
+    c.assert.exit(r, 0, 'opencode plugin script');
+    c.assert.equal(opens(sink).length, 1, 'opens');
+    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(byType(sink, 'tool.started')[0]?.payload?.tool, 'bash', 'tool.started');
+    c.assert.equal(byType(sink, 'tool.completed').length, 1, 'tool.completed');
+    const llm = byType(sink, 'llm.completed');
+    c.assert.equal(llm.length, 1, 'llm.completed once across streaming updates');
+    c.assert.equal(llm[0]?.payload?.model, 'model-matrix-oc', 'model');
+    c.assert.equal(llm[0]?.payload?.input_tokens, 321, 'input tokens');
+    assertNoCanaries(sink.allText(), cn);
   });
 }
+

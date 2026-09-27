@@ -8,7 +8,7 @@
 import type { Harness } from './install.js';
 import type { StatusEntry } from './install.js';
 
-export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow';
+export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env';
 
 export interface StaleRegistration {
   harness: Harness | 'any';

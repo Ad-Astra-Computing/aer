@@ -8,6 +8,7 @@
 
 import type { EventSink } from '@adastracomputing/aer-emit';
 import type { HookEvent } from './normalize.js';
+import type { ToolShape } from './tool-shape.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 
 /**
@@ -18,6 +19,12 @@ import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 function unnamedTool(send: (type: string, extra: Record<string, unknown>) => void): number {
   send('collector.report', { collector: 'aer-hooks', phase: 'tool_unnamed' });
   return 1;
+}
+
+/** Every shape a tool start reduces to; an event built before `shapes` existed carries only `shape`. */
+export function shapesOf(event: HookEvent): ToolShape[] {
+  if (event.shapes !== undefined) return event.shapes;
+  return event.shape !== undefined ? [event.shape] : [];
 }
 
 /**
@@ -74,7 +81,7 @@ export function emitHookEvent(event: HookEvent, sink: EventSink): number {
         send('tool.started', fields);
         // What the call actually did, alongside the fact that it happened.
         // Both go through the same sink, so it is one request either way.
-        if (event.shape !== undefined) send(event.shape.eventType, { ...fields, ...event.shape.payload });
+        for (const shape of shapesOf(event)) send(shape.eventType, { ...fields, ...shape.payload });
         return sent;
       }
       case 'tool_end': {

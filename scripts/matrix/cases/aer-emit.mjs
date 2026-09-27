@@ -18,7 +18,7 @@ const PKG = '@adastracomputing/aer-emit';
  * Emit `n` events through createHttpSink and close. Prints one JSON line:
  * what close() did, every onOpen and onComplete call.
  */
-function script({ baseUrl, n, clientRef, closeImmediately = true, extra = '' }) {
+function script({ baseUrl, n, clientRef, closeImmediately = true, extra = '', envId = randomUUID() }) {
   return `
 import { createHttpSink, deriveClientRef } from '${PKG}';
 const out = { onOpen: [], onComplete: [], closed: null, emitThrew: 0 };
@@ -27,7 +27,7 @@ const sink = createHttpSink({
   apiKey: 'mx_key_${randomUUID()}',
   tenantId: '${randomUUID()}',
   agentId: '${randomUUID()}',
-  environmentId: '${randomUUID()}',
+  environmentId: '${envId}',
   agentVersion: 'matrix/1',
   ${clientRef ? `clientRef: ${JSON.stringify(clientRef)},` : ''}
   requestTimeoutMs: 3000,
@@ -121,12 +121,15 @@ export default function register(registry) {
   t.case('client_ref: a second open reuses the running session', async (c) => {
     const sink = await c.sink();
     const ref = `mx-${randomUUID()}`;
+    // Same environment and a version on both opens: the API refuses an open
+    // without them, and reuses a client_ref only within one environment.
+    const envId = randomUUID();
     const extra = `
-const second = createHttpSink({ baseUrl: ${JSON.stringify(sink.url)}, apiKey: 'k', tenantId: 't', agentId: 'a', clientRef: ${JSON.stringify(ref)}, completeOnClose: false, onOpen: (i) => out.onOpen.push(i) });
+const second = createHttpSink({ baseUrl: ${JSON.stringify(sink.url)}, apiKey: 'k', tenantId: 't', agentId: 'a', environmentId: '${envId}', agentVersion: 'matrix/1', clientRef: ${JSON.stringify(ref)}, completeOnClose: false, onOpen: (i) => out.onOpen.push(i) });
 second.emit('tool.started', { tool: 'first' });
 await second.close();
 `;
-    const r = await c.node(script({ baseUrl: sink.url, n: 5, clientRef: ref, extra }), { timeoutMs: 30_000 });
+    const r = await c.node(script({ baseUrl: sink.url, n: 5, clientRef: ref, extra, envId }), { timeoutMs: 30_000 });
     c.assert.exit(r, 0, 'emit script');
     c.assert.equal(sink.sessions.size, 1, 'sessions created');
     const opens = r.json.onOpen;
