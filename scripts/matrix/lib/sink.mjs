@@ -14,6 +14,9 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { mintEd25519, signJwt } from './keys.mjs';
 
+/** The lowercase UUID the API's Uuid schema accepts. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const json = (res, status, body, headers = {}) => {
   const text = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text), ...headers });
@@ -156,6 +159,12 @@ export async function startSink(opts = {}) {
 
     if (method === 'POST' && path === '/v1/sessions') {
       const b = rec.json ?? {};
+      // The real CreateSessionRequest requires both; a lax sink once hid a
+      // client that never sent agent_version, which production refuses.
+      const versionOk = typeof b.agent_version === 'string' && b.agent_version.length >= 1 && b.agent_version.length <= 128;
+      if (!versionOk || !UUID_RE.test(b.environment_id ?? '')) {
+        return json(res, 400, { error: 'invalid_request', fields: [!versionOk && 'agent_version', !UUID_RE.test(b.environment_id ?? '') && 'environment_id'].filter(Boolean) });
+      }
       const ref = typeof b.client_ref === 'string' ? b.client_ref : undefined;
       if (ref) {
         for (const s of sessions.values()) {

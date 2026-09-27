@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // aer-hooks - the installer CLI.
 //
-//   aer-hooks install claude-code|codex [--dir <path>]
+//   aer-hooks install claude-code|codex [--dir <path>] [--env-file <path>]
 //   aer-hooks uninstall claude-code|codex [--dir <path>]
 //   aer-hooks status [--dir <path>]
 //
@@ -12,21 +12,30 @@ import { install, uninstall, status, duplicateLayerWarning, type Harness } from 
 import { staleRegistrations } from './hooks-doctor.js';
 import { HOOKS_VERSION } from './evidence.js';
 import { homedir } from 'node:os';
+import * as nodePath from 'node:path';
+import { readEnvFile } from './env-file.js';
 import { isInvokedDirectly } from './invoked-directly.js';
 
 interface Parsed {
   cmd: string | undefined;
   harness: Harness | undefined;
   dir: string | undefined;
+  envFile: string | undefined;
 }
 
 function parseArgs(argv: string[]): Parsed {
   const positional: string[] = [];
   let dir: string | undefined;
+  let envFile: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === undefined) continue;
-    if (a === '--dir') {
+    if (a === '--env-file') {
+      envFile = argv[i + 1];
+      i++;
+    } else if (a.startsWith('--env-file=')) {
+      envFile = a.slice('--env-file='.length);
+    } else if (a === '--dir') {
       dir = argv[i + 1];
       i++;
     } else if (a.startsWith('--dir=')) {
@@ -43,7 +52,7 @@ function parseArgs(argv: string[]): Parsed {
       : rawHarness === 'agy'
         ? 'antigravity'
         : undefined;
-  return { cmd, harness, dir };
+  return { cmd, harness, dir, envFile };
 }
 
 // Codex skips a hook it has not been told to trust, and skips it silently.
@@ -63,7 +72,7 @@ const VERSION_FLAGS = new Set(['--version', '-V', 'version']);
 const USAGE = `aer-hooks: wire AER recording into a coding harness
 
 Usage:
-  aer-hooks install <claude-code|codex|antigravity> [--dir <path>]
+  aer-hooks install <claude-code|codex|antigravity> [--dir <path>] [--env-file <path>]
   aer-hooks uninstall <claude-code|codex|antigravity> [--dir <path>]
   aer-hooks status [--dir <path>] [--json]
   aer-hooks --version
@@ -74,7 +83,7 @@ export async function run(
   out: (s: string) => void = (s) => process.stdout.write(s + '\n'),
   err: (s: string) => void = (s) => process.stderr.write(s + '\n'),
 ): Promise<number> {
-  const { cmd, harness, dir } = parseArgs(argv);
+  const { cmd, harness, dir, envFile } = parseArgs(argv);
   const opts = dir !== undefined ? { dir } : {};
 
   if (cmd !== undefined && VERSION_FLAGS.has(cmd)) {
@@ -88,7 +97,21 @@ export async function run(
         err('install requires a harness: claude-code | codex | antigravity');
         return 2;
       }
-      const r = await install(harness, opts);
+      let absEnvFile: string | undefined;
+      if (envFile !== undefined) {
+        // Checked now, so a file the hook would refuse is never wired in.
+        absEnvFile = nodePath.resolve(envFile);
+        const check = readEnvFile(absEnvFile);
+        if ('refused' in check) {
+          err(`refusing --env-file: ${check.refused}`);
+          return 1;
+        }
+        if (check.values['AER_API_KEY'] === undefined && check.values['AER_TENANT_API_KEY'] === undefined) {
+          err(`refusing --env-file: ${absEnvFile} sets no AER_API_KEY`);
+          return 1;
+        }
+      }
+      const r = await install(harness, absEnvFile !== undefined ? { ...opts, envFile: absEnvFile } : opts);
       if (r.added.length > 0 || r.upgraded.length > 0) {
         out(`Wired AER hooks for ${harness} into ${r.path}`);
         if (r.added.length > 0) out(`  added: ${r.added.join(', ')}`);

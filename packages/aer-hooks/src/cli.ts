@@ -11,6 +11,7 @@
 // regardless, and we NEVER write to stdout (some harnesses interpret hook stdout).
 
 import { execFileSync } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import {
   createHttpSink,
@@ -20,55 +21,71 @@ import {
   type HttpSinkOptions,
 } from '@adastracomputing/aer-emit';
 import { normalize, type Harness, type HookEvent, type Lifecycle } from './normalize.js';
-import { emitHookEvent } from './core.js';
+import { emitHookEvent, shapesOf } from './core.js';
 import {
-  loadSession,
-  saveSession,
-  savePendingSession,
-  deleteSession,
+  loadState,
+  saveState,
+  freshState,
+  enqueue,
+  stateRoot,
+  sweepStale,
   acquireSessionLock,
-  isPending,
   savePidAlias,
   loadPidAlias,
   deletePidAlias,
   noteSubagentEventUnattached,
   noteEventDroppedBudget,
-  takeDropCounters,
-  PENDING_STALE_MS,
-  type StoredSession,
-  type SessionEntry,
+  readDropCounters,
+  clearDropCounters,
+  type SessionState,
+  type OutboxEvent,
+  type OpenSession,
 } from './session-store.js';
 import {
   scanTranscriptForLlmUsage,
   emitLlmUsageEvents,
   type TranscriptUsageState,
 } from './claude-code-transcript.js';
-import type { LlmUsageEvent } from './transcript-tail.js';
 import { isInvokedDirectly } from './invoked-directly.js';
+import { envWithFile } from './env-file.js';
 import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
+import { stripToIngestPayload } from './shared/ingest-allowlist.js';
+import { openSession, postEvents, completeSession, isRetryable, type ApiBase, type CallResult } from './transport.js';
 
 // Production POST /v1/sessions has been measured at 3-4s (see aer-hooks README
 // and the tenant-key Argon2id verification cost noted in the project docs), so
 // the default budget needs headroom over that, not just over a fast local call.
 const DEFAULT_HARD_TIMEOUT_MS = 10000;
 
-// Budget constants (ADR-023 B2). One deadline is computed per invocation; the
-// lock wait and the polling cutoffs are all measured against it so a slow open
-// never leaves a tool event stranded past the harness's own hook timeout.
-const LOCK_WAIT_CAP_MS = 3000;
-const LOCK_WAIT_DEADLINE_MARGIN_MS = 4500;
-const POLL_DEADLINE_MARGIN_MS = 500;
-const POLL_INTERVAL_MS = 100;
-// A caller waiting on a FRESH pending marker gives up with the same margin
-// the lock wait uses, so it still has room to open for real rather than
-// discovering with 500ms left that it cannot. Review-confirmed livelock: the
-// old 500ms margin left no time for the 3-4s open, so every invocation timed
-// out, reopened, and eventually exhausted the server's per-session token cap.
-const PENDING_WAIT_DEADLINE_MARGIN_MS = 4500;
-// A lock-loss reader's own staleMs floor/grace, so a lock held for close to
-// this invocation's full budget is never mistaken for one left by a crash.
-const LOCK_STALE_FLOOR_MS = 12000;
-const LOCK_STALE_GRACE_MS = 2000;
+export const DEFAULT_AGENT_VERSION = 'unspecified';
+
+// The lock covers local state only, so it is held for milliseconds; a wait
+// this long means a holder died, and its lock goes stale soon after.
+const LOCK_WAIT_MS = 3000;
+// Never start a network call with less time than this left, and stop each
+// one this far short of the deadline, so no call is cut off by the process
+// exiting with its outcome unrecorded.
+const MIN_CALL_MS = 400;
+const EXIT_MARGIN_MS = 300;
+const REQUEST_TIMEOUT_MS = 8000;
+// How long past its own deadline an invocation's claim on the network role
+// lasts, so a killed invocation's claim lapses on its own.
+const LEASE_GRACE_MS = 1000;
+// Events per POST, far under the server's per-request cap.
+const POST_BATCH = 100;
+// A queued event that fails this many sends is dropped and counted, so one
+// the server never takes cannot hold up the rest forever.
+const MAX_SEND_ATTEMPTS = 5;
+const MAX_ROUNDS = 40;
+const OPEN_BACKOFF_BASE_MS = 2000;
+const OPEN_BACKOFF_MAX_MS = 5 * 60_000;
+// A record is completed at the first turn end once it is this old, and before
+// the next event once the harness has been quiet for the second. Four hours
+// keeps a working afternoon in one record; an hour of quiet is a real break.
+const DEFAULT_CHECKPOINT_MINUTES = 240;
+const DEFAULT_QUIET_MINUTES = 60;
+// And once it holds this many events, well under the server's per-session cap.
+const CHECKPOINT_EVENTS = 20_000;
 
 /**
  * Parse AER_HOOK_TIMEOUT_MS: a positive integer, in ms, or unset. An unset or
@@ -84,6 +101,23 @@ export function parseHardTimeoutMs(env: NodeJS.ProcessEnv, warn: (message: strin
     return undefined;
   }
   return n;
+}
+
+function minutesMs(raw: string | undefined, fallback: number): number {
+  const n = raw === undefined ? NaN : Number(raw);
+  return (Number.isInteger(n) && n >= 0 ? n : fallback) * 60_000;
+}
+
+/**
+ * The two record-splitting triggers, in milliseconds, each 0 when turned off:
+ * AER_HOOK_CHECKPOINT_MINUTES (record age at a turn end) and
+ * AER_HOOK_QUIET_MINUTES (quiet time before the next event).
+ */
+export function parseCheckpointMs(env: NodeJS.ProcessEnv): { ageMs: number; quietMs: number } {
+  return {
+    ageMs: minutesMs(env['AER_HOOK_CHECKPOINT_MINUTES'], DEFAULT_CHECKPOINT_MINUTES),
+    quietMs: minutesMs(env['AER_HOOK_QUIET_MINUTES'], DEFAULT_QUIET_MINUTES),
+  };
 }
 
 export function parseHarnessFlag(argv: string[]): Harness | undefined {
@@ -204,69 +238,26 @@ export interface RunHookDeps {
   ownPpid?: number;
   /** Injectable process-start-time lookup for tests (ADR-023 B3 review, pid-alias identity guard). */
   processStartTime?: (pid: number) => string | undefined;
+  /** Where the one-line diagnostics go. Defaults to stderr. */
+  logError?: (message: string) => void;
+}
+
+/** The transcript-tracking fields a state carries, or none for a fresh one. */
+function transcriptStateOf(state: SessionState): TranscriptUsageState {
+  const out: TranscriptUsageState = {};
+  if (state.transcriptPath !== undefined) out.transcriptPath = state.transcriptPath;
+  if (state.transcriptOffset !== undefined) out.transcriptOffset = state.transcriptOffset;
+  if (state.emittedLlmMessageIds !== undefined) out.emittedLlmMessageIds = state.emittedLlmMessageIds;
+  return out;
 }
 
 /**
- * What the collector was set up to see, attached to the opening marker. A
- * reader comparing this with the events that arrived can tell a quiet session
- * from one where the recorder was never called.
- */
-async function openingEvidence(event: HookEvent): Promise<void> {
-  const meta = event.meta ?? (event.meta = {});
-  meta['collector'] = 'aer-hooks';
-  meta['version'] = HOOKS_VERSION;
-  const harness = meta['harness'];
-  if (harness === 'claude-code' || harness === 'codex' || harness === 'antigravity') {
-    const registered = await registeredEvents(harness, undefined, event.cwd);
-    if (registered.length > 0) meta['events_registered'] = registered;
-  }
-  const head = repoHead(event.cwd);
-  if (head !== undefined) meta['repo_head'] = head;
-}
-
-/** What actually arrived, attached to the closing marker. */
-function closingEvidence(event: HookEvent, toolsOpen: number, drops: { subagentEventsUnattached: number; eventsDroppedBudget: number }): void {
-  const meta = event.meta ?? (event.meta = {});
-  meta['collector'] = 'aer-hooks';
-  meta['version'] = HOOKS_VERSION;
-  // Counting the closing marker itself, which is about to go out.
-  meta['events_emitted'] = event.seq ?? 1;
-  meta['tools_unresolved'] = toolsOpen;
-  if (drops.subagentEventsUnattached > 0) meta['subagent_events_unattached'] = drops.subagentEventsUnattached;
-  if (drops.eventsDroppedBudget > 0) meta['events_dropped_budget'] = drops.eventsDroppedBudget;
-}
-
-/**
- * Build the sink for one already-decided branch, emit the event plus any
- * already-scanned Claude Code transcript usage events, and close it. The
- * usage events are pre-scanned (rather than scanned here) so a caller that
- * must reserve session-store state before the network call, the way `seq`
- * already is, can do so.
- */
-async function emitThrough(event: HookEvent, sink: EventSink, llmUsageEvents: LlmUsageEvent[] = []): Promise<number> {
-  const count = emitHookEvent(event, sink);
-  emitLlmUsageEvents(llmUsageEvents, sink, event.sessionRef);
-  await sink.close();
-  return count;
-}
-
-/** The transcript-tracking fields a stored session carries, or none for a fresh one. */
-function transcriptStateOf(stored: StoredSession | null): TranscriptUsageState {
-  if (!stored) return {};
-  const state: TranscriptUsageState = {};
-  if (stored.transcriptPath !== undefined) state.transcriptPath = stored.transcriptPath;
-  if (stored.transcriptOffset !== undefined) state.transcriptOffset = stored.transcriptOffset;
-  if (stored.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = stored.emittedLlmMessageIds;
-  return state;
-}
-
-/**
- * How many events this invocation will emit. The position has to be reserved
- * before the network call, so it cannot be counted after one.
+ * How many events one hook event produces, not counting model calls read
+ * from the transcript alongside it.
  */
 export function plannedEventCount(event: HookEvent): number {
   if (event.kind === 'other') return 0;
-  if (event.kind === 'tool_start') return event.shape === undefined ? 1 : 2;
+  if (event.kind === 'tool_start') return 1 + shapesOf(event).length;
   return 1;
 }
 
@@ -279,6 +270,111 @@ function nextToolsOpen(open: number, kind: HookEvent['kind']): number {
 
 function isSubagentEvent(event: HookEvent): boolean {
   return typeof event.meta?.['harness_agent_id'] === 'string';
+}
+
+function harnessOf(event: HookEvent): string {
+  return typeof event.meta?.['harness'] === 'string' ? (event.meta['harness'] as string) : '';
+}
+
+interface Captured {
+  type: string;
+  payload: Record<string, unknown>;
+  eventId?: string;
+}
+
+/** A sink that only collects, so events can be queued before anything is sent. */
+function captureSink(into: Captured[]): EventSink {
+  return {
+    emit(type, payload, eventId) {
+      into.push(eventId !== undefined ? { type, payload, eventId } : { type, payload });
+    },
+    async close() {
+      /* nothing to flush */
+    },
+  };
+}
+
+/** What the recorder knows about itself, gathered before the lock is taken. */
+interface Evidence {
+  registered?: string[];
+  repoHead?: string;
+}
+
+/**
+ * Put what the record says about its own completeness on every report, not
+ * just the closing one: the server reads the last report it holds, and a
+ * record closed by anything but a clean session end never gets a closing one.
+ */
+function withReportEvidence(
+  payload: Record<string, unknown>,
+  state: SessionState,
+  seq: number,
+  drops: { subagentEventsUnattached: number; eventsDroppedBudget: number },
+  phaseHead: string | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...payload, collector: 'aer-hooks', version: HOOKS_VERSION };
+  if (state.eventsRegistered !== undefined && state.eventsRegistered.length > 0) out['events_registered'] = state.eventsRegistered;
+  out['events_emitted'] = seq - state.segmentStartSeq + 1;
+  out['tools_unresolved'] = state.toolsOpen;
+  if (drops.subagentEventsUnattached > 0) out['subagent_events_unattached'] = drops.subagentEventsUnattached;
+  const droppedBudget = drops.eventsDroppedBudget + state.droppedBudget;
+  if (droppedBudget > 0) out['events_dropped_budget'] = droppedBudget;
+  if (phaseHead !== undefined) out['repo_head'] = phaseHead;
+  return stripToIngestPayload(out).payload;
+}
+
+/** Start numbering a new record from the next position. */
+function startSegment(state: SessionState, now: number, storeKey: string, env: NodeJS.ProcessEnv): void {
+  state.segmentStartSeq = state.seq + 1;
+  state.segmentStartedAt = now;
+  state.droppedBudget = 0;
+  clearDropCounters(storeKey, env);
+}
+
+/**
+ * Turn one hook event into queued events: the event itself, any model calls
+ * the transcript settled since the last read, each numbered in order. The
+ * transcript position moves forward only together with the queued events it
+ * produced, and they leave the queue only once the server has taken them, so
+ * a failed send never loses a model call.
+ */
+function buildQueuedEvents(
+  event: HookEvent,
+  state: SessionState,
+  now: number,
+  evidence: Evidence,
+  storeKey: string,
+  env: NodeJS.ProcessEnv,
+  numbered: boolean,
+): OutboxEvent[] {
+  const captured: Captured[] = [];
+  const sink = captureSink(captured);
+  const scan = numbered ? scanTranscriptForLlmUsage(event, transcriptStateOf(state)) : { events: [], state: {} };
+  state.toolsOpen = nextToolsOpen(state.toolsOpen, event.kind);
+  emitHookEvent(event, sink);
+  emitLlmUsageEvents(scan.events, sink, event.sessionRef);
+  if (scan.state.transcriptPath !== undefined) state.transcriptPath = scan.state.transcriptPath;
+  if (scan.state.transcriptOffset !== undefined) state.transcriptOffset = scan.state.transcriptOffset;
+  if (scan.state.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = scan.state.emittedLlmMessageIds;
+
+  const drops = readDropCounters(storeKey, env);
+  const ts = new Date(now).toISOString();
+  return captured.map((c) => {
+    let payload = c.payload;
+    let seq: number | undefined;
+    if (numbered) {
+      seq = ++state.seq;
+      payload = { ...payload, seq };
+    }
+    if (c.type === 'collector.report' && numbered && seq !== undefined) {
+      payload = withReportEvidence(payload, state, seq, drops, event.kind === 'session_start' ? evidence.repoHead : undefined);
+    } else if (c.type === 'collector.report') {
+      const extra: Record<string, unknown> = { ...payload, collector: 'aer-hooks', version: HOOKS_VERSION };
+      if (evidence.registered !== undefined && evidence.registered.length > 0) extra['events_registered'] = evidence.registered;
+      payload = stripToIngestPayload(extra).payload;
+    }
+    return { id: c.eventId ?? randomUUID(), type: c.type, ts, payload };
+  });
 }
 
 // ── ancestor-pid walk (ADR-023 B1 fallback) ─────────────────────────────────
@@ -376,7 +472,8 @@ function walkPidAliasForLead(
     const expected = { startTime: startTimeOf(pid), agentId: base.agentId, baseUrl: base.baseUrl };
     const alias = loadPidAlias(String(pid), env, now, expected);
     if (alias === null) continue;
-    if (loadSession(alias, env, now) === null) {
+    const lead = loadState(alias, env, now);
+    if (lead === null || lead.ended === true) {
       deletePidAlias(String(pid), env);
       continue;
     }
@@ -385,97 +482,347 @@ function walkPidAliasForLead(
   return undefined;
 }
 
-// ── budget: polling helpers (ADR-023 B2) ────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Poll the store until a REAL (non-pending) session appears under `storeKey`,
- * or `pollDeadline` (an absolute ms timestamp) passes. Never holds a lock;
- * a caller that gets a hit still has to attach without one, best-effort.
- */
-async function pollForRealSession(
-  storeKey: string,
-  env: NodeJS.ProcessEnv,
-  pollDeadline: number,
-  clock: () => number,
-): Promise<StoredSession | null> {
-  for (;;) {
-    const entry = loadSession(storeKey, env, clock());
-    if (entry !== null && !isPending(entry)) return entry;
-    if (clock() >= pollDeadline) return null;
-    await sleep(POLL_INTERVAL_MS);
-  }
-}
-
-/** Attach one event to an already-open session, best-effort. Reserves seq under `lockHeld`. */
-async function attachToStored(
-  event: HookEvent,
-  stored: StoredSession,
-  base: HttpSinkOptions,
-  storeKey: string,
-  env: NodeJS.ProcessEnv,
-  now: number,
-  lockHeld: boolean,
-): Promise<void> {
-  event.seq = (stored.seq ?? 0) + 1;
-  const toolsOpen = nextToolsOpen(stored.toolsOpen ?? 0, event.kind);
-  const scan = scanTranscriptForLlmUsage(event, transcriptStateOf(stored));
-  // Persisting the advanced seq/toolsOpen without the lock risks clobbering a
-  // concurrent writer; a caller that reached here without the lock (the
-  // budget-poll paths) skips the write and accepts an approximate position,
-  // which is honest (a gap, never a duplicate) rather than silently wrong.
-  if (lockHeld) {
-    saveSession(storeKey, { ...stored, seq: (stored.seq ?? 0) + plannedEventCount(event), toolsOpen, ...scan.state }, env);
-  }
-  const sink = createHttpSink({ ...base, session: { id: stored.aerSessionId, ingestToken: stored.ingestToken }, completeOnClose: false });
-  await emitThrough(event, sink, scan.events);
-  void now;
-}
-
-/** A tool event that lost the lock race: poll for the lead's session and attach, or give up. */
-async function pollAndAttach(
-  storeKey: string,
-  event: HookEvent,
-  base: HttpSinkOptions,
-  env: NodeJS.ProcessEnv,
-  now: number,
-  deadline: number,
-): Promise<boolean> {
-  const pollDeadline = deadline - POLL_DEADLINE_MARGIN_MS;
-  const stored = await pollForRealSession(storeKey, env, pollDeadline, Date.now);
-  if (stored === null) return false;
-  await attachToStored(event, stored, base, storeKey, env, now, false);
-  return true;
-}
-
-function harnessOf(event: HookEvent): string {
-  return typeof event.meta?.['harness'] === 'string' ? (event.meta['harness'] as string) : '';
-}
-
 /**
  * Resolve this invocation's store key (ADR-023 B1, revised after review
  * against Claude Code 2.1.281): an explicit `--root-session` override wins
- * outright; otherwise, an existing session under the event's OWN session id
- * wins (the empirically-observed case: a subagent's payload already carries
- * the lead's session_id); otherwise the harness-exported root session id
- * (`CLAUDE_CODE_SESSION_ID` / `CLAUDE_SESSION_ID`) is tried; otherwise the
- * event's own session id is the key (the pid-alias walk, further down, is
- * the last resort for a subagent event that still finds nothing there).
+ * outright; otherwise, existing state under the event's OWN session id wins
+ * (a subagent's payload already carries the lead's session_id); otherwise
+ * the harness-exported root session id; otherwise the event's own id.
  */
 function resolveStoreKey(ref: string, env: NodeJS.ProcessEnv, now: number, explicitRoot: string | undefined): string {
   if (explicitRoot !== undefined) return explicitRoot;
-  if (loadSession(ref, env, now) !== null) return ref;
+  if (loadState(ref, env, now) !== null) return ref;
   const envRoot = rootSessionFromEnv(env);
   if (envRoot !== undefined) return envRoot;
   return ref;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface Ctx {
+  storeKey: string;
+  env: NodeJS.ProcessEnv;
+  api: ApiBase;
+  clientRef: string;
+  /** This invocation's clock: the injected start time plus real elapsed time. */
+  clock: () => number;
+  deadline: number;
+  /** Who holds the network role, unique per invocation even within one process. */
+  owner: string;
+  /** The last event of the harness session: worth waiting for another invocation to finish. */
+  final: boolean;
+  isSubagent: boolean;
+  ownPpid: number;
+  warn: (kind: string, message: string) => void;
+}
+
+function remaining(ctx: Ctx): number {
+  return ctx.deadline - ctx.clock();
+}
+
+/**
+ * Read, change and write this harness session's state under its lock. The
+ * lock is never held across anything but local file work. Returns undefined
+ * when the lock could not be had.
+ */
+async function withState<T>(ctx: Ctx, fn: (state: SessionState | null, now: number) => { result: T; save?: SessionState | null }): Promise<T | undefined> {
+  const lock = await acquireSessionLock(ctx.storeKey, ctx.env, { maxWaitMs: Math.max(0, Math.min(LOCK_WAIT_MS, remaining(ctx) - MIN_CALL_MS)) });
+  if (!lock) return undefined;
+  try {
+    const now = ctx.clock();
+    const out = fn(loadState(ctx.storeKey, ctx.env, now), now);
+    if (out.save) saveState(ctx.storeKey, out.save, ctx.env);
+    return out.result;
+  } finally {
+    lock.release();
+  }
+}
+
+function releaseLease(state: SessionState, ctx: Ctx): void {
+  if (state.lease?.owner === ctx.owner) delete state.lease;
+}
+
+/** The record is complete: the next events, if any, start a new one under the same client_ref. */
+function finishRecord(state: SessionState, mode: 'checkpoint' | 'end', ctx: Ctx, now: number): void {
+  delete state.session;
+  delete state.complete;
+  delete state.openFailures;
+  delete state.retryOpenAt;
+  startSegment(state, now, ctx.storeKey, ctx.env);
+  if (mode === 'end') {
+    // The token is gone; what remains is the transcript position, so a
+    // resumed harness session never records a model call twice.
+    state.ended = true;
+    delete state.hostsUnreduced;
+    if (!ctx.isSubagent) deletePidAlias(String(ctx.ownPpid), ctx.env);
+  }
+}
+
+type Step =
+  | { kind: 'done' }
+  | { kind: 'busy' }
+  | { kind: 'open' }
+  | { kind: 'post'; session: OpenSession; batch: OutboxEvent[] }
+  | { kind: 'complete'; session: OpenSession; mode: 'checkpoint' | 'end' | 'close' };
+
+/** Decide the next network step under the lock, and claim the network role for it. */
+function decide(state: SessionState | null, now: number, ctx: Ctx): { result: Step; save?: SessionState | null } {
+  if (state === null) return { result: { kind: 'done' } };
+  if (state.lease && state.lease.owner !== ctx.owner && state.lease.until > now) return { result: { kind: 'busy' } };
+
+  let step: Step;
+  if (state.session?.closeFirst) {
+    step = { kind: 'complete', session: state.session, mode: 'close' };
+  } else if (state.outbox.length > 0) {
+    if (!state.session) {
+      if (state.retryOpenAt !== undefined && now < state.retryOpenAt && !ctx.final) {
+        releaseLease(state, ctx);
+        return { result: { kind: 'done' }, save: state };
+      }
+      step = { kind: 'open' };
+    } else {
+      // A batch that already failed is retried one event at a time, so one
+      // event the server keeps refusing cannot take its neighbours down too.
+      const size = (state.outbox[0]!.attempts ?? 0) >= 2 ? 1 : POST_BATCH;
+      step = { kind: 'post', session: state.session, batch: state.outbox.slice(0, size) };
+    }
+  } else if (state.complete !== undefined) {
+    if (!state.session) {
+      // Nothing is open to complete: whatever this record held was already
+      // closed by the server, so there is nothing left to do but move on.
+      finishRecord(state, state.complete, ctx, now);
+      releaseLease(state, ctx);
+      return { result: { kind: 'done' }, save: state };
+    }
+    step = { kind: 'complete', session: state.session, mode: state.complete };
+  } else {
+    if (state.lease?.owner !== ctx.owner) return { result: { kind: 'done' } };
+    releaseLease(state, ctx);
+    return { result: { kind: 'done' }, save: state };
+  }
+  state.lease = { owner: ctx.owner, until: ctx.deadline + LEASE_GRACE_MS };
+  return { result: step, save: state };
+}
+
+/**
+ * The server closed the record: what is still queued starts the one that
+ * replaces it, so that record counts only its own events and its age runs
+ * from now. Drops were already reported on the closed record's reports, so
+ * the count starts again too.
+ */
+function replacementSegment(state: SessionState, now: number, ctx: Ctx): void {
+  const firstQueued = state.outbox.map((e) => e.payload['seq']).find((n): n is number => typeof n === 'number');
+  startSegment(state, now, ctx.storeKey, ctx.env);
+  if (firstQueued !== undefined) state.segmentStartSeq = firstQueued;
+  // Reports already queued were counted against the closed record.
+  for (const e of state.outbox) {
+    const seq = e.payload['seq'];
+    if (e.type === 'collector.report' && typeof seq === 'number') e.payload['events_emitted'] = seq - state.segmentStartSeq + 1;
+  }
+}
+
+/** The session this batch went to is closed or no longer takes this token. */
+function sessionGone(r: CallResult): boolean {
+  return !r.ok && (r.status === 401 || r.status === 403 || r.status === 404 || r.status === 409);
+}
+
+function outcome(r: CallResult): string {
+  return r.status === 0 ? 'no answer' : `HTTP ${r.status}`;
+}
+
+/**
+ * Send what is queued, opening and completing the record as needed, while
+ * this invocation has time. One invocation at a time holds the network role;
+ * the others queue their events and leave, and the holder picks them up
+ * before it lets go. Whatever is still queued when time runs out stays on
+ * disk for the next invocation, so nothing depends on this one finishing.
+ */
+async function deliver(ctx: Ctx): Promise<void> {
+  let reopened = false;
+  let openRetried = false;
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    if (remaining(ctx) < MIN_CALL_MS + EXIT_MARGIN_MS) break;
+    const step = await withState(ctx, (st, now) => decide(st, now, ctx));
+    if (step === undefined || step.kind === 'done') return;
+    if (step.kind === 'busy') {
+      // Another invocation is sending. It takes our events with it, so only
+      // the last event of the session waits to see the record through.
+      if (!ctx.final) return;
+      await sleep(100);
+      round--;
+      continue;
+    }
+    const timeoutMs = Math.min(REQUEST_TIMEOUT_MS, remaining(ctx) - EXIT_MARGIN_MS);
+
+    if (step.kind === 'open') {
+      const r = await openSession(ctx.api, ctx.clientRef, timeoutMs);
+      if ('opened' in r) {
+        const opened = r.opened;
+        await withState(ctx, (st, now) => {
+          if (st === null) return { result: undefined };
+          st.session = { id: opened.id, ingestToken: opened.ingestToken, baseUrl: ctx.api.base.baseUrl, openedAt: now };
+          delete st.openFailures;
+          delete st.retryOpenAt;
+          return { result: undefined, save: st };
+        });
+        continue;
+      }
+      if (isRetryable(r.failed) && !openRetried && remaining(ctx) > 2 * MIN_CALL_MS + 250) {
+        openRetried = true;
+        await sleep(250);
+        continue;
+      }
+      await withState(ctx, (st, now) => {
+        if (st === null) return { result: undefined };
+        const failures = (st.openFailures ?? 0) + 1;
+        st.openFailures = failures;
+        // The first failure is retried by the very next event; repeated ones back off.
+        st.retryOpenAt = failures <= 1 ? now : now + Math.min(OPEN_BACKOFF_MAX_MS, OPEN_BACKOFF_BASE_MS * 2 ** (failures - 2));
+        releaseLease(st, ctx);
+        return { result: undefined, save: st };
+      });
+      ctx.warn('open', `aer-hook: could not open the AER session (${outcome(r.failed)}); events are queued and will be sent with a later event`);
+      return;
+    }
+
+    if (step.kind === 'post') {
+      const r = await postEvents(ctx.api, step.session, step.batch, timeoutMs);
+      const ids = new Set(step.batch.map((e) => e.id));
+      if (r.ok) {
+        await withState(ctx, (st) => {
+          if (st === null) return { result: undefined };
+          st.outbox = st.outbox.filter((e) => !ids.has(e.id));
+          return { result: undefined, save: st };
+        });
+        continue;
+      }
+      if (sessionGone(r)) {
+        // Closed by the server (a watchdog, a completion elsewhere) or no
+        // longer accepting this token: drop it and open again with the same
+        // client_ref, which the server has freed, so the queued events land
+        // in a new record instead of being refused for a day.
+        const again = !reopened;
+        reopened = true;
+        await withState(ctx, (st, now) => {
+          if (st === null) return { result: undefined };
+          if (st.session?.id === step.session.id) {
+            delete st.session;
+            replacementSegment(st, now, ctx);
+          }
+          if (st.complete === 'checkpoint') delete st.complete;
+          if (!again) releaseLease(st, ctx);
+          return { result: undefined, save: st };
+        });
+        if (!again) return;
+        continue;
+      }
+      if (r.status === 413 && r.error === 'session_event_limit_exceeded') {
+        await withState(ctx, (st) => {
+          if (st === null) return { result: undefined };
+          if (st.session?.id === step.session.id) st.session.closeFirst = true;
+          return { result: undefined, save: st };
+        });
+        continue;
+      }
+      if (!isRetryable(r)) {
+        // Refused for good (malformed, too large): drop the batch and count it.
+        await withState(ctx, (st) => {
+          if (st === null) return { result: undefined };
+          const before = st.outbox.length;
+          st.outbox = st.outbox.filter((e) => !ids.has(e.id));
+          st.droppedBudget += before - st.outbox.length;
+          return { result: undefined, save: st };
+        });
+        ctx.warn('refused', `aer-hook: the AER API refused ${step.batch.length} event(s) (${outcome(r)}); they were dropped and counted`);
+        continue;
+      }
+      await withState(ctx, (st) => {
+        if (st === null) return { result: undefined };
+        let dropped = 0;
+        st.outbox = st.outbox.filter((e) => {
+          if (!ids.has(e.id)) return true;
+          e.attempts = (e.attempts ?? 0) + 1;
+          if (e.attempts < MAX_SEND_ATTEMPTS) return true;
+          dropped += 1;
+          return false;
+        });
+        st.droppedBudget += dropped;
+        releaseLease(st, ctx);
+        return { result: undefined, save: st };
+      });
+      ctx.warn('send', `aer-hook: could not send events to AER (${outcome(r)}); they stay queued and will be sent with a later event`);
+      return;
+    }
+
+    // complete
+    const r = await completeSession(ctx.api, step.session, timeoutMs);
+    // Already closed (409), or too large to seal (413): either way this
+    // session will take nothing more, so the record moves on.
+    if (r.ok || sessionGone(r) || r.status === 413) {
+      await withState(ctx, (st, now) => {
+        if (st === null) return { result: undefined };
+        if (st.session?.id !== step.session.id) return { result: undefined };
+        if (step.mode === 'close') delete st.session;
+        else finishRecord(st, step.mode, ctx, now);
+        return { result: undefined, save: st };
+      });
+      if (step.mode === 'end') {
+        await withState(ctx, (st) => {
+          if (st === null) return { result: undefined };
+          releaseLease(st, ctx);
+          return { result: undefined, save: st };
+        });
+        return;
+      }
+      continue;
+    }
+    await withState(ctx, (st) => {
+      if (st === null) return { result: undefined };
+      releaseLease(st, ctx);
+      return { result: undefined, save: st };
+    });
+    ctx.warn('complete', `aer-hook: could not complete the AER record (${outcome(r)}); a later event will try again`);
+    return;
+  }
+  // Out of time: hand the network role back now rather than when it lapses.
+  await withState(ctx, (st) => {
+    if (st === null) return { result: undefined };
+    releaseLease(st, ctx);
+    return { result: undefined, save: st };
+  });
+}
+
+/**
+ * With nowhere to keep state, each event is sent on its own: opened with the
+ * shared client_ref so the server puts it on the running record, and never
+ * numbered, since no position can be kept between invocations. The server
+ * allows a limited number of such joins per record.
+ */
+async function deliverDirect(event: HookEvent, ctx: Ctx, evidence: Evidence, complete: boolean): Promise<void> {
+  const state = freshState(ctx.clock());
+  const events = buildQueuedEvents(event, state, ctx.clock(), evidence, ctx.storeKey, ctx.env, false);
+  if (events.length === 0) return;
+  const r = await openSession(ctx.api, ctx.clientRef, Math.min(REQUEST_TIMEOUT_MS, remaining(ctx) - EXIT_MARGIN_MS));
+  if (!('opened' in r)) {
+    ctx.warn('open', `aer-hook: could not open the AER session (${outcome(r.failed)}); this event was not recorded`);
+    return;
+  }
+  const session = { id: r.opened.id, ingestToken: r.opened.ingestToken };
+  for (let i = 0; i < events.length; i += POST_BATCH) {
+    await postEvents(ctx.api, session, events.slice(i, i + POST_BATCH), Math.min(REQUEST_TIMEOUT_MS, remaining(ctx) - EXIT_MARGIN_MS));
+  }
+  if (complete) await completeSession(ctx.api, session, Math.min(REQUEST_TIMEOUT_MS, remaining(ctx) - EXIT_MARGIN_MS));
+}
+
+function completes(event: HookEvent): boolean {
+  return event.kind === 'session_end';
+}
+
 async function orchestrateAndEmit(
   event: HookEvent,
-  base: HttpSinkOptions,
+  base: HttpSinkOptions & { sourceType: 'harness'; collector: { name: string; version: string } },
   env: NodeJS.ProcessEnv,
   now: number,
   opts: { rootSession: string | undefined; deadline: number; deps: RunHookDeps },
@@ -484,24 +831,47 @@ async function orchestrateAndEmit(
   const isSubagent = isSubagentEvent(event);
 
   if (!ref) {
-    // No correlation id at all: nothing to key an unattached-drop counter on
-    // either, beyond the subagent id itself when there is one.
     if (isSubagent) {
       const key = typeof event.meta?.['harness_agent_id'] === 'string' ? (event.meta['harness_agent_id'] as string) : 'unknown-subagent';
       noteSubagentEventUnattached(key, env, now);
       return;
     }
-    // No correlation id: single-shot session (open + emit + complete on close).
-    await emitThrough(event, createHttpSink(base));
+    // No correlation id at all: a record of its own, opened and completed here.
+    const sink = createHttpSink(base);
+    emitHookEvent(event, sink);
+    await sink.close();
     return;
   }
 
-  let storeKey = resolveStoreKey(ref, env, now, opts.rootSession);
+  const realStart = Date.now();
+  const logged = new Set<string>();
+  const log = opts.deps.logError ?? ((m: string) => process.stderr.write(m + '\n'));
+  const ctxBase = {
+    env,
+    api: { base, fetch: base.fetch ?? globalThis.fetch },
+    clock: () => now + (Date.now() - realStart),
+    deadline: opts.deadline,
+    owner: `${process.pid}.${randomBytes(8).toString('hex')}`,
+    final: completes(event),
+    isSubagent,
+    ownPpid: opts.deps.ownPpid ?? process.ppid,
+    warn: (kind: string, message: string) => {
+      if (logged.has(kind)) return;
+      logged.add(kind);
+      try {
+        log(message);
+      } catch {
+        /* a diagnostic must never throw */
+      }
+    },
+  };
 
-  // Still nothing under the resolved key, and this is a subagent event: the
-  // pid-alias walk is the last resort. A subagent event that finds no lead
-  // here or after opening the lock below MUST NOT open a session (ADR-023 B1).
-  if (isSubagent && loadSession(storeKey, env, now) === null) {
+  let storeKey = resolveStoreKey(ref, env, now, opts.rootSession);
+  const probe = loadState(storeKey, env, now);
+
+  // A subagent never opens a record of its own. With no lead found under the
+  // resolved key, the pid-alias walk is the last resort.
+  if (isSubagent && (probe === null || probe.ended === true) && stateRoot(env) !== null) {
     const alias = walkPidAliasForLead(env, now, base, opts.deps);
     if (alias === undefined) {
       noteSubagentEventUnattached(storeKey, env, now);
@@ -510,129 +880,95 @@ async function orchestrateAndEmit(
     storeKey = alias;
   }
 
-  // The stale threshold a later reader will use to decide whether OUR lock
-  // (if we end up holding it a long time) is abandoned, derived from this
-  // invocation's own budget so a custom AER_HOOK_TIMEOUT_MS is never
-  // mistaken for a crash partway through.
-  const staleMs = Math.max(LOCK_STALE_FLOOR_MS, opts.deadline - now + LOCK_STALE_GRACE_MS);
-  const lockWaitMs = Math.max(0, Math.min(LOCK_WAIT_CAP_MS, opts.deadline - now - LOCK_WAIT_DEADLINE_MARGIN_MS));
-  const lock = await acquireSessionLock(storeKey, env, { maxWaitMs: lockWaitMs, staleMs });
-  if (!lock) {
-    if (event.kind === 'tool_start' || event.kind === 'tool_end') {
-      const attached = await pollAndAttach(storeKey, event, base, env, now, opts.deadline);
-      if (!attached) noteEventDroppedBudget(storeKey, env, now);
-      return;
-    }
-    if (isSubagent) {
-      noteSubagentEventUnattached(storeKey, env, now);
-      return;
-    }
-    // Could not converge with a concurrent hook in time (or the store is
-    // unwritable): emit single-shot with client_ref, so the server dedupes it
-    // onto the lead's running record. Never complete: that record is live.
-    const clientRef = deriveClientRef(harnessOf(event), storeKey, base.agentId ?? '');
-    await emitThrough(event, createHttpSink({ ...base, clientRef, completeOnClose: false }));
+  const ctx: Ctx = { ...ctxBase, storeKey, clientRef: deriveClientRef(harnessOf(event), storeKey, base.agentId ?? '') };
+
+  // What the recorder knows about itself is read before the lock, since it
+  // touches config files; it is gathered once per harness session.
+  const evidence: Evidence = {};
+  const harness = harnessOf(event);
+  if ((event.kind === 'session_start' || probe === null || probe.eventsRegistered === undefined)
+      && (harness === 'claude-code' || harness === 'codex' || harness === 'antigravity')) {
+    evidence.registered = await registeredEvents(harness, undefined, event.cwd);
+  }
+  if (event.kind === 'session_start') {
+    const head = repoHead(event.cwd);
+    if (head !== undefined) evidence.repoHead = head;
+  }
+
+  if (stateRoot(env) === null) {
+    await deliverDirect(event, ctx, evidence, completes(event));
     return;
   }
+  // Once per harness session: clear what sessions that never came back left.
+  if (event.kind === 'session_start') sweepStale(env);
 
-  try {
-    let entry: SessionEntry | null = loadSession(storeKey, env, now);
+  const { ageMs, quietMs } = parseCheckpointMs(env);
+  const queued = await withState(ctx, (st, at) => {
+    let state = st;
+    if (state !== null && state.ended === true) {
+      if (isSubagent) return { result: 'unattached' as const };
+      // The harness session resumed after its record completed.
+      delete state.ended;
+      startSegment(state, at, ctx.storeKey, env);
+    }
+    if (state === null) {
+      if (isSubagent) return { result: 'unattached' as const };
+      state = freshState(at);
+    }
+    if (evidence.registered !== undefined) state.eventsRegistered = evidence.registered;
+    const recordedBefore = state.seq > 0;
 
-    // A pending marker left by a concurrent opener: wait, capped well short
-    // of the deadline so a caller that gives up still has room to open for
-    // real. Reopen only once it is actually stale; a tool event that gives
-    // up on a fresh marker drops instead, or steady traffic against a hung
-    // open mints a token per invocation until client_ref_exhausted.
-    if (entry !== null && isPending(entry)) {
-      const age = now - entry.createdAt;
-      if (age >= PENDING_STALE_MS) {
-        entry = null; // stale: fall through and reopen with the identical client_ref
-      } else {
-        const waitDeadline = opts.deadline - PENDING_WAIT_DEADLINE_MARGIN_MS;
-        const resolved = await pollForRealSession(storeKey, env, waitDeadline, Date.now);
-        if (resolved !== null) {
-          entry = resolved;
-        } else if (event.kind === 'tool_start' || event.kind === 'tool_end') {
-          noteEventDroppedBudget(storeKey, env, now);
-          return;
-        } else {
-          entry = null; // rare non-tool contention: fall through and open
-        }
-      }
+    // Back after a quiet period: close the record the quiet period ended,
+    // and start this event in a new one. A session end instead joins the
+    // record it ends, rather than opening one to hold nothing else.
+    if (quietMs > 0 && !completes(event) && state.session !== undefined && at - state.lastActivityAt >= quietMs) {
+      state.session.closeFirst = true;
+      if (state.complete === 'checkpoint') delete state.complete;
+      startSegment(state, at, ctx.storeKey, env);
     }
 
-    const stored: StoredSession | null = entry !== null && !isPending(entry) ? entry : null;
-
-    if (event.kind === 'session_end') {
-      let completed = false;
-      const drops = takeDropCounters(storeKey, env);
-      const sink = stored
-        ? createHttpSink({
-            ...base,
-            session: { id: stored.aerSessionId, ingestToken: stored.ingestToken },
-            completeOnClose: true,
-            onComplete: (ok) => { completed = ok; },
-          })
-        : createHttpSink(base); // never saw a start; single-shot
-      if (stored) event.seq = (stored.seq ?? 0) + 1;
-      closingEvidence(event, stored?.toolsOpen ?? 0, drops);
-      const scan = scanTranscriptForLlmUsage(event, transcriptStateOf(stored));
-      await emitThrough(event, sink, scan.events);
-      if (stored && completed) {
-        deleteSession(storeKey, env);
-        if (!isSubagent) deletePidAlias(String(opts.deps.ownPpid ?? process.ppid), env);
-      }
-      return;
+    const events = buildQueuedEvents(event, state, at, evidence, ctx.storeKey, env, true);
+    // The end of a session whose last record a checkpoint already completed:
+    // opening a record to hold only this marker would add an empty record to
+    // the agent's history. What it would report is on the record that closed.
+    if (completes(event) && recordedBefore && state.session === undefined && state.outbox.length === 0
+        && events.every((e) => e.type === 'collector.report')) {
+      finishRecord(state, 'end', ctx, at);
+      state.lastActivityAt = at;
+      return { result: 'ended' as const, save: state };
     }
+    enqueue(state, events);
+    state.lastActivityAt = at;
 
-    if (stored) {
-      await attachToStored(event, stored, base, storeKey, env, now, true);
-      return;
+    if (completes(event)) {
+      state.complete = 'end';
+    } else if (event.kind === 'turn_end' && state.complete === undefined
+        && ((ageMs > 0 && at - state.segmentStartedAt >= ageMs) || state.seq - state.segmentStartSeq + 1 >= CHECKPOINT_EVENTS)) {
+      // A long interactive session may never send its end. Completing at a
+      // turn end once the record is old enough gets it sealed and summarised,
+      // and the next turn goes on in a new record under the same client_ref.
+      state.complete = 'checkpoint';
     }
+    return { result: 'queued' as const, save: state };
+  });
 
-    // No open session found for this store key after the pending check.
-    if (isSubagent) {
-      // Either the alias walk found nothing either, or the lead's session
-      // vanished between the probe and now: never open on a subagent's behalf.
-      noteSubagentEventUnattached(storeKey, env, now);
-      return;
-    }
-
-    // First event for this harness session (session_start, or a tool event
-    // that arrived before any start): open one, persist it as soon as it is
-    // known, then emit, all while still holding the lock.
-    event.seq = 1;
-    const ownPpid = opts.deps.ownPpid ?? process.ppid;
-    if (event.kind === 'session_start') {
-      await openingEvidence(event);
-      const startTimeOf = opts.deps.processStartTime ?? defaultProcessStartTime;
-      savePidAlias(String(ownPpid), storeKey, env, now, {
-        startTime: startTimeOf(ownPpid),
-        agentId: base.agentId,
-        baseUrl: base.baseUrl,
-      });
-    }
-    const scan = scanTranscriptForLlmUsage(event, {});
-    const clientRef = deriveClientRef(harnessOf(event), storeKey, base.agentId ?? '');
-    // Stamped with the real clock, not the invocation's captured `now`: this
-    // may be a reopen after this same invocation spent time waiting above,
-    // and a marker backdated to a stale `now` would itself read as older
-    // (or younger) than it really is to the next reader.
-    savePendingSession(storeKey, clientRef, env, Date.now());
-    const persist = (info: { id: string; ingestToken: string }): void => {
-      // A late callback from a stuck opener must never regress the position
-      // a faster reopen has already advanced past.
-      const current = loadSession(storeKey, env, Date.now());
-      const currentReal = current !== null && !isPending(current) ? current : null;
-      const seq = Math.max(plannedEventCount(event), currentReal?.seq ?? 0);
-      const toolsOpen = currentReal?.toolsOpen ?? nextToolsOpen(0, event.kind);
-      saveSession(storeKey, { aerSessionId: info.id, ingestToken: info.ingestToken, baseUrl: base.baseUrl, createdAt: now, seq, toolsOpen, ...scan.state }, env);
-    };
-    const sink = createHttpSink({ ...base, completeOnClose: false, onOpen: persist, clientRef });
-    await emitThrough(event, sink, scan.events);
-  } finally {
-    lock.release();
+  if (queued === undefined) {
+    noteEventDroppedBudget(storeKey, env, now);
+    ctx.warn('lock', 'aer-hook: the record for this harness session stayed locked past the time budget; this event was dropped and counted');
+    return;
   }
+  if (queued === 'unattached') {
+    noteSubagentEventUnattached(storeKey, env, now);
+    return;
+  }
+  if (queued === 'ended') return;
+
+  if (event.kind === 'session_start' && !isSubagent) {
+    const startTimeOf = opts.deps.processStartTime ?? defaultProcessStartTime;
+    savePidAlias(String(ctx.ownPpid), storeKey, env, now, { startTime: startTimeOf(ctx.ownPpid), agentId: base.agentId, baseUrl: base.baseUrl });
+  }
+
+  await deliver(ctx);
 }
 
 /**
@@ -645,16 +981,31 @@ export async function runHook(
   deps: RunHookDeps = {},
 ): Promise<void> {
   try {
+    // Credentials from an owner-only file, for this process alone.
+    env = envWithFile(argv, env, deps.logError ?? ((m) => process.stderr.write(m + '\n')));
     const harness = parseHarnessFlag(argv);
     const overrides = deps.fetch ? { fetch: deps.fetch } : {};
     const resolved = resolveSinkOptionsFromEnv(env, overrides);
     // Unconfigured: do nothing, touch no network.
     if (!resolved) return;
+    // The API refuses an open without an environment, so every event would
+    // queue for a session that can never open. Say so instead.
+    if (resolved.environmentId === undefined || resolved.environmentId.length === 0) {
+      try {
+        (deps.logError ?? ((m: string) => process.stderr.write(m + '\n')))('aer-hook: AER_ENV_ID is not set; the AER API needs it to open a session, so nothing was recorded');
+      } catch {
+        /* a diagnostic must never throw */
+      }
+      return;
+    }
     // A harness records tool lifecycle through hooks and never watches the
     // wire, so mark it as such rather than inherit the wrapper default, which
     // means the auto-node collector did watch it.
     const base = {
       ...resolved,
+      // Required by the API. A harness does not report its own version to
+      // its hooks, so without AER_AGENT_VERSION it is recorded as unspecified.
+      agentVersion: resolved.agentVersion ?? DEFAULT_AGENT_VERSION,
       sourceType: 'harness' as const,
       // Declare who is recording, so a reader can tell a harness recording
       // from a wrapped process without inferring it from the events.

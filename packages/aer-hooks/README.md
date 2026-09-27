@@ -68,27 +68,82 @@ command itself, so upgrading AER can change the command and need approving
 again. A project-local `.codex` layer also has to be a trusted project before
 its hooks load at all.
 
-Configure AER with the standard environment: `AER_API_KEY`, `AER_TENANT_ID`,
-`AER_AGENT_ID` (and optionally `AER_ENV_ID`, `AER_BASE_URL`, `AER_AGENT_VERSION`,
-`AER_PRINCIPAL_ID`). With any of the three required values missing, the hook does
-nothing.
+### Keep the key out of the agent's shell
+
+The hook needs `AER_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID` and `AER_ENV_ID`, and
+optionally `AER_BASE_URL`, `AER_AGENT_VERSION` and `AER_PRINCIPAL_ID`. With a key,
+tenant or agent missing, the hook does nothing; with `AER_ENV_ID` missing it also
+does nothing and says so on stderr, since the API refuses to open a session without
+one. A harness does not tell its hooks its own version, so without
+`AER_AGENT_VERSION` the session's agent version is recorded as `unspecified`.
+
+Do not export them in your shell profile. A harness passes its environment to every
+command its agent runs, so an exported key reaches all of them, and anything among
+them that loads an AER emitter (an instrumented app, a test, `aer smoke`) records
+under the agent the hooks record under. Put them in a file only you can read and
+point the hooks at it instead:
+
+```
+install -m 600 /dev/null ~/.config/aer/hooks.env
+$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_AGENT_ID=...
+aer-hooks install claude-code --env-file ~/.config/aer/hooks.env
+```
+
+Every command the installer writes then carries `--env-file <path>`. The hook reads
+only the file's `AER_*` lines and never puts the values into its own environment,
+so nothing it starts inherits them. It refuses a file that is a link,
+belongs to another user or can be read or written by anyone else, and says so on
+stderr without showing the contents. Installing again without `--env-file` keeps the
+file already configured. `AER_ENV_FILE=<path>` works in place of the flag.
+`aer-hooks status` and `aer doctor` warn when an AER key is exported in the shell
+they run in while hooks are wired.
 
 ## One AER session per harness session
 
 The harness runs the hook once per event as a separate process. To record a whole
 harness session as one AER session instead of one session per tool call, the first
-event opens an AER session and the later events attach to it. The mapping from the
-harness session id to the open session is kept in a small file under your cache dir
-(`$XDG_CACHE_HOME/aer-hooks` or `~/.cache/aer-hooks`). That file holds a short-lived
-ingest token, so it is written owner-only (0600) and removed when the harness
-session ends. Stale entries expire after a day. If the cache cannot be written the
-hook still records, it just falls back to a session per event.
+event opens an AER session and the later events join it. What the hook needs to
+carry between events (the open session, the next event position, how far the
+transcript has been read and which events the server has not yet accepted) is kept
+in a small file under your cache dir (`$XDG_CACHE_HOME/aer-hooks` or
+`~/.cache/aer-hooks`). That file holds a short-lived ingest token, so it is written
+owner-only (0600) in an owner-only directory, and the token is removed when the
+record completes. State untouched for a day expires.
 
-Two hook processes can fire for the same harness session close together (a fast
-tool sequence, parallel subagents). A short-lived lock file next to the store
-makes the "is there already a session" check and the "open one and save it" write
-atomic across processes, so concurrent hooks converge on one AER session instead
-of racing to open two.
+If the cache dir cannot be written, the hook uses `$XDG_RUNTIME_DIR/aer-hooks`, then
+a per-user `aer-hooks-<uid>` directory under the temp dir, refusing any directory it
+does not own or that is a link. If none of them can be written, each event is still
+recorded, sent on its own and joined to the running record by the server; the server
+accepts a limited number of such joins per record (16), so a long session without
+anywhere to keep state loses the events past that.
+
+Events are queued on disk first and leave the queue only once the server has
+accepted them. If the API is slow, fails or is unreachable, nothing is lost: the
+events stay queued (up to 1000; past that the oldest are dropped and the count is
+reported on the record) and the next hook event sends them. Only one hook process at
+a time talks to the server for a harness session; the others queue their events and
+return at once, so concurrent hooks from a lead agent and its subagents never wait
+on each other's network calls or open a second session. If the server has closed the
+session (for example after a long idle period), the next event opens a new one and
+sends what was queued to it.
+
+### Long sessions are recorded in parts
+
+An interactive session can stay open for days and may never send its end event. So
+that it is still sealed and summarised, the hook completes the record at the first
+turn end once the record is four hours old, and before the next event when the
+harness has been quiet for an hour. The session carries on in a new record under the
+same session reference, with event positions continuing from the last one, so the
+parts can be read back as one run. `AER_HOOK_CHECKPOINT_MINUTES` sets the age and
+`AER_HOOK_QUIET_MINUTES` the quiet period; `0` turns either off. With both off, a
+session that never sends its end is left for the server to close after it goes
+quiet, without the summary a completed record gets. Whatever the settings, a record
+is also completed at a turn end once it holds 20,000 events, well under the most the
+server accepts in one session.
+
+The first time the hook meets a transcript that already has history (it was
+installed partway through a session), it records at most the 50 most recent model
+calls from it rather than replaying the whole history.
 
 On Claude Code, a subagent's tool calls join its lead session's record rather
 than opening one of their own: the hook reads the lead's session id out of
@@ -117,9 +172,11 @@ retained plaintext with a key that never leaves your machine.
 The `aer-hook` binary is designed so it can never break or slow the harness. It
 wraps everything in try/catch, caps its own runtime with a hard timeout (default
 10000ms, override with `AER_HOOK_TIMEOUT_MS`) after which it exits 0 regardless
-and never writes to stdout (some harnesses interpret hook stdout). If the budget
-is exceeded, it writes one stderr line noting the record may be incomplete. If
-AER is unconfigured it does nothing and exits 0. Recording is always best-effort
+and never writes to stdout (some harnesses interpret hook stdout). It stops
+starting network calls shortly before the budget runs out, so what it could not
+send stays queued for the next event rather than being cut off mid-request; if
+the budget is exceeded anyway, it writes one stderr line saying so. If AER is
+unconfigured it does nothing and exits 0. Recording is always best-effort
 and never in the critical path of the tool the harness is running.
 
 ## Install safety
@@ -143,7 +200,8 @@ export const AerPlugin = aerOpencodePlugin;
 ```
 
 Then set the same env the shell hooks use (`AER_BASE_URL`, `AER_API_KEY` or
-`AER_TENANT_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`). One AER
+`AER_TENANT_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required
+but the base URL). One AER
 session is opened per opencode session and completed on `session.deleted` or plugin
 dispose. Redaction and fail-open are identical to the shell-hook path: tool names
 and argument KEY names only, never values. If emit is unconfigured the plugin is a

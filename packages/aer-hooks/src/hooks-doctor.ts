@@ -56,6 +56,19 @@ export async function staleRegistrations(opts: { dir?: string } = {}): Promise<S
     const versionFinding = diagnoseVersion(installedVersion, HOOKS_VERSION, { wired });
     if (versionFinding !== undefined) findings.push(versionFinding);
   }
+  // A key exported in this shell reaches every command an agent started from
+  // it runs, not just the hook, and anything that loads an AER emitter then
+  // records under the harness agent. Named, never shown.
+  const wired = entries.filter((e) => e.wiredEvents.length > 0);
+  const keyVar = ['AER_API_KEY', 'AER_TENANT_API_KEY'].find((k) => (process.env[k] ?? '').length > 0);
+  if (keyVar !== undefined && wired.length > 0) {
+    findings.push({
+      harness: wired.length === 1 ? wired[0]!.harness : 'any',
+      reason: 'key_in_shell_env',
+      detail: `${keyVar} is exported in this shell, so a harness started from it passes the key to every command its agent runs, and anything among them that loads an AER emitter records under your agent`,
+      fix: `move the AER_* settings into an owner-only file (chmod 600), stop exporting them in your shell profile, and run: aer-hooks install ${wired.length === 1 ? wired[0]!.harness : '<harness>'} --env-file <path>`,
+    });
+  }
   const projectBinDir = path.join(process.cwd(), 'node_modules', '.bin');
   const nixFinding = diagnoseNixShadow(pathDirs, hasAerHook, projectBinDir);
   if (nixFinding !== undefined) findings.push(nixFinding);
