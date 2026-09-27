@@ -59,6 +59,9 @@ const identity = (sink) => ({
   // The agent must exist at the sink: doctor checks it against GET /v1/agents.
   AER_AGENT_ID: sink.agents[0].id,
   AER_ENV_ID: randomUUID(),
+  // Releases before the hooks defaulted it sent no agent_version without
+  // this, and the API refuses such an open, so a working old install set it.
+  AER_AGENT_VERSION: 'matrix-upgrade',
 });
 
 const hookPayload = (sessionId, cwd, event, extra = {}) => JSON.stringify({
@@ -206,6 +209,49 @@ export default function register(registry, env) {
     c.assert.equal(sink.find('POST', /\/complete$/).length, 1, 'the session was completed exactly once');
     const completed = sink.find('POST', /\/complete$/)[0].path.split('/')[3];
     c.assert.ok(sessionIds.has(completed), 'the completed session is the one the old hook opened');
+  }, { timeoutMs: 600_000 });
+
+  t.case('aer-hooks: an install that recorded nothing starts recording after the upgrade', async (c) => {
+    const p = await oldProject(c, env);
+    const r0 = await c.run(join(p.binDir, 'aer-hooks'), ['install', 'claude-code'], { env: p.mkEnv(), cwd: p.dir });
+    c.assert.exit(r0, 0, 'old install');
+    const sink = await c.sink();
+    // No AER_AGENT_VERSION: the old releases sent no agent_version, so the
+    // API refused every open and the install recorded nothing.
+    const { AER_AGENT_VERSION: _unset, ...ids } = identity(sink);
+    const hookEnv = p.mkEnv(ids);
+    const sid = randomUUID();
+    const fire = async (event, extra) => {
+      const cfg = readJson(join(p.home, '.claude', 'settings.json'));
+      const cmd = commandsFor(cfg, event).find(isAerHook);
+      c.assert.ok(cmd, `no aer-hook registered for ${event}`);
+      const r = await c.run('sh', ['-c', cmd], { env: hookEnv, cwd: p.dir, input: hookPayload(sid, p.dir, event, extra), timeoutMs: 30_000 });
+      c.assert.exit(r, 0, `${event} hook`);
+      c.assert.equal(r.stdout, '', `${event} hook stdout`);
+    };
+    await fire('SessionStart', { source: 'startup' });
+    const accepted = () => sink.find('POST', '/v1/sessions').filter((r) => r.status >= 200 && r.status < 300);
+    c.assert.equal(accepted().length, 0, 'the old install had a session accepted');
+
+    await upgradeInPlace(c, env, p);
+    const r1 = await c.run(join(p.binDir, 'aer-hooks'), ['install', 'claude-code'], { env: p.mkEnv(), cwd: p.dir });
+    c.assert.exit(r1, 0, 'candidate install');
+    const sid2 = randomUUID();
+    const fire2 = async (event, extra) => {
+      const cfg = readJson(join(p.home, '.claude', 'settings.json'));
+      const cmd = commandsFor(cfg, event).find(isAerHook);
+      const r = await c.run('sh', ['-c', cmd], { env: hookEnv, cwd: p.dir, input: hookPayload(sid2, p.dir, event, extra), timeoutMs: 30_000 });
+      c.assert.exit(r, 0, `${event} hook`);
+    };
+    await fire2('SessionStart', { source: 'startup' });
+    await fire2('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'a.txt' }, tool_use_id: 'toolu_1' });
+    await fire2('Stop', {});
+    await fire2('SessionEnd', { reason: 'exit' });
+
+    const opens = accepted();
+    c.assert.equal(opens.length, 1, 'accepted session opens after the upgrade');
+    c.assert.equal(opens[0].json?.agent_version, 'unspecified', 'agent_version on the open');
+    c.assert.equal(sink.find('POST', /\/complete$/).length, 1, '/complete calls');
   }, { timeoutMs: 600_000 });
 
   t.case('aer: a project wired by the old init passes doctor after the upgrade', async (c) => {
