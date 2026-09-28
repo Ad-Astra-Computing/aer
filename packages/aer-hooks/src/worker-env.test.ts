@@ -20,4 +20,11 @@ describe('the worker environment', () => {
       'PATH', 'SSL_CERT_FILE', 'TMPDIR', 'TZ', 'USER', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'no_proxy',
     ]);
   });
+
+  it('keeps only the certificate flags from NODE_OPTIONS, so a worker behind a TLS-inspecting proxy still connects', () => {
+    expect(workerEnv({ NODE_OPTIONS: '--import ./evil.mjs --use-system-ca --max-old-space-size=100' })['NODE_OPTIONS']).toBe('--use-system-ca');
+    expect(workerEnv({ NODE_OPTIONS: '--require x --use-openssl-ca' })['NODE_OPTIONS']).toBe('--use-openssl-ca');
+    expect(workerEnv({ NODE_OPTIONS: '--import ./evil.mjs' })['NODE_OPTIONS']).toBeUndefined();
+    expect(workerEnv({ NODE_USE_SYSTEM_CA: '1' })['NODE_USE_SYSTEM_CA']).toBe('1');
+  });
 });

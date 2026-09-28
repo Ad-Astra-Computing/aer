@@ -1105,14 +1105,17 @@ function handOffEnd(ctx: Ctx, event: HookEvent, opts: { deps: RunHookDeps; argv:
 const WORKER_ENV_EXACT = new Set([
   'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TZ', 'TMPDIR', 'TMP', 'TEMP',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
-  'NODE_EXTRA_CA_CERTS', 'NODE_USE_ENV_PROXY', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS', 'NODE_USE_ENV_PROXY', 'NODE_USE_SYSTEM_CA', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
 ]);
+
+/** The NODE_OPTIONS flags that only choose which certificates to trust. */
+const CA_FLAGS = new Set(['--use-system-ca', '--use-openssl-ca', '--use-bundled-ca']);
 
 /**
  * The environment the worker gets: what it needs to find its state, its
  * settings and its network. Not the rest of the harness's environment, which
- * can hold model API keys and cloud credentials, and not NODE_OPTIONS, which
- * could load code into it.
+ * can hold model API keys and cloud credentials, and of NODE_OPTIONS only the
+ * certificate flags: anything else there could load code into it.
  */
 export function workerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
@@ -1120,6 +1123,8 @@ export function workerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     if (v === undefined) continue;
     if (WORKER_ENV_EXACT.has(k) || k.startsWith('AER_') || k.startsWith('XDG_') || k.startsWith('LC_')) out[k] = v;
   }
+  const caFlags = (env['NODE_OPTIONS'] ?? '').split(/\s+/).filter((f) => CA_FLAGS.has(f));
+  if (caFlags.length > 0) out['NODE_OPTIONS'] = [...new Set(caFlags)].join(' ');
   return out;
 }
 
