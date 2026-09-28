@@ -571,10 +571,21 @@ export function endEventOf(harness: Harness): string {
  * entries are invisible to status and uninstall; and should CODEX_HOME be
  * unset they fire again, alongside the registration under CODEX_HOME.
  */
+/** Whether two directories are the same one, following links; either may not exist yet. */
+async function sameDirectory(a: string, b: string): Promise<boolean> {
+  const real = async (p: string): Promise<string> => {
+    try { return await fs.realpath(p); } catch { return path.resolve(p); }
+  };
+  return (await real(a)) === (await real(b));
+}
+
 export async function strandedCodexRegistration(): Promise<string | undefined> {
   const active = configFile('codex', {});
   const legacy = configPathFor('codex', os.homedir());
-  if (path.resolve(active) === path.resolve(legacy)) return undefined;
+  // The same file under two names is not a stray: a dotfile manager often
+  // links ~/.codex to CODEX_HOME or the other way round, and calling it a
+  // stray would point the user at an uninstall of the live registration.
+  if (await sameDirectory(path.dirname(active), path.dirname(legacy))) return undefined;
   try {
     const hooks = (await readJsonOrAbort(legacy))['hooks'];
     if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return undefined;

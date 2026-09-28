@@ -381,6 +381,23 @@ describe('CODEX_HOME', () => {
     expect(await strandedCodexRegistration()).toBeUndefined();
   });
 
+  it('sees no stray registration when CODEX_HOME is a link to ~/.codex', async () => {
+    await fs.mkdir(path.join(home, '.codex'), { recursive: true });
+    const link = path.join(home, 'codexlink');
+    await fs.symlink(path.join(home, '.codex'), link);
+    delete process.env['CODEX_HOME'];
+    await install('codex');
+    process.env['CODEX_HOME'] = link;
+    expect(await strandedCodexRegistration()).toBeUndefined();
+  });
+
+  it('sees no stray registration when ~/.codex is a link to CODEX_HOME', async () => {
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.symlink(codexHome, path.join(home, '.codex'));
+    await install('codex');
+    expect(await strandedCodexRegistration()).toBeUndefined();
+  });
+
   it('ignores a relative CODEX_HOME, which Codex would resolve against a cwd the hook does not share', async () => {
     process.env['CODEX_HOME'] = 'relative/codex';
     const r = await install('codex');
