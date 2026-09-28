@@ -153,13 +153,28 @@ const LIFECYCLE_FLAG = '--lifecycle v2';
 // found empty against Claude Code 2.1.281, so cli.ts reads the harness's
 // own CLAUDE_CODE_SESSION_ID env var instead. --root-session still exists
 // as an explicit override for a caller that sets it itself.
-function harnessCommand(harness: Harness, event?: string, envFile?: string): string {
+function harnessCommand(harness: Harness, event?: string, envFile?: string, endBudgetMs?: number): string {
   let cmd = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
   // Antigravity omits the event name from the payload, so each registration
   // has to carry it.
   if (event !== undefined) cmd += ` --event ${event}`;
   if (envFile !== undefined) cmd += ` --env-file ${shellSingleQuote(envFile)}`;
+  if (endBudgetMs !== undefined) cmd += ` --end-budget-ms ${endBudgetMs}`;
   return cmd;
+}
+
+/**
+ * How long the harness lets the entry that ends a session run, in ms, with a
+ * margin, when that is known: the timeout this installer sets on Claude
+ * Code's SessionEnd, Codex's fixed 3 s cap, Antigravity's 30 s default on the
+ * Stop that ends its sessions. The hook delivers inline for that long, so a
+ * record completes even where its background worker dies with the harness.
+ */
+function endBudgetMs(harness: Harness, event: string): number | undefined {
+  if (harness === 'claude-code' && event === 'SessionEnd') return CLAUDE_HEADROOM_TIMEOUT_S * 1000 - 1500;
+  if (harness === 'codex' && event === 'SessionEnd') return 2500;
+  if (harness === 'antigravity' && event === 'Stop') return 25_000;
+  return undefined;
 }
 
 const ENV_FILE_IN_COMMAND = / --env-file '((?:[^']|'\\'')*)'/;
@@ -193,7 +208,7 @@ interface AntigravityEntry {
 function antigravityGroup(envFile?: string): Record<string, unknown> {
   const group: Record<string, unknown> = { enabled: true };
   for (const ev of ANTIGRAVITY_EVENTS) {
-    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev, envFile) };
+    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev, envFile, endBudgetMs('antigravity', ev)) };
     if (ANTIGRAVITY_MATCHED.has(ev)) entry.matcher = '*';
     group[ev] = [entry];
   }
@@ -351,7 +366,6 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
       ? ({ ...(config['hooks'] as Record<string, unknown>) } as HooksMap)
       : ({} as HooksMap);
 
-  const command = harnessCommand(harness, undefined, envFile);
   const events = harness === 'claude-code' ? CLAUDE_EVENTS : CODEX_EVENTS;
   const added: string[] = [];
   const alreadyPresent: string[] = [];
@@ -364,6 +378,7 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
     const timeout = harness === 'claude-code' && (ev === 'SessionEnd' || ev === 'SessionStart')
       ? CLAUDE_HEADROOM_TIMEOUT_S
       : undefined;
+    const command = harnessCommand(harness, undefined, envFile, endBudgetMs(harness, ev));
     const { groups, added: didAdd, upgraded: didUpgrade } = mergeEvent(existingHooks[ev], command, timeout);
     existingHooks[ev] = groups;
     if (didAdd) added.push(ev);
@@ -530,6 +545,13 @@ export interface StatusEntry {
   resolves: boolean;
   /** The exact AER commands found wired in, deduplicated. Feeds `aer doctor`'s staleness checks. */
   commands: string[];
+  /** The AER commands on the entry that ends a session (SessionEnd, or Antigravity's Stop). */
+  endCommands?: string[];
+}
+
+/** The event whose entry ends a session in each harness. */
+export function endEventOf(harness: Harness): string {
+  return harness === 'antigravity' ? 'Stop' : 'SessionEnd';
 }
 
 /** Report which events currently carry an AER hook entry, per harness. */
@@ -549,6 +571,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
       continue;
     }
     let commands: string[] = [];
+    const endCommands: string[] = [];
     try {
       const config = await readJsonOrAbort(file);
       // Antigravity's groups sit at the root under our own key, with no wrapper.
@@ -558,8 +581,13 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
           if (!Array.isArray(groups) || !groups.some(groupHasAer)) continue;
           wiredEvents.push(ev);
           for (const g of groups) {
-            for (const h of g.hooks ?? []) {
-              if (isAerEntry(h)) commands.push((h as HookCommandEntry).command.trim());
+            // Antigravity puts the command on the entry itself, the others nest it.
+            const entries = [...(g.hooks ?? []), ...(harness === 'antigravity' ? [g] : [])];
+            for (const h of entries) {
+              if (!isAerEntry(h)) continue;
+              const command = (h as HookCommandEntry).command.trim();
+              commands.push(command);
+              if (ev === endEventOf(harness)) endCommands.push(command);
             }
           }
         }
@@ -570,7 +598,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
       // Malformed config: the file exists but yields no readable AER wiring.
       wiredEvents = [];
     }
-    out.push({ harness, path: file, exists, wiredEvents, resolves, commands });
+    out.push({ harness, path: file, exists, wiredEvents, resolves, commands, endCommands });
   }
   return out;
 }

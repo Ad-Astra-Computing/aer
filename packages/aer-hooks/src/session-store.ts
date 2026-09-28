@@ -24,6 +24,7 @@ export interface OutboxEvent {
   payload: Record<string, unknown>;
   /** Failed sends so far; an event that keeps failing is eventually dropped and counted. */
   attempts?: number;
+
 }
 
 /** The AER session the current record is being written to. */
@@ -68,6 +69,12 @@ export interface SessionState {
   /** Network targets a shell line named that could not be reduced to a host. Local only. */
   hostsUnreduced?: number;
   outbox: OutboxEvent[];
+  /**
+   * The most events sent in one request since a batch ran its full request
+   * time with no answer: half that batch, halved again on each such batch,
+   * until the queue empties.
+   */
+  postLimit?: number;
 }
 
 /** Most events held for the server at once. Past this the oldest are dropped and counted. */
@@ -215,11 +222,15 @@ function parseState(p: Record<string, unknown>): SessionState | null {
     if (sess['closeFirst'] === true) s.session.closeFirst = true;
   }
   const lease = p['lease'] as Record<string, unknown> | undefined;
-  if (lease && isStr(lease['owner']) && isInt(lease['until'])) s.lease = { owner: lease['owner'], until: lease['until'] };
+  const until = lease?.['until'];
+  if (lease && isStr(lease['owner']) && typeof until === 'number' && Number.isFinite(until) && until >= 0) {
+    s.lease = { owner: lease['owner'], until: Math.ceil(until) };
+  }
   if (isInt(p['openFailures'])) s.openFailures = p['openFailures'];
   if (isInt(p['retryOpenAt'])) s.retryOpenAt = p['retryOpenAt'];
   if (p['complete'] === 'checkpoint' || p['complete'] === 'end') s.complete = p['complete'];
   if (p['ended'] === true) s.ended = true;
+  if (isInt(p['postLimit']) && p['postLimit'] > 0) s.postLimit = p['postLimit'];
   s.outbox = validOutbox(p['outbox']);
   return s;
 }
@@ -308,11 +319,24 @@ export function sweepStale(env: NodeJS.ProcessEnv = process.env, now: number = D
  */
 export function enqueue(state: SessionState, events: OutboxEvent[]): number {
   state.outbox.push(...events);
-  const overflow = state.outbox.length - MAX_OUTBOX_EVENTS;
+  let overflow = state.outbox.length - MAX_OUTBOX_EVENTS;
   if (overflow <= 0) return 0;
-  state.outbox.splice(0, overflow);
-  state.droppedBudget += overflow;
-  return overflow;
+  // The oldest go first, except the report that ends the session: it is what
+  // completes the record. The caller brings the dropped count on the queued
+  // reports up to date afterwards.
+  let dropped = 0;
+  state.outbox = state.outbox.filter((e) => {
+    if (overflow === 0 || isClosing(e)) return true;
+    overflow -= 1;
+    dropped += 1;
+    return false;
+  });
+  state.droppedBudget += dropped;
+  return dropped;
+}
+
+function isClosing(e: OutboxEvent): boolean {
+  return e.type === 'collector.report' && e.payload['phase'] === 'session_end';
 }
 
 // ── pid aliases (the subagent fallback) ─────────────────────────────────────
