@@ -86,10 +86,10 @@ or any other credential store on the person's behalf.
 Every `aer` subcommand resolves that key in a fixed order: `AER_API_KEY`
 (or `AER_TENANT_API_KEY`) first, then `aer.config.json` for a base URL, then
 the credentials `aer login` stored on disk. No command takes the key as a
-flag. An environment key always wins over a stored login. The collector
-(`aer-auto-node`) and the harness hooks (`aer-hooks`) read the environment
-directly and never consult a stored login, so a running agent still needs
-`AER_API_KEY` set in its own process.
+flag. An environment key always wins over a stored login. The collector (`aer-auto-node`) and the harness hooks (`aer-hooks`)
+never consult a stored login. The collector reads `AER_API_KEY` from its own
+process; the hooks read it from the harness environment or, preferably, from
+the file named by `--env-file` (next section).
 
 Verifying a record needs no account and no network:
 `@adastracomputing/aer-verify` checks the hash, the signature and the
