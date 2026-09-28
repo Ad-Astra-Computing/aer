@@ -545,6 +545,13 @@ export interface StatusEntry {
   resolves: boolean;
   /** The exact AER commands found wired in, deduplicated. Feeds `aer doctor`'s staleness checks. */
   commands: string[];
+  /** The AER commands on the entry that ends a session (SessionEnd, or Antigravity's Stop). */
+  endCommands?: string[];
+}
+
+/** The event whose entry ends a session in each harness. */
+export function endEventOf(harness: Harness): string {
+  return harness === 'antigravity' ? 'Stop' : 'SessionEnd';
 }
 
 /** Report which events currently carry an AER hook entry, per harness. */
@@ -564,6 +571,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
       continue;
     }
     let commands: string[] = [];
+    const endCommands: string[] = [];
     try {
       const config = await readJsonOrAbort(file);
       // Antigravity's groups sit at the root under our own key, with no wrapper.
@@ -573,8 +581,13 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
           if (!Array.isArray(groups) || !groups.some(groupHasAer)) continue;
           wiredEvents.push(ev);
           for (const g of groups) {
-            for (const h of g.hooks ?? []) {
-              if (isAerEntry(h)) commands.push((h as HookCommandEntry).command.trim());
+            // Antigravity puts the command on the entry itself, the others nest it.
+            const entries = [...(g.hooks ?? []), ...(harness === 'antigravity' ? [g] : [])];
+            for (const h of entries) {
+              if (!isAerEntry(h)) continue;
+              const command = (h as HookCommandEntry).command.trim();
+              if (harness !== 'antigravity') commands.push(command);
+              if (ev === endEventOf(harness)) endCommands.push(command);
             }
           }
         }
@@ -585,7 +598,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
       // Malformed config: the file exists but yields no readable AER wiring.
       wiredEvents = [];
     }
-    out.push({ harness, path: file, exists, wiredEvents, resolves, commands });
+    out.push({ harness, path: file, exists, wiredEvents, resolves, commands, endCommands });
   }
   return out;
 }

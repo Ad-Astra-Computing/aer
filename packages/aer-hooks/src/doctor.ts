@@ -8,7 +8,7 @@
 import type { Harness } from './install.js';
 import type { StatusEntry } from './install.js';
 
-export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env';
+export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env' | 'no_end_budget';
 
 export interface StaleRegistration {
   harness: Harness | 'any';
@@ -37,12 +37,32 @@ export function diagnoseCommand(harness: Harness, command: string): StaleRegistr
   ];
 }
 
+const END_BUDGET_RE = /--end-budget-ms[= ][1-9][0-9]*/;
+
+/**
+ * An entry that ends a session without the time the harness allows it. The
+ * hook then sends for at most about a second itself and leaves the rest to a
+ * background process, which a container that ends with the harness also ends.
+ */
+export function diagnoseEndCommands(harness: Harness, endCommands: string[]): StaleRegistration[] {
+  if (endCommands.length === 0 || endCommands.every((c) => END_BUDGET_RE.test(c))) return [];
+  return [
+    {
+      harness,
+      reason: 'no_end_budget',
+      detail: `the ${harness} entry that ends a session does not declare how long it may run, so the record may be left to a background process that a container ending with the harness also ends`,
+      fix: `aer-hooks install ${harness}`,
+    },
+  ];
+}
+
 /** Every stale-command finding across a `status()` listing, deduplicated per harness+reason. */
 export function diagnoseRegistrations(entries: StatusEntry[]): StaleRegistration[] {
   const out: StaleRegistration[] = [];
   const seen = new Set<string>();
   for (const entry of entries) {
     if (entry.wiredEvents.length === 0) continue;
+    for (const finding of diagnoseEndCommands(entry.harness, entry.endCommands ?? [])) out.push(finding);
     for (const command of entry.commands) {
       for (const finding of diagnoseCommand(entry.harness, command)) {
         const key = `${finding.harness}:${finding.reason}`;

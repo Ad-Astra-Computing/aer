@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { install } from './install.js';
+import { staleRegistrations } from './hooks-doctor.js';
 import { runHook, main, parseEndBudgetMs, endBudgetWindowMs } from './cli.js';
 import { FakeApi } from './fake-api.test-support.js';
 
@@ -113,4 +114,42 @@ describe('the declared budget sets how long a session end may run', () => {
     expect(api.completes()).toHaveLength(1);
     expect(Date.now() - started).toBeLessThan(13_500);
   }, 30_000);
+});
+
+describe('an install from the last release', () => {
+  // What 0.5.1 wrote: no end budget on any entry.
+  function seed(): void {
+    const claude: Record<string, unknown> = {};
+    for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd']) {
+      const h: Record<string, unknown> = { type: 'command', command: 'aer-hook --harness claude-code --lifecycle v2' };
+      if (ev === 'SessionEnd' || ev === 'SessionStart') h['timeout'] = 15;
+      claude[ev] = [{ matcher: '*', hooks: [h] }];
+    }
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({ hooks: claude }));
+    const codex: Record<string, unknown> = {};
+    for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd']) {
+      codex[ev] = [{ matcher: '*', hooks: [{ type: 'command', command: 'aer-hook --harness codex --lifecycle v2' }] }];
+    }
+    fs.mkdirSync(path.join(dir, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.codex', 'hooks.json'), JSON.stringify({ hooks: codex }));
+    const agy: Record<string, unknown> = { enabled: true };
+    for (const ev of ['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop']) {
+      agy[ev] = [{ command: `aer-hook --harness antigravity --lifecycle v2 --event ${ev}`, ...(ev.endsWith('ToolUse') ? { matcher: '*' } : {}) }];
+    }
+    fs.mkdirSync(path.join(dir, '.gemini', 'config'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.gemini', 'config', 'hooks.json'), JSON.stringify({ aer: agy }));
+  }
+
+  it('is flagged by status for its session end entries, and install brings each up to date', async () => {
+    seed();
+    const before = (await staleRegistrations({ dir })).filter((f) => f.reason === 'no_end_budget');
+    expect(before.map((f) => f.harness).sort()).toEqual(['antigravity', 'claude-code', 'codex']);
+    for (const f of before) expect(f.fix).toBe(`aer-hooks install ${f.harness}`);
+    for (const h of ['claude-code', 'codex', 'antigravity'] as const) await install(h, { dir });
+    expect(commands(path.join(dir, '.claude', 'settings.json'))['SessionEnd']).toContain('--end-budget-ms 13500');
+    expect(commands(path.join(dir, '.codex', 'hooks.json'))['SessionEnd']).toContain('--end-budget-ms 2500');
+    expect(commands(path.join(dir, '.gemini', 'config', 'hooks.json'))['Stop']).toContain('--end-budget-ms 25000');
+    expect((await staleRegistrations({ dir })).filter((f) => f.reason === 'no_end_budget')).toEqual([]);
+  });
 });
