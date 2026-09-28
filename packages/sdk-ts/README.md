@@ -67,8 +67,10 @@ await client.close();
 | `flushIntervalMs` | 500 | |
 | `maxRetries` | 3 | Applies only to 5xx/network errors. |
 | `retryBaseMs` | 100 | Exponential backoff base. |
+| `requestTimeoutMs` | 10000 | Per-request timeout, enforced via `AbortController`. |
 | `fetchImpl` | global `fetch` | Pass a mock for testing. |
 | `clock` | `() => new Date()` | For deterministic testing. |
+| `onIngestResult` | none | Called with the result of every `/events` POST, including ones triggered internally by `batchSize` or the flush timer, so a 207 partial accept from a flush the caller did not itself await is not lost. |
 
 ## Why emit from the app at all?
 
