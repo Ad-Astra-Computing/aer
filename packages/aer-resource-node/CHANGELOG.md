@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- [`4829d3d`](https://github.com/Ad-Astra-Computing/aer/commit/4829d3d438ae64c98210023360d04541b3b7a4db) - Docs only: the README's install line now uses the default tag instead
+  of `@next`, so npm shows the current instructions.
+
 ## 0.3.0
 
 ### Minor Changes

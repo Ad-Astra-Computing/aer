@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- [`95ac511`](https://github.com/Ad-Astra-Computing/aer/commit/95ac5112cc0674822fba81c0606a68934324e755) - The record of a session now completes when the harness allows the session's last
+  hook only a short time. Configs written by `aer-hooks install` already gave
+  Claude Code's SessionEnd a 15-second timeout and completed; what is fixed is a
+  Claude Code entry without a `timeout` (a hand-written or edited config), which
+  `claude -p` cancelled after 1.5 seconds, and Codex, which caps SessionEnd hooks
+  at 3 seconds. Both left the session open until the server closed it hours later,
+  without a summary.
+
+  - The installer now writes `--end-budget-ms` on the entry that ends a session
+    (Claude Code and Codex SessionEnd, Antigravity `Stop`). The hook delivers for
+    that long itself, up to 30 seconds. Run `aer-hooks install` again to add
+    it; `aer-hooks status` and `aer doctor` point out an entry without it. On
+    Codex, re-running install changes the registered command, so Codex skips
+    the hook silently until it is approved again.
+  - The hook also starts a short-lived background process that outlives the
+    harness and finishes what is left: all of it when no budget is declared, in
+    which case the hook itself stops 1.2 seconds after it started. The process
+    gets only the variables it needs, writes its notes to `drain.log` in the state
+    directory and exits after about a minute at most. A container that ends with
+    the harness ends it too, and on Windows none is started.
+  - The closing report is no longer dropped after repeated failed sends, nor when
+    the queue of unsent events is full, and its count of dropped events stays
+    current. A failure where no answer came at all no longer counts toward the
+    limit on failed sends.
+  - A batch of events that runs out its full request time with no answer is sent
+    in halves after that, so a queue that only large requests fail on still
+    drains in a few requests.
+- [`948d8f2`](https://github.com/Ad-Astra-Computing/aer/commit/948d8f29587619308bd46650b20bacc84f471da8) - The opencode plugin now reduces tool calls the way the shell hooks do: a
+  `bash` call is recorded as the programs it runs and the hosts its network
+  clients were pointed at, `read`, `write` and `edit` as the file path and
+  `webfetch` as the target's host, never the command line, the content or the
+  URL path. Its session is declared as the `aer-hooks` collector recording a
+  harness, not as a wrapped process, and every event it sends, LLM usage
+  included, carries `harness: opencode`. When opencode disposes its plugins,
+  which is how `opencode run` ends, the record gets a `session_end` marker
+  before it is completed, and dispose waits at most 3 seconds for the AER API
+  so an API that never answers cannot hold opencode's exit.
+
+### Patch Changes
+
+- [`e57f213`](https://github.com/Ad-Astra-Computing/aer/commit/e57f213a4bec97891042e75fbc5e55f702bc9b88) - Antigravity tool calls are now recorded. `aer-hooks install antigravity` wrote
+  the tool events in the flat form Antigravity uses for its invocation events,
+  and Antigravity loads that form for a tool event without complaint but never
+  runs it, so a run recorded its turns and none of its tool calls. The tool
+  events are now written as a matcher group, the form Antigravity fires them
+  from; run `aer-hooks install antigravity` again to update an existing
+  registration. Until it is, `aer-hooks status` and `aer doctor` report such a
+  registration as recording no tool calls and name that command. The hook also
+  reads the argument names Antigravity actually sends (`CommandLine`,
+  `AbsolutePath`, `TargetFile`, `Url`), so a shell line is reduced to its
+  programs and hosts, and a file read or write records its path, as they
+  already were for Claude Code and Codex.
+- [`e57f213`](https://github.com/Ad-Astra-Computing/aer/commit/e57f213a4bec97891042e75fbc5e55f702bc9b88) - `aer-hooks install codex` now honours `CODEX_HOME`. Codex reads its
+  configuration from `$CODEX_HOME` when that is set, but the installer always
+  wrote `~/.codex/hooks.json`, so on such a machine the install looked finished,
+  `aer-hooks status` reported the hooks wired and Codex never ran them. The
+  installer, `status` and `uninstall` now use `$CODEX_HOME/hooks.json` when
+  `CODEX_HOME` is an absolute path, including with `--dir` set to your home
+  directory; an explicit `--dir` anywhere else is unaffected. A relative
+  `CODEX_HOME`, which Codex resolves against whatever directory it starts in, is
+  refused by `install` and reported by `status` and `aer doctor`; an empty one
+  counts as unset. Where AER hooks are still in `~/.codex/hooks.json` while
+  `CODEX_HOME` points somewhere else, `install` and `status` say so and print
+  the command that removes them. A `~/.codex` that is a link to `CODEX_HOME`,
+  or the other way round, is recognised as the same directory.
+- [`e57f213`](https://github.com/Ad-Astra-Computing/aer/commit/e57f213a4bec97891042e75fbc5e55f702bc9b88) - A file Codex writes is now recorded. Codex edits files through `apply_patch`,
+  whose one argument is the whole patch, so the record showed the tool call and
+  nothing about which file changed. The hook now reads only the patch's file
+  headers, inside its `*** Begin Patch` and `*** End Patch` lines, and records a
+  `file.written` event for each file added, updated, deleted or moved to,
+  resolved against the session's working directory. A patch naming more than 16
+  files records the first 16 and puts the number it named in `count` on its
+  `tool.started` event, so the record says it is incomplete. The patch content
+  is never read into the record.
+- [`948d8f2`](https://github.com/Ad-Astra-Computing/aer/commit/948d8f29587619308bd46650b20bacc84f471da8) - The opencode plugin now records a tool name only when it is a string of at
+  most 200 UTF-16 code units with no control characters. Any other name, such
+  as an oversized MCP tool name, is recorded as `(unrecordable tool name)` and
+  each such call adds a `collector.report` marker with phase
+  `tool_name_replaced`, so the tool event is no longer refused by the AER API.
+
 ## 0.5.1
 
 ### Patch Changes
