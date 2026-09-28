@@ -4,9 +4,8 @@
 
 ### Patch Changes
 
-- The README now describes the recorder as bodies-off, with no setting that
-  turns on capture of argument values or result content, and links the
-  upgrade notes.
+- The README now describes the recorder as bodies-off (no setting turns on
+  capture of argument values or result content) and links the upgrade notes.
 
 - Updated dependencies
   - @adastracomputing/aer-emit@0.4.1
