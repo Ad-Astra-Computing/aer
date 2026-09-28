@@ -25,6 +25,16 @@ function failingChecks(r) {
 function readJson(p) { return JSON.parse(readFileSync(p, 'utf8')); }
 
 /** A project with the old versions installed and an env that runs its bins. */
+// The version the old install actually resolved to. `latest` moves, so a case
+// that depends on old behaviour has to ask rather than assume.
+function installedVersion(p, name) {
+  return readJson(join(p.dir, 'node_modules', '@adastracomputing', name, 'package.json')).version;
+}
+const olderThan = (v, major, minor) => {
+  const [a, b] = v.split('.').map(Number);
+  return a < major || (a === major && b < minor);
+};
+
 async function oldProject(c, env) {
   const dir = c.tmp('project-');
   writeFileSync(join(dir, 'package.json'), JSON.stringify({
@@ -200,7 +210,10 @@ export default function register(registry, env) {
     // The package manager upgrades underneath a running harness session.
     await upgradeInPlace(c, env, p);
     await fire('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: 'x' }, tool_use_id: 'toolu_a' });
-    await fire('Stop', {});
+    // An old v1 registration ends the record at Stop; a v2 one only at
+    // SessionEnd (or a checkpoint), so end it the way that registration does.
+    if (cmd.includes('--lifecycle v2')) await fire('SessionEnd', { reason: 'exit' });
+    else await fire('Stop', {});
 
     const opens = sink.find('POST', '/v1/sessions');
     const sessionIds = new Set(sink.find('POST', /^\/v1\/sessions\/[^/]+\/events$/).map((r) => r.path.split('/')[3]));
@@ -213,6 +226,10 @@ export default function register(registry, env) {
 
   t.case('aer-hooks: an install that recorded nothing starts recording after the upgrade', async (c) => {
     const p = await oldProject(c, env);
+    const oldVersion = installedVersion(p, 'aer-hooks');
+    if (!olderThan(oldVersion, 0, 5)) {
+      return { skip: `the old install is aer-hooks ${oldVersion}, which already sends a default agent_version` };
+    }
     const r0 = await c.run(join(p.binDir, 'aer-hooks'), ['install', 'claude-code'], { env: p.mkEnv(), cwd: p.dir });
     c.assert.exit(r0, 0, 'old install');
     const sink = await c.sink();
