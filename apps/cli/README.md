@@ -39,8 +39,9 @@ nothing exits 1. The collector, `doctor` and `smoke` all read the key from
 inside a Claude Code tool shell (`CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT`
 set) in a project that also uses the Node collector, since that collector
 stays off there; see the note on `AER_RECORD_IN_AGENT_SHELL` in
-`aer-auto-node`'s README. Another fires when a wired hook has fallen behind
-the current lifecycle.
+`aer-auto-node`'s README. `hooks.stale_registrations` lists each wired hook
+that has fallen behind the current lifecycle, or is shadowed on `PATH`, with
+the command that fixes it.
 
 `--help` (or `-h`) after any command prints usage and exits immediately,
 before anything is written or any request is sent.
