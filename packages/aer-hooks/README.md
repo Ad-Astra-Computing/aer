@@ -227,7 +227,11 @@ Tool calls are reduced the way the shell hooks reduce them: tool names and
 argument KEY names, never values, with the same narrow exceptions. A `bash` call
 is reduced to the programs it runs and the hosts its network clients were
 pointed at, a `read`, `write` or `edit` records the file path and a `webfetch`
-the target's host. If emit is unconfigured the plugin is a total no-op.
+the target's host. A tool name is recorded only when it is a string of at
+most 200 UTF-16 code units with no control characters; any other name, such as
+an oversized MCP tool name, is recorded as `(unrecordable tool name)`, and each
+such call adds one `collector.report` marker with phase `tool_name_replaced`.
+If emit is unconfigured the plugin is a total no-op.
 
 The plugin sends events straight from opencode's process as they happen. It
 does not have the shell hooks' on-disk queue and retry, so events it cannot

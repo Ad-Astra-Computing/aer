@@ -25,6 +25,7 @@
 import type { HookEvent } from './normalize.js';
 import { asRecord, asString, keysOf, responseIsError } from './normalize.js';
 import { shapesOfToolCall } from './tool-shape.js';
+import { recordableToolName } from './tool-name.js';
 
 /** Marks every opencode event, as the shell hooks mark theirs. */
 export const HARNESS_META = { harness: 'opencode' } as const;
@@ -138,7 +139,7 @@ export function normalizeOpencodeToolBefore(
 ): HookEvent {
   const event: HookEvent = { kind: 'tool_start', meta: { ...HARNESS_META } };
   const tool = asString(input?.tool);
-  if (tool !== undefined) event.tool = tool;
+  if (tool !== undefined) event.tool = recordableToolName(tool);
   const sessionRef = asString(input?.sessionID);
   if (sessionRef !== undefined) event.sessionRef = sessionRef;
   const argKeys = keysOf(output?.args);
@@ -159,7 +160,7 @@ export function normalizeOpencodeToolAfter(
 ): HookEvent {
   const event: HookEvent = { kind: 'tool_end', meta: { ...HARNESS_META } };
   const tool = asString(input?.tool);
-  if (tool !== undefined) event.tool = tool;
+  if (tool !== undefined) event.tool = recordableToolName(tool);
   const sessionRef = asString(input?.sessionID);
   if (sessionRef !== undefined) event.sessionRef = sessionRef;
   const argKeys = keysOf(input?.args);

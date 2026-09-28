@@ -185,6 +185,25 @@ describe('what an opencode record carries', () => {
   });
 });
 
+describe('an opencode tool name the record cannot keep', () => {
+  it('is recorded as the placeholder, with one marker per call to count it', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    const long = 'mcp__server__' + 'x'.repeat(300);
+    await hooks['tool.execute.before']!({ tool: long, sessionID: 's1', callID: 'c1' }, { args: {} });
+    await hooks['tool.execute.after']!({ tool: long, sessionID: 's1', callID: 'c1', args: {} }, { title: 't', output: 'o', metadata: {} });
+    await hooks['tool.execute.before']!({ tool: 'bad\nname', sessionID: 's1', callID: 'c2' }, { args: {} });
+    await hooks['tool.execute.before']!({ tool: 'read', sessionID: 's1', callID: 'c3' }, { args: { filePath: '/a' } });
+    const emitted = sinks[0]!.emitted;
+    expect(emitted.filter((e) => e.type === 'tool.started').map((e) => e.payload['tool'])).toEqual(['(unrecordable tool name)', '(unrecordable tool name)', 'read']);
+    expect(emitted.filter((e) => e.type === 'tool.completed').map((e) => e.payload['tool'])).toEqual(['(unrecordable tool name)']);
+    const markers = emitted.filter((e) => e.type === 'collector.report' && e.payload['phase'] === 'tool_name_replaced');
+    expect(markers).toHaveLength(2);
+    for (const m of markers) expect(m.payload).toMatchObject({ collector: 'aer-hooks', harness: 'opencode', session_ref: 's1' });
+    expect(JSON.stringify(emitted)).not.toContain('x'.repeat(300));
+  });
+});
+
 describe('the session aerOpencodePlugin opens', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 

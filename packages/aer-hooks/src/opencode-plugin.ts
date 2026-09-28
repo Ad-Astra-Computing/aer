@@ -11,6 +11,7 @@
 import { createHttpSink, resolveSinkOptionsFromEnv, type EventSink, type HttpSinkOptions } from '@adastracomputing/aer-emit';
 import { emitHookEvent } from './core.js';
 import { HOOKS_VERSION } from './version.generated.js';
+import { TOOL_NAME_PLACEHOLDER } from './tool-name.js';
 import {
   normalizeOpencodeToolBefore,
   normalizeOpencodeToolAfter,
@@ -123,7 +124,15 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
     'tool.execute.before': async (input, output) => {
       try {
         const ev = normalizeOpencodeToolBefore(input, output);
-        emitHookEvent(ev, ensure(ev.sessionRef));
+        const sink = ensure(ev.sessionRef);
+        emitHookEvent(ev, sink);
+        // One marker per call whose name was replaced, so the record counts them.
+        if (ev.tool === TOOL_NAME_PLACEHOLDER) {
+          void sink.emit('collector.report', {
+            collector: 'aer-hooks', phase: 'tool_name_replaced', ...HARNESS_META,
+            ...(ev.sessionRef !== undefined ? { session_ref: ev.sessionRef } : {}),
+          });
+        }
       } catch { /* fail open */ }
     },
     'tool.execute.after': async (input, output) => {
