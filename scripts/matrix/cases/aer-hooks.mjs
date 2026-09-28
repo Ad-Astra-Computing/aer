@@ -10,7 +10,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { canaries, assertNoCanaries } from '../lib/harness.mjs';
 import { deadPort } from '../lib/sink.mjs';
 
@@ -68,7 +68,9 @@ async function completed(sink, n, ms = 20_000) {
   for (const until = Date.now() + ms; completes(sink).length < n && Date.now() < until;) await new Promise((r) => setTimeout(r, 100));
   return completes(sink).length;
 }
-const byType = (sink, t) => sink.events().filter((e) => e.event_type === t);
+/** What the API would store: a resend of an event_id it already has is ignored. */
+const stored = (sink) => [...new Map(sink.events().map((e) => [e.event_id, e])).values()];
+const byType = (sink, t) => stored(sink).filter((e) => e.event_type === t);
 const phases = (sink) => byType(sink, 'collector.report').map((e) => e.payload?.phase);
 
 /** A Claude Code transcript with one assistant message carrying model and usage. */
@@ -535,8 +537,9 @@ export default function register(registry) {
   });
 
   t.case('aer-hook: a SessionEnd the harness kills at 1.5 s still completes the record', async (c) => {
-    // Claude Code in print mode gives SessionEnd hooks 1.5 s without a
-    // timeout key, then kills the hook's whole process group.
+    // Claude Code in print mode kills a SessionEnd hook's process group and
+    // its descendants when the entry's time runs out. A declared budget keeps
+    // this hook sending past 1.5 s, so the kill lands while it runs.
     const home = c.home();
     const sink = await c.sink();
     const env = hookEnv(c, home, sink.url);
@@ -546,17 +549,30 @@ export default function register(registry) {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     sink.route('POST', /^\/v1\/sessions$/, async () => { await wait(2500); return false; });
     sink.route('POST', /\/(events|complete)$/, async () => { await wait(1500); return false; });
-    const started = Date.now();
-    const exit = await new Promise((done) => {
-      const child = spawn(process.execPath, [join(c.install.binDir, 'aer-hook'), ...V2], { env, detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
-      const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ } done('killed'); }, 1500);
-      child.on('close', (code) => { clearTimeout(timer); done(code); });
+    const table = () => execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8' }).trim().split('\n')
+      .map((l) => { const m = l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/); return m ? { pid: +m[1], ppid: +m[2], args: m[3] } : null; }).filter(Boolean);
+    const killTree = (pid) => {
+      const rows = table();
+      const found = [];
+      const walk = (p) => { for (const r of rows) if (r.ppid === p) { found.push(r.pid); walk(r.pid); } };
+      walk(pid);
+      try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+      for (const p of found) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } }
+    };
+    const killed = await new Promise((done) => {
+      const child = spawn(process.execPath, [join(c.install.binDir, 'aer-hook'), ...V2, '--end-budget-ms', '8000'], { env, detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+      let hit = false;
+      const timer = setTimeout(() => { hit = true; killTree(child.pid); }, 1500);
+      child.on('exit', () => { clearTimeout(timer); killTree(child.pid); done(hit); });
       child.stdin.end(JSON.stringify({ session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' }));
     });
-    c.assert.equal(exit, 0, `the hook was still running at 1.5 s (${Date.now() - started} ms)`);
+    c.assert.equal(killed, true, 'the hook was not running at 1.5 s, so nothing was killed');
     c.assert.equal(await completed(sink, 1), 1, 'the record was never completed');
     c.assert.ok(phases(sink).includes('session_end'), 'the closing report never arrived');
     c.assert.equal(sink.sessions.size, 1, 'sessions');
+    const drains = () => table().filter((r) => r.args.includes('--drain') && r.args.includes(sid));
+    for (let i = 0; i < 50 && drains().length > 0; i++) await wait(100);
+    c.assert.equal(drains().length, 0, 'a worker was left running after the record completed');
   });
 
   t.case('aer-hook: 5xx on open, exit 0, and the next event still records', async (c) => {
@@ -666,7 +682,10 @@ export default function register(registry) {
     const ph = phases(sink);
     c.assert.equal(ph.filter((p) => p === 'subagent_start').length, 2, `subagent_start (${ph})`);
     c.assert.equal(ph.filter((p) => p === 'subagent_end').length, 2, `subagent_end (${ph})`);
-    const seqs = sink.events().map((e) => e.payload?.seq).filter((n) => typeof n === 'number').sort((a, b) => a - b);
+    // A request abandoned when a hook runs out of time can have reached the
+    // sink anyway; its resend carries the same event_id, which the API stores
+    // once. Count what the API would store.
+    const seqs = stored(sink).map((e) => e.payload?.seq).filter((n) => typeof n === 'number').sort((a, b) => a - b);
     c.assert.equal(seqs.join(','), seqs.map((_, i) => i + 1).join(','), 'seq is not unique and contiguous');
     const end = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_end');
     c.assert.equal(end?.payload?.events_emitted, end?.payload?.seq, 'events_emitted on the closing report');

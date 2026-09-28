@@ -1107,6 +1107,16 @@ function drainLogger(env: NodeJS.ProcessEnv): (message: string) => void {
 }
 
 /**
+ * The worker's budget: DRAIN_BUDGET_MS, or less when AER_HOOK_DRAIN_BUDGET_MS
+ * (or a test) asks for less. It is never raised: the hard stop is fixed.
+ */
+function drainBudget(env: NodeJS.ProcessEnv, deps: RunHookDeps): number {
+  const fromEnv = Number(env['AER_HOOK_DRAIN_BUDGET_MS']);
+  const asked = deps.drainBudgetMs ?? (Number.isInteger(fromEnv) && fromEnv > 0 ? fromEnv : DRAIN_BUDGET_MS);
+  return Math.min(DRAIN_BUDGET_MS, asked);
+}
+
+/**
  * The worker a session end leaves behind: finish sending what is queued for
  * one harness session and complete its record, within a fixed budget, then
  * exit. Nothing waits on it; what it has to say goes to the state dir.
@@ -1130,7 +1140,7 @@ export async function runDrain(argv: string[], env: NodeJS.ProcessEnv = process.
       api: { base, fetch: base.fetch ?? globalThis.fetch },
       clientRef: deriveClientRef(harness, storeKey, base.agentId ?? ''),
       clock: () => now + (Date.now() - realStart),
-      deadline: now + Math.min(DRAIN_BUDGET_MS, deps.drainBudgetMs ?? DRAIN_BUDGET_MS),
+      deadline: now + drainBudget(env, deps),
       owner: `${process.pid}.${randomBytes(8).toString('hex')}`,
       final: true,
       isSubagent: false,
