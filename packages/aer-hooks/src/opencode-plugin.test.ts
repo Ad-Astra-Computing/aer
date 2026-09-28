@@ -159,6 +159,18 @@ describe('what an opencode record carries', () => {
     for (const e of llm) expect(e.payload['harness']).toBe('opencode');
   });
 
+  it('does not hold dispose past its bound when the AER API never answers', async () => {
+    const hooks = createAerOpencodeHooks({
+      base: BASE,
+      openSink: () => ({ emit() { /* queued */ }, close: () => new Promise<void>(() => undefined) }),
+      disposeTimeoutMs: 50,
+    });
+    await hooks['tool.execute.before']!({ tool: 'bash', sessionID: 's1', callID: 'c1' }, { args: { command: 'ls' } });
+    const started = Date.now();
+    await hooks.dispose!();
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   it('marks the end of each session on dispose, then completes it', async () => {
     const { opener, sinks } = fakeSinkFactory();
     const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });

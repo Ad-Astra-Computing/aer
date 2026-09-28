@@ -10,4 +10,5 @@ URL path. Its session is declared as the `aer-hooks` collector recording a
 harness, not as a wrapped process, and every event it sends, LLM usage
 included, carries `harness: opencode`. When opencode disposes its plugins,
 which is how `opencode run` ends, the record gets a `session_end` marker
-before it is completed.
+before it is completed, and dispose waits at most 3 seconds for the AER API
+so an API that never answers cannot hold opencode's exit.

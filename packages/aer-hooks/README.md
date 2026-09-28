@@ -219,7 +219,9 @@ hooks use (`AER_BASE_URL`, `AER_API_KEY` or `AER_TENANT_API_KEY`,
 One AER session is opened per opencode session, declared as the `aer-hooks`
 collector recording a harness, with every event marked `harness: opencode`. It
 is completed on `session.deleted` or when opencode disposes its plugins, which
-is how `opencode run` ends; dispose writes a `session_end` marker first.
+is how `opencode run` ends; dispose writes a `session_end` marker first and
+waits at most 3 seconds for the AER API, so an API that never answers cannot
+hold opencode's exit.
 
 Tool calls are reduced the way the shell hooks reduce them: tool names and
 argument KEY names, never values, with the same narrow exceptions. A `bash` call

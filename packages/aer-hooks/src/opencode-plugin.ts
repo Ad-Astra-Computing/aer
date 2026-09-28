@@ -40,6 +40,18 @@ export interface AerOpencodeDeps {
   /** Injectable sink opener for tests. Defaults to createHttpSink. */
   openSink?: (opts: HttpSinkOptions) => EventSink;
   env?: NodeJS.ProcessEnv;
+  /** How long dispose may wait for the AER API before opencode exits anyway. Default 3 s. */
+  disposeTimeoutMs?: number;
+}
+
+const DISPOSE_TIMEOUT_MS = 3_000;
+
+/** Resolve when `p` settles or after `ms`, whichever is first. Never rejects. */
+function within(p: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    p.then(() => { clearTimeout(timer); resolve(); }, () => { clearTimeout(timer); resolve(); });
+  });
 }
 
 // Sessions with no id (should not happen for real opencode traffic) share one sink.
@@ -137,12 +149,13 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
       msgState.clear();
       // `opencode run` ends by disposing its plugins, never by deleting the
       // session, so the record gets its end marker here.
-      await Promise.all(live.map(([ref, s]) => {
+      // Bounded: an AER API that never answers must not hold opencode's exit.
+      await within(Promise.all(live.map(([ref, s]) => {
         try {
           emitHookEvent({ kind: 'session_end', meta: { ...HARNESS_META }, ...(ref !== SINGLE ? { sessionRef: ref } : {}) }, s);
         } catch { /* fail open */ }
         return s.close().catch(() => undefined);
-      }));
+      })), deps.disposeTimeoutMs ?? DISPOSE_TIMEOUT_MS);
     },
   };
 }

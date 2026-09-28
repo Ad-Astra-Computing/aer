@@ -197,10 +197,11 @@ export async function startVercelProvider(c, k) {
  */
 export async function startHangingApi(c) {
   const sockets = new Set();
-  const server = createTcpServer((s) => { sockets.add(s); s.on('error', () => undefined); s.on('close', () => sockets.delete(s)); });
+  let accepted = 0;
+  const server = createTcpServer((s) => { accepted += 1; sockets.add(s); s.on('error', () => undefined); s.on('close', () => sockets.delete(s)); });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   c.cleanup(() => new Promise((r) => { for (const s of sockets) s.destroy(); server.close(() => r()); }));
-  return { url: `http://127.0.0.1:${server.address().port}`, connections: () => sockets.size };
+  return { url: `http://127.0.0.1:${server.address().port}`, accepted: () => accepted };
 }
 
 /** Workload lines that time each call from process start, into out.t. */
@@ -564,6 +565,7 @@ export default function register(registry, env) {
     // imports, so the first call waits at most what is left of its 3 s.
     c.assert.ok(start0 + first < 3_000 + 500, `first call ended ${start0 + first} ms after process start (waited ${first} ms)`);
     for (const [, ms] of rest) c.assert.ok(ms < 500, `a later call took ${ms} ms; nothing may wait once the bound has passed`);
+    c.assert.ok(api.accepted() > 0, 'the collector never reached the hanging API');
     c.assert.equal(provider.hits.length, 3, 'every call reached the provider (fail-open)');
     // Each request to the AER API is abandoned after 10 s, so the host exits.
     c.assert.ok(r.ms < 30_000, `the host took ${r.ms} ms to exit`);

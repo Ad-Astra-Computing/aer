@@ -24,6 +24,7 @@ import { join, dirname, delimiter } from 'node:path';
 import { canaries, assertNoCanaries } from '../lib/harness.mjs';
 import { deadPort } from '../lib/sink.mjs';
 import { installInto } from '../lib/install.mjs';
+import { startHangingApi } from './vercel-ai.mjs';
 
 const HOOKS = '@adastracomputing/aer-hooks';
 
@@ -289,6 +290,19 @@ export default function register(registry, env) {
     c.assert.includes(r.stdout, k.result, 'the model answer on stdout');
     c.assert.excludes(r.stderr, 'failed to load plugin', 'opencode could not load the AER plugin');
     c.assert.ok(r.ms < 60_000, `opencode took ${r.ms} ms`);
+    c.note(`exit after ${r.ms} ms`);
+  });
+
+  occase('opencode run with an AER API that never answers: opencode exits within the plugin bound', async (c, oc) => {
+    const k = canaries('OCHANG');
+    const api = await startHangingApi(c);
+    const { r } = await runOpencode(c, oc, { baseUrl: api.url, k, command: 'cat secret.txt', prompt: `Show me secret.txt. ${k.prompt}`, timeoutMs: 90_000 });
+    c.assert.ok(!r.timedOut, 'opencode run hung with the AER API not answering');
+    c.assert.exit(r, 0, 'opencode run');
+    c.assert.includes(r.stdout, k.result, 'the model answer on stdout');
+    c.assert.ok(api.accepted() > 0, 'the plugin never reached the hanging API');
+    // The same run against a live sink takes about 15 s; dispose adds at most 3 s.
+    c.assert.ok(r.ms < 45_000, `opencode took ${r.ms} ms`);
     c.note(`exit after ${r.ms} ms`);
   });
 
