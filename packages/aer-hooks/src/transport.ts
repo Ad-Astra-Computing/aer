@@ -7,7 +7,7 @@ import type { OutboxEvent } from './session-store.js';
 
 export type CallResult =
   | { ok: true; status: number; body: Record<string, unknown> }
-  | { ok: false; status: number; error: string | undefined; text?: string };
+  | { ok: false; status: number; error: string | undefined; text?: string; timedOut?: boolean };
 
 /** status 0: no answer at all (refused, reset, timed out). */
 const NO_ANSWER = 0;
@@ -39,7 +39,10 @@ async function call(api: ApiBase, path: string, token: string, body: unknown, ti
     if (res.ok) return { ok: true, status: res.status, body: parsed };
     return { ok: false, status: res.status, error: typeof parsed['error'] === 'string' ? parsed['error'] : undefined, text: text.slice(0, 2048) };
   } catch {
-    return { ok: false, status: NO_ANSWER, error: undefined };
+    // Aborted by the timer: the request ran for its whole time without an answer.
+    return controller.signal.aborted
+      ? { ok: false, status: NO_ANSWER, error: 'timed_out', timedOut: true }
+      : { ok: false, status: NO_ANSWER, error: undefined };
   } finally {
     clearTimeout(timer);
   }

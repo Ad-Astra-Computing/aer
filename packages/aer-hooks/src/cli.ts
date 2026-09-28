@@ -10,9 +10,11 @@
 // try/catch, total runtime is capped by a hard timeout after which we exit 0
 // regardless, and we NEVER write to stdout (some harnesses interpret hook stdout).
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as nodePath from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createHttpSink,
   resolveSinkOptionsFromEnv,
@@ -47,7 +49,7 @@ import {
   type TranscriptUsageState,
 } from './claude-code-transcript.js';
 import { isInvokedDirectly } from './invoked-directly.js';
-import { envWithFile } from './env-file.js';
+import { envWithFile, parseEnvFileFlag } from './env-file.js';
 import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 import { openSession, postEvents, completeSession, isRetryable, type ApiBase, type CallResult } from './transport.js';
@@ -77,6 +79,17 @@ const POST_BATCH = 100;
 // the server never takes cannot hold up the rest forever.
 const MAX_SEND_ATTEMPTS = 5;
 const MAX_ROUNDS = 40;
+// How long after the hook process started a session end may still deliver
+// itself, when its entry declares no budget, before leaving the rest to the
+// worker. Claude Code gives a SessionEnd hook with no timeout 1.5 s from
+// start, then cancels it.
+const SESSION_END_INLINE_MS = 1200;
+// How long the worker that finishes a session end may take, and how much
+// longer before it is stopped whatever it is doing.
+const DRAIN_BUDGET_MS = 60_000;
+const DRAIN_HARD_STOP_MS = DRAIN_BUDGET_MS + 5_000;
+// The worker's diagnostics file in the state dir is kept below this.
+const DRAIN_LOG_MAX_BYTES = 64 * 1024;
 const OPEN_BACKOFF_BASE_MS = 2000;
 const OPEN_BACKOFF_MAX_MS = 5 * 60_000;
 // A record is completed at the first turn end once it is this old, and before
@@ -118,6 +131,32 @@ export function parseCheckpointMs(env: NodeJS.ProcessEnv): { ageMs: number; quie
     ageMs: minutesMs(env['AER_HOOK_CHECKPOINT_MINUTES'], DEFAULT_CHECKPOINT_MINUTES),
     quietMs: minutesMs(env['AER_HOOK_QUIET_MINUTES'], DEFAULT_QUIET_MINUTES),
   };
+}
+
+/**
+ * The time the harness allows the entry that ends a session, from
+ * `--end-budget-ms`, which the installer writes on that entry. Undefined when
+ * absent or not a positive whole number.
+ */
+export function parseEndBudgetMs(argv: string[]): number | undefined {
+  let raw: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === '--end-budget-ms') raw = argv[i + 1];
+    else if (a.startsWith('--end-budget-ms=')) raw = a.slice('--end-budget-ms='.length);
+  }
+  if (raw === undefined || !/^[1-9][0-9]{0,6}$/.test(raw)) return undefined;
+  return Number(raw);
+}
+
+// A declared session end budget is never honoured past this, whatever the
+// entry says: a hand-edited config must not hold the harness for minutes.
+const MAX_END_BUDGET_MS = 30_000;
+
+/** How long a session end with a declared budget may run: the budget, at most 30 s. */
+export function endBudgetWindowMs(argv: string[]): number | undefined {
+  const b = parseEndBudgetMs(argv);
+  return b === undefined ? undefined : Math.min(b, MAX_END_BUDGET_MS);
 }
 
 export function parseHarnessFlag(argv: string[]): Harness | undefined {
@@ -240,6 +279,22 @@ export interface RunHookDeps {
   processStartTime?: (pid: number) => string | undefined;
   /** Where the one-line diagnostics go. Defaults to stderr. */
   logError?: (message: string) => void;
+  /**
+   * Start the worker that finishes a session end after the hook returns,
+   * given its arguments. Returns whether it started. Defaults to a detached
+   * process outside the harness's reach; an injected fetch (a test) means
+   * no worker unless this is given too.
+   */
+  handOff?: (drainArgv: string[]) => boolean;
+  /**
+   * When this hook's process started, epoch ms, which is when the harness's
+   * clock for it started too. Defaults to when runHook was called.
+   */
+  processStart?: number;
+  /** The time a request may take, for tests. Defaults to REQUEST_TIMEOUT_MS. */
+  requestTimeoutMs?: number;
+  /** The worker's budget, for tests. Never more than DRAIN_BUDGET_MS. */
+  drainBudgetMs?: number;
 }
 
 /** The transcript-tracking fields a state carries, or none for a fresh one. */
@@ -515,7 +570,16 @@ interface Ctx {
   final: boolean;
   isSubagent: boolean;
   ownPpid: number;
+  /** The worker a session end left behind: no event follows it. */
+  worker?: boolean;
+  /** The time a request may take at most, REQUEST_TIMEOUT_MS outside tests. */
+  requestTimeoutMs: number;
   warn: (kind: string, message: string) => void;
+}
+
+/** What happens to what could not be sent: a later event retries it, but after the worker nothing comes. */
+function afterFailure(ctx: Ctx, later: string): string {
+  return ctx.worker ? 'the worker gave up for now and the record stays open; a resumed session sends it' : later;
 }
 
 function remaining(ctx: Ctx): number {
@@ -585,7 +649,12 @@ function decide(state: SessionState | null, now: number, ctx: Ctx): { result: St
     } else {
       // A batch that already failed is retried one event at a time, so one
       // event the server keeps refusing cannot take its neighbours down too.
-      const size = (state.outbox[0]!.attempts ?? 0) >= 2 ? 1 : POST_BATCH;
+      // A batch that ran its full request time without an answer is halved
+      // next time: a request too large to finish would otherwise stay at the
+      // head of the queue for good, and halving gets through in a few
+      // requests where one event at a time could take a hundred.
+      const head = state.outbox[0]!;
+      const size = (head.attempts ?? 0) >= 2 ? 1 : (state.postLimit ?? POST_BATCH);
       step = { kind: 'post', session: state.session, batch: state.outbox.slice(0, size) };
     }
   } else if (state.complete !== undefined) {
@@ -602,7 +671,9 @@ function decide(state: SessionState | null, now: number, ctx: Ctx): { result: St
     releaseLease(state, ctx);
     return { result: { kind: 'done' }, save: state };
   }
-  state.lease = { owner: ctx.owner, until: ctx.deadline + LEASE_GRACE_MS };
+  // Whole milliseconds: the deadline can come from performance.timeOrigin,
+  // and a lease the store cannot read back is no lease at all.
+  state.lease = { owner: ctx.owner, until: Math.ceil(ctx.deadline + LEASE_GRACE_MS) };
   return { result: step, save: state };
 }
 
@@ -621,6 +692,25 @@ function replacementSegment(state: SessionState, now: number, ctx: Ctx): void {
     const seq = e.payload['seq'];
     if (e.type === 'collector.report' && typeof seq === 'number') e.payload['events_emitted'] = seq - state.segmentStartSeq + 1;
   }
+}
+
+/**
+ * Bring the dropped count on every report still queued up to date. A report
+ * built before events were dropped (to make room for it, by the attempts cap,
+ * or by a refusal) would otherwise carry a count that is too low, and the
+ * closing report is the one the record keeps.
+ */
+function refreshDropCounts(state: SessionState, storeKey: string, env: NodeJS.ProcessEnv): void {
+  const total = readDropCounters(storeKey, env).eventsDroppedBudget + state.droppedBudget;
+  if (total <= 0) return;
+  for (const e of state.outbox) {
+    if (e.type === 'collector.report') e.payload['events_dropped_budget'] = total;
+  }
+}
+
+/** The report that ends a harness session: it is what completes the record. */
+function isClosingReport(e: OutboxEvent): boolean {
+  return e.type === 'collector.report' && e.payload['phase'] === 'session_end';
 }
 
 /** The session this batch went to is closed or no longer takes this token. */
@@ -654,7 +744,7 @@ async function deliver(ctx: Ctx): Promise<void> {
       round--;
       continue;
     }
-    const timeoutMs = Math.min(REQUEST_TIMEOUT_MS, remaining(ctx) - EXIT_MARGIN_MS);
+    const timeoutMs = Math.min(ctx.requestTimeoutMs, remaining(ctx) - EXIT_MARGIN_MS);
 
     if (step.kind === 'open') {
       const r = await openSession(ctx.api, ctx.clientRef, timeoutMs);
@@ -683,7 +773,7 @@ async function deliver(ctx: Ctx): Promise<void> {
         releaseLease(st, ctx);
         return { result: undefined, save: st };
       });
-      ctx.warn('open', `aer-hook: could not open the AER session (${outcome(r.failed)}); events are queued and will be sent with a later event`);
+      ctx.warn('open', `aer-hook: could not open the AER session (${outcome(r.failed)}); ${afterFailure(ctx, 'events are queued and will be sent with a later event')}`);
       return;
     }
 
@@ -694,6 +784,7 @@ async function deliver(ctx: Ctx): Promise<void> {
         await withState(ctx, (st) => {
           if (st === null) return { result: undefined };
           st.outbox = st.outbox.filter((e) => !ids.has(e.id));
+          if (st.outbox.length === 0) delete st.postLimit;
           return { result: undefined, save: st };
         });
         continue;
@@ -733,6 +824,7 @@ async function deliver(ctx: Ctx): Promise<void> {
           const before = st.outbox.length;
           st.outbox = st.outbox.filter((e) => !ids.has(e.id));
           st.droppedBudget += before - st.outbox.length;
+          refreshDropCounts(st, ctx.storeKey, ctx.env);
           return { result: undefined, save: st };
         });
         ctx.warn('refused', `aer-hook: the AER API refused ${step.batch.length} event(s) (${outcome(r)}); they were dropped and counted`);
@@ -741,18 +833,29 @@ async function deliver(ctx: Ctx): Promise<void> {
       await withState(ctx, (st) => {
         if (st === null) return { result: undefined };
         let dropped = 0;
+        // No answer at all (refused, reset, timed out, or this invocation
+        // ran out of time) says nothing about the events, so only a status
+        // the API actually returned counts toward the cap. The closing report
+        // is what completes the record, so the cap never takes it.
+        const counts = r.status !== 0;
         st.outbox = st.outbox.filter((e) => {
           if (!ids.has(e.id)) return true;
-          e.attempts = (e.attempts ?? 0) + 1;
-          if (e.attempts < MAX_SEND_ATTEMPTS) return true;
+          if (counts) e.attempts = (e.attempts ?? 0) + 1;
+          if ((e.attempts ?? 0) < MAX_SEND_ATTEMPTS || isClosingReport(e)) return true;
           dropped += 1;
           return false;
         });
         st.droppedBudget += dropped;
+        if (dropped > 0) refreshDropCounts(st, ctx.storeKey, ctx.env);
+        // Only a request that had its whole time says anything about its
+        // size; one cut short by this invocation's own deadline does not.
+        if (!r.ok && r.timedOut === true && timeoutMs >= ctx.requestTimeoutMs && step.batch.length > 1) {
+          st.postLimit = Math.max(1, Math.floor(step.batch.length / 2));
+        }
         releaseLease(st, ctx);
         return { result: undefined, save: st };
       });
-      ctx.warn('send', `aer-hook: could not send events to AER (${outcome(r)}); they stay queued and will be sent with a later event`);
+      ctx.warn('send', `aer-hook: could not send events to AER (${outcome(r)}); ${afterFailure(ctx, 'they stay queued and will be sent with a later event')}`);
       return;
     }
 
@@ -783,7 +886,7 @@ async function deliver(ctx: Ctx): Promise<void> {
       releaseLease(st, ctx);
       return { result: undefined, save: st };
     });
-    ctx.warn('complete', `aer-hook: could not complete the AER record (${outcome(r)}); a later event will try again`);
+    ctx.warn('complete', `aer-hook: could not complete the AER record (${outcome(r)}); ${afterFailure(ctx, 'a later event will try again')}`);
     return;
   }
   // Out of time: hand the network role back now rather than when it lapses.
@@ -825,7 +928,7 @@ async function orchestrateAndEmit(
   base: HttpSinkOptions & { sourceType: 'harness'; collector: { name: string; version: string } },
   env: NodeJS.ProcessEnv,
   now: number,
-  opts: { rootSession: string | undefined; deadline: number; deps: RunHookDeps },
+  opts: { rootSession: string | undefined; deadline: number; deps: RunHookDeps; argv: string[]; invokedAt: number },
 ): Promise<void> {
   const ref = event.sessionRef;
   const isSubagent = isSubagentEvent(event);
@@ -853,6 +956,7 @@ async function orchestrateAndEmit(
     deadline: opts.deadline,
     owner: `${process.pid}.${randomBytes(8).toString('hex')}`,
     final: completes(event),
+    requestTimeoutMs: opts.deps.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
     isSubagent,
     ownPpid: opts.deps.ownPpid ?? process.ppid,
     warn: (kind: string, message: string) => {
@@ -888,7 +992,8 @@ async function orchestrateAndEmit(
   const harness = harnessOf(event);
   if ((event.kind === 'session_start' || probe === null || probe.eventsRegistered === undefined)
       && (harness === 'claude-code' || harness === 'codex' || harness === 'antigravity')) {
-    evidence.registered = await registeredEvents(harness, undefined, event.cwd);
+    // The harness's own HOME, which is where its user-level config lives.
+    evidence.registered = await registeredEvents(harness, env['HOME'] || undefined, event.cwd);
   }
   if (event.kind === 'session_start') {
     const head = repoHead(event.cwd);
@@ -937,7 +1042,7 @@ async function orchestrateAndEmit(
       state.lastActivityAt = at;
       return { result: 'ended' as const, save: state };
     }
-    enqueue(state, events);
+    if (enqueue(state, events) > 0) refreshDropCounts(state, ctx.storeKey, env);
     state.lastActivityAt = at;
 
     if (completes(event)) {
@@ -968,7 +1073,233 @@ async function orchestrateAndEmit(
     savePidAlias(String(ctx.ownPpid), storeKey, env, now, { startTime: startTimeOf(ctx.ownPpid), agentId: base.agentId, baseUrl: base.baseUrl });
   }
 
+  if (ctx.final) {
+    const handedOff = handOffEnd(ctx, event, opts);
+    const start = opts.deps.processStart ?? opts.invokedAt;
+    const window = endBudgetWindowMs(opts.argv);
+    if (handedOff) {
+      // The worker reports what it could not send; a line from this hook
+      // about a send the worker is about to finish would only mislead. Events
+      // the API refused for good are gone before the worker sees the queue,
+      // so those are still reported here.
+      const warn = ctx.warn;
+      ctx.warn = (kind, message) => {
+        if (kind === 'refused') warn(kind, message);
+      };
+    }
+    if (window !== undefined) {
+      // The entry declares how long the harness allows it, so the hook sends
+      // for that long, past its usual timeout, and a record completes even
+      // where the worker dies with the harness.
+      ctx.deadline = ctx.clock() + (start + window - Date.now());
+    } else if (handedOff) {
+      // No declared budget: keep to what Claude Code allows an entry with no
+      // timeout, and leave the rest to the worker. The lease keeps the two
+      // from sending twice.
+      ctx.deadline = Math.min(ctx.deadline, ctx.clock() + (start + SESSION_END_INLINE_MS - Date.now()));
+    }
+  }
   await deliver(ctx);
+}
+
+/** The flags the worker needs to rebuild this invocation's view, and nothing secret. */
+/**
+ * What the worker is told: which harness session to finish, for which
+ * harness, and where the credential file is. It reads nothing else; the
+ * session is already resolved, so --root-session and --event are not needed.
+ * Under a lifecycle v1 registration Stop ends the record, so each turn starts
+ * a worker; each finishes in about a second when there is nothing left.
+ */
+function drainArgvFor(argv: string[], env: NodeJS.ProcessEnv, storeKey: string, harness: string, ownPpid: number): string[] {
+  const out: string[] = [];
+  // Absolute, so the worker never depends on the hook's working directory,
+  // which a temporary checkout may remove as soon as the harness exits.
+  const envFile = parseEnvFileFlag(argv) ?? (env['AER_ENV_FILE'] || undefined);
+  if (envFile !== undefined) out.push('--env-file', nodePath.resolve(envFile));
+  // Each value is joined to its flag, so a session id that itself looks like a
+  // flag (the harness chooses it) can never be read as one.
+  return [...out, `--drain=${storeKey}`, `--drain-harness=${harness}`, `--harness-pid=${ownPpid}`];
+}
+
+function handOffEnd(ctx: Ctx, event: HookEvent, opts: { deps: RunHookDeps; argv: string[] }): boolean {
+  const handOff = opts.deps.handOff ?? (opts.deps.fetch !== undefined ? undefined : spawnDrainWorker);
+  if (handOff === undefined) return false;
+  try {
+    return handOff(drainArgvFor(opts.argv, ctx.env, ctx.storeKey, harnessOf(event), ctx.ownPpid));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Start the worker as a grandchild the harness cannot reach: a new session,
+ * and a shell that backgrounds it and exits at once, so it is no longer a
+ * descendant of the hook when the harness kills the hook's process tree or
+ * group. It gets only the variables workerEnv keeps, never the credential
+ * file's values, which it reads itself.
+ */
+const WORKER_ENV_EXACT = new Set([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TZ', 'TMPDIR', 'TMP', 'TEMP',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
+  'NODE_EXTRA_CA_CERTS', 'NODE_USE_ENV_PROXY', 'NODE_USE_SYSTEM_CA', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+]);
+
+/** The NODE_OPTIONS flags that only choose which certificates to trust. */
+const CA_FLAGS = new Set(['--use-system-ca', '--use-openssl-ca', '--use-bundled-ca']);
+
+/**
+ * The environment the worker gets: what it needs to find its state, its
+ * settings and its network. Not the rest of the harness's environment, which
+ * can hold model API keys and cloud credentials, and of NODE_OPTIONS only the
+ * certificate flags: anything else there could load code into it.
+ */
+export function workerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) continue;
+    if (WORKER_ENV_EXACT.has(k) || k.startsWith('AER_') || k.startsWith('XDG_') || k.startsWith('LC_')) out[k] = v;
+  }
+  const caFlags = (env['NODE_OPTIONS'] ?? '').split(/\s+/).filter((f) => CA_FLAGS.has(f));
+  if (caFlags.length > 0) out['NODE_OPTIONS'] = [...new Set(caFlags)].join(' ');
+  return out;
+}
+
+function spawnDrainWorker(drainArgv: string[]): boolean {
+  try {
+    const cli = fileURLToPath(import.meta.url);
+    const child = spawn('/bin/sh', ['-c', '"$0" "$@" </dev/null >/dev/null 2>&1 &', process.execPath, cli, ...drainArgv], {
+      detached: true,
+      stdio: 'ignore',
+      env: workerEnv(process.env),
+      // Not the hook's working directory: the worker must not pin it.
+      cwd: '/',
+    });
+    child.on('error', () => undefined);
+    child.unref();
+    return child.pid !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/** The value of a `--name=value` flag. Only this form: the worker's values are never separate words. */
+function flagValue(argv: string[], name: string): string | undefined {
+  const a = argv.find((x) => x.startsWith(`${name}=`));
+  return a === undefined ? undefined : a.slice(name.length + 1);
+}
+
+/** Append one line to the worker's diagnostics file in the state dir, keeping it small. */
+function drainLogger(env: NodeJS.ProcessEnv): (message: string) => void {
+  return (message) => {
+    try {
+      const root = stateRoot(env);
+      if (root === null) return;
+      const file = nodePath.join(root, 'drain.log');
+      let size = 0;
+      try { size = fs.lstatSync(file).size; } catch { /* no file yet */ }
+      const line = `${new Date().toISOString()} ${message}\n`;
+      if (size + line.length > DRAIN_LOG_MAX_BYTES) fs.writeFileSync(file, line, { mode: 0o600 });
+      else fs.appendFileSync(file, line, { mode: 0o600 });
+    } catch {
+      /* a diagnostic must never throw */
+    }
+  };
+}
+
+/**
+ * The worker's budget: DRAIN_BUDGET_MS, or less when AER_HOOK_DRAIN_BUDGET_MS
+ * (or a test) asks for less. It is never raised: the hard stop is fixed.
+ * AER_HOOK_DRAIN_BUDGET_MS exists for tests and is documented only in
+ * CONTRIBUTING.
+ */
+function drainBudget(env: NodeJS.ProcessEnv, deps: RunHookDeps): number {
+  const fromEnv = Number(env['AER_HOOK_DRAIN_BUDGET_MS']);
+  const asked = deps.drainBudgetMs ?? (Number.isInteger(fromEnv) && fromEnv > 0 ? fromEnv : DRAIN_BUDGET_MS);
+  return Math.min(DRAIN_BUDGET_MS, asked);
+}
+
+/**
+ * The worker a session end leaves behind: finish sending what is queued for
+ * one harness session and complete its record, within a fixed budget, then
+ * exit. Nothing waits on it; what it has to say goes to the state dir.
+ */
+export async function runDrain(argv: string[], env: NodeJS.ProcessEnv = process.env, deps: RunHookDeps = {}): Promise<void> {
+  try {
+    const storeKey = flagValue(argv, '--drain');
+    if (storeKey === undefined || storeKey.length === 0) return;
+    const log = deps.logError ?? drainLogger(env);
+    env = envWithFile(argv, env, log);
+    const base = resolveBase(env, deps, log);
+    if (base === null) return;
+    const harness = flagValue(argv, '--drain-harness') ?? '';
+    const ppid = Number(flagValue(argv, '--harness-pid'));
+    const realStart = Date.now();
+    const now = (deps.now ?? Date.now)();
+    const logged = new Set<string>();
+    const ctx: Ctx = {
+      storeKey,
+      env,
+      api: { base, fetch: base.fetch ?? globalThis.fetch },
+      clientRef: deriveClientRef(harness, storeKey, base.agentId ?? ''),
+      clock: () => now + (Date.now() - realStart),
+      deadline: now + drainBudget(env, deps),
+      owner: `${process.pid}.${randomBytes(8).toString('hex')}`,
+      final: true,
+      worker: true,
+      requestTimeoutMs: deps.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+      isSubagent: false,
+      ownPpid: Number.isInteger(ppid) && ppid > 0 ? ppid : process.ppid,
+      warn: (kind, message) => {
+        if (logged.has(kind)) return;
+        logged.add(kind);
+        log(message);
+      },
+    };
+    // A failed open or send backs off rather than giving up at once: this
+    // is the last chance the record gets.
+    for (const pause of [0, 2000, 5000, 10_000]) {
+      if (pause > 0) {
+        if (remaining(ctx) < pause + 5000) return;
+        await sleep(pause);
+      }
+      await deliver(ctx);
+      const st = loadState(storeKey, env, ctx.clock());
+      if (st === null || (st.complete === undefined && st.outbox.length === 0)) return;
+    }
+  } catch {
+    /* a worker nobody waits on still never throws */
+  }
+}
+
+/** The sink options a hook or its worker records with, or null when unconfigured. */
+function resolveBase(env: NodeJS.ProcessEnv, deps: RunHookDeps, log: (m: string) => void) {
+  const overrides = deps.fetch ? { fetch: deps.fetch } : {};
+  const resolved = resolveSinkOptionsFromEnv(env, overrides);
+  // Unconfigured: do nothing, touch no network.
+  if (!resolved) return null;
+  // The API refuses an open without an environment, so every event would
+  // queue for a session that can never open. Say so instead.
+  if (resolved.environmentId === undefined || resolved.environmentId.length === 0) {
+    try {
+      log('aer-hook: AER_ENV_ID is not set; the AER API needs it to open a session, so nothing was recorded');
+    } catch {
+      /* a diagnostic must never throw */
+    }
+    return null;
+  }
+  // A harness records tool lifecycle through hooks and never watches the
+  // wire, so mark it as such rather than inherit the wrapper default, which
+  // means the auto-node collector did watch it.
+  return {
+    ...resolved,
+    // Required by the API. A harness does not report its own version to
+    // its hooks, so without AER_AGENT_VERSION it is recorded as unspecified.
+    agentVersion: resolved.agentVersion ?? DEFAULT_AGENT_VERSION,
+    sourceType: 'harness' as const,
+    // Declare who is recording, so a reader can tell a harness recording
+    // from a wrapped process without inferring it from the events.
+    collector: { name: 'aer-hooks', version: HOOKS_VERSION },
+  };
 }
 
 /**
@@ -980,37 +1311,13 @@ export async function runHook(
   env: NodeJS.ProcessEnv = process.env,
   deps: RunHookDeps = {},
 ): Promise<void> {
+  const invokedAt = Date.now();
   try {
     // Credentials from an owner-only file, for this process alone.
     env = envWithFile(argv, env, deps.logError ?? ((m) => process.stderr.write(m + '\n')));
     const harness = parseHarnessFlag(argv);
-    const overrides = deps.fetch ? { fetch: deps.fetch } : {};
-    const resolved = resolveSinkOptionsFromEnv(env, overrides);
-    // Unconfigured: do nothing, touch no network.
-    if (!resolved) return;
-    // The API refuses an open without an environment, so every event would
-    // queue for a session that can never open. Say so instead.
-    if (resolved.environmentId === undefined || resolved.environmentId.length === 0) {
-      try {
-        (deps.logError ?? ((m: string) => process.stderr.write(m + '\n')))('aer-hook: AER_ENV_ID is not set; the AER API needs it to open a session, so nothing was recorded');
-      } catch {
-        /* a diagnostic must never throw */
-      }
-      return;
-    }
-    // A harness records tool lifecycle through hooks and never watches the
-    // wire, so mark it as such rather than inherit the wrapper default, which
-    // means the auto-node collector did watch it.
-    const base = {
-      ...resolved,
-      // Required by the API. A harness does not report its own version to
-      // its hooks, so without AER_AGENT_VERSION it is recorded as unspecified.
-      agentVersion: resolved.agentVersion ?? DEFAULT_AGENT_VERSION,
-      sourceType: 'harness' as const,
-      // Declare who is recording, so a reader can tell a harness recording
-      // from a wrapped process without inferring it from the events.
-      collector: { name: 'aer-hooks', version: HOOKS_VERSION },
-    };
+    const base = resolveBase(env, deps, deps.logError ?? ((m: string) => process.stderr.write(m + '\n')));
+    if (base === null) return;
 
     const input = await (deps.readInput ?? readStdin)();
     if (!input.trim()) return;
@@ -1025,7 +1332,7 @@ export async function runHook(
     const event = normalize(payload, harness, parseEventFlag(argv), parseLifecycleFlag(argv));
     const hardTimeoutMs = deps.hardTimeoutMs ?? parseHardTimeoutMs(env, () => undefined) ?? DEFAULT_HARD_TIMEOUT_MS;
     const rootSession = parseRootSessionFlag(argv);
-    await orchestrateAndEmit(event, base, env, now, { rootSession, deadline: now + hardTimeoutMs, deps });
+    await orchestrateAndEmit(event, base, env, now, { rootSession, deadline: now + hardTimeoutMs, deps, argv, invokedAt });
   } catch {
     /* fail open: never surface an error to the harness */
   }
@@ -1054,6 +1361,18 @@ export async function main(
     return;
   }
 
+  // The worker a session end started: no stdin, its own budget, and a hard
+  // stop so a worker can never linger.
+  if (argv.some((a) => a.startsWith('--drain='))) {
+    const stop = setTimeout(() => process.exit(0), DRAIN_HARD_STOP_MS);
+    try {
+      await runDrain(argv, env, deps);
+    } finally {
+      clearTimeout(stop);
+    }
+    return;
+  }
+
   const hardTimeoutMs = parseHardTimeoutMs(env, (message) => {
     try {
       process.stderr.write(message + '\n');
@@ -1062,23 +1381,30 @@ export async function main(
     }
   }) ?? DEFAULT_HARD_TIMEOUT_MS;
 
+  // The entry that ends a session may declare a longer budget; it is the only
+  // one allowed past the usual timeout.
+  const window = endBudgetWindowMs(argv);
+  const limitMs = window !== undefined ? Math.max(hardTimeoutMs, window) : hardTimeoutMs;
   let timedOut = false;
   const timeout = new Promise<void>((resolve) => {
     const t = setTimeout(() => {
       timedOut = true;
       resolve();
-    }, hardTimeoutMs);
+    }, limitMs);
     // Do not keep the event loop alive solely for the timeout.
     if (typeof t.unref === 'function') t.unref();
   });
   try {
-    await Promise.race([runHook(argv, env, { ...deps, hardTimeoutMs: deps.hardTimeoutMs ?? hardTimeoutMs }), timeout]);
+    await Promise.race([
+      runHook(argv, env, { ...deps, hardTimeoutMs: deps.hardTimeoutMs ?? hardTimeoutMs, processStart: deps.processStart ?? performance.timeOrigin }),
+      timeout,
+    ]);
   } catch {
     /* fail open */
   }
   if (timedOut) {
     try {
-      process.stderr.write(`aer-hook: timed out after ${hardTimeoutMs}ms; the AER record for this event may be incomplete\n`);
+      process.stderr.write(`aer-hook: timed out after ${limitMs}ms; the AER record for this event may be incomplete\n`);
     } catch {
       /* stderr may already be gone; never throw from a diagnostic */
     }

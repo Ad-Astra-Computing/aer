@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
+import { spawn, execFileSync } from 'node:child_process';
 import { canaries, assertNoCanaries } from '../lib/harness.mjs';
 import { deadPort } from '../lib/sink.mjs';
 
@@ -58,7 +59,30 @@ async function fire(c, env, payload, args = V2, { timeoutMs = 20_000, cwd } = {}
 
 const opens = (sink) => sink.find('POST', '/v1/sessions');
 const completes = (sink) => sink.find('POST', /^\/v1\/sessions\/[^/]+\/complete$/);
-const byType = (sink, t) => sink.events().filter((e) => e.event_type === t);
+/**
+ * Wait for `n` completions. A session end hands what it cannot send in time
+ * to a worker that finishes after the hook exits, so against a slow sink the
+ * completion arrives after the last hook returns.
+ */
+async function completed(sink, n, ms = 20_000) {
+  for (const until = Date.now() + ms; completes(sink).length < n && Date.now() < until;) await new Promise((r) => setTimeout(r, 100));
+  return completes(sink).length;
+}
+/** What the API would store: a resend of an event_id it already has is ignored. */
+const stored = (sink) => [...new Map(sink.events().map((e) => [e.event_id, e])).values()];
+const byType = (sink, t) => stored(sink).filter((e) => e.event_type === t);
+
+/** With nothing slowing the sink down, no event is ever sent twice. */
+function assertNoResends(c, sink) {
+  c.assert.equal(sink.events().length, stored(sink).length, 'an event was sent more than once with nothing slowing the sink');
+}
+
+/** Under latency a request abandoned in time can be resent, but not over and over. */
+function assertFewResends(c, sink) {
+  const posted = sink.events().length;
+  const kept = stored(sink).length;
+  c.assert.ok(posted <= 2 * kept, `${posted} events posted for ${kept} stored`);
+}
 const phases = (sink) => byType(sink, 'collector.report').map((e) => e.payload?.phase);
 
 /** A Claude Code transcript with one assistant message carrying model and usage. */
@@ -198,17 +222,25 @@ export default function register(registry) {
       const inst = await c.bin('aer-hooks', ['install', harness], { env: envFor(c, home), cwd: home });
       c.assert.exit(inst, 0, 'install');
       const cfg = readJson(join(home, ...cfgRel));
-      const cmd = wiredCommands(cfg).SessionStart.find((h) => /--harness/.test(h.command)).command;
+      const cmdFor = (ev) => wiredCommands(cfg)[ev].find((h) => /--harness/.test(h.command)).command;
+      c.assert.match(cmdFor('SessionEnd'), /--end-budget-ms \d+/, 'the SessionEnd entry declares its budget');
       const env = hookEnv(c, home, sink.url);
       const sid = randomUUID();
       const proj = c.tmp('proj-');
       for (const ev of ['SessionStart', 'SessionEnd']) {
-        const r = await c.run('/bin/sh', ['-c', cmd], { env, input: JSON.stringify({ session_id: sid, cwd: proj, transcript_path: join(proj, 't.jsonl'), hook_event_name: ev }), timeoutMs: 20_000 });
+        // Slower than the 1.2 s a SessionEnd with no budget keeps for itself,
+        // so only the declared budget completes the record inside the hook.
+        // Claude Code's 13.5 s leaves room for that on a loaded machine;
+        // Codex's 2.5 s does not, so its sink stays fast.
+        if (ev === 'SessionEnd' && harness === 'claude-code') sink.route('POST', /\/(events|complete)$/, async () => { await new Promise((r) => setTimeout(r, 600)); return false; });
+        const r = await c.run('/bin/sh', ['-c', cmdFor(ev)], { env, input: JSON.stringify({ session_id: sid, cwd: proj, transcript_path: join(proj, 't.jsonl'), hook_event_name: ev }), timeoutMs: 20_000 });
         c.assert.exit(r, 0, `wired command on ${ev}`);
         c.assert.equal(r.stdout, '', `wired command stdout on ${ev}`);
       }
       c.assert.equal(opens(sink).length, 1, 'sessions opened by the wired command');
-      c.assert.equal(completes(sink).length, 1, 'sessions completed by the wired command');
+      // Before the hook exited, which is what a container that ends with the harness depends on.
+      c.assert.equal(completes(sink).length, 1, 'the wired SessionEnd did not complete the record before it exited');
+      assertNoResends(c, sink);
       const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
       c.assert.ok(start, 'no session_start marker');
       c.assert.equal(start.payload.harness, harness, 'harness on the marker');
@@ -354,7 +386,7 @@ export default function register(registry) {
       }
     }
     c.assert.equal(opens(sink).length, 1, 'sessions opened');
-    c.assert.equal(completes(sink).length, 1, 'sessions completed');
+    c.assert.equal(await completed(sink, 1), 1, 'sessions completed');
     const open = opens(sink)[0].json;
     c.assert.match(open.client_ref ?? '', /^v1:[0-9a-f]{48}$/, 'client_ref on open');
     c.assert.equal(open.collector?.name, 'aer-hooks', 'collector name');
@@ -393,6 +425,7 @@ export default function register(registry) {
     c.assert.equal(end.payload.version, c.install.version(PKG), 'version on the closing marker');
 
     assertNoCanaries(sink.allText(), cn);
+    assertNoResends(c, sink);
     // The store entry, which holds the ingest token, is gone after completion.
     const left = readdirSync(join(home, '.cache', 'aer-hooks')).filter((f) => f.endsWith('.json') && readFileSync(join(home, '.cache', 'aer-hooks', f), 'utf8').includes('ingest_'));
     c.assert.equal(left.length, 0, `ingest token still on disk after completion: ${left}`);
@@ -429,7 +462,7 @@ export default function register(registry) {
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: '' }, tool_use_id: 't1' }, v1);
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'Stop' }, v1);
     c.assert.equal(opens(sink).length, 1, 'opens');
-    c.assert.equal(completes(sink).length, 1, 'Stop did not complete the v1 record');
+    c.assert.equal(await completed(sink, 1), 1, 'Stop did not complete the v1 record');
   });
 
   t.case('aer-hook claude-code: subagent events join the lead session', async (c) => {
@@ -451,12 +484,13 @@ export default function register(registry) {
     await fire(c, env, { session_id: lead, cwd: proj, hook_event_name: 'SubagentStop', agent_id: 'agent-1' });
     await fire(c, env, { session_id: lead, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' });
     c.assert.equal(opens(sink).length, 1, 'a subagent opened its own session');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     const tools = byType(sink, 'tool.started');
     c.assert.equal(tools.map((e) => e.payload.tool).join(','), 'Grep,Glob,LS', 'subagent tool events');
     c.assert.ok(tools.every((e) => typeof e.payload.harness_agent_id === 'string'), 'harness_agent_id missing on a subagent event');
     const ids = new Set(sink.find('POST', /\/events$/).map((r) => r.path.split('/')[3]));
     c.assert.equal(ids.size, 1, 'subagent events landed on another session');
+    assertNoResends(c, sink);
   });
 
   t.case('aer-hook claude-code: an orphan subagent event never opens a session', async (c) => {
@@ -488,7 +522,7 @@ export default function register(registry) {
     ];
     for (const p of run) await fire(c, env, p, CODEX_V2);
     c.assert.equal(opens(sink).length, 1, 'opens');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
     c.assert.equal(start?.payload?.harness, 'codex', 'harness');
     c.assert.equal(start?.payload?.model, 'model-matrix-c', 'model');
@@ -496,6 +530,7 @@ export default function register(registry) {
     c.assert.equal(byType(sink, 'network.connect')[0]?.payload?.host, 'example.org', 'the host curl was pointed at');
     c.assert.equal(byType(sink, 'tool.completed').length, 1, 'tool.completed');
     assertNoCanaries(sink.allText(), cn);
+    assertNoResends(c, sink);
   });
 
   // ── fail-open ─────────────────────────────────────────────────────────────
@@ -522,6 +557,46 @@ export default function register(registry) {
     // what happened to the event rather than being cut off mid-request.
     c.assert.match(r.stderr, /events are queued and will be sent with a later event|timed out after 1500ms/, 'a note on stderr');
     c.assert.excludes(r.stderr, env.AER_API_KEY, 'stderr leaked the API key');
+  });
+
+  t.case('aer-hook: a SessionEnd the harness kills at 1.5 s still completes the record', async (c) => {
+    // Claude Code in print mode kills a SessionEnd hook's process group and
+    // its descendants when the entry's time runs out. A declared budget keeps
+    // this hook sending past 1.5 s, so the kill lands while it runs.
+    const home = c.home();
+    const sink = await c.sink();
+    const env = hookEnv(c, home, sink.url);
+    const sid = randomUUID();
+    const proj = c.tmp('proj-');
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    sink.route('POST', /^\/v1\/sessions$/, async () => { await wait(2500); return false; });
+    sink.route('POST', /\/(events|complete)$/, async () => { await wait(1500); return false; });
+    const table = () => execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8' }).trim().split('\n')
+      .map((l) => { const m = l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/); return m ? { pid: +m[1], ppid: +m[2], args: m[3] } : null; }).filter(Boolean);
+    const killTree = (pid) => {
+      const rows = table();
+      const found = [];
+      const walk = (p) => { for (const r of rows) if (r.ppid === p) { found.push(r.pid); walk(r.pid); } };
+      walk(pid);
+      try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+      for (const p of found) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } }
+    };
+    const killed = await new Promise((done) => {
+      const child = spawn(process.execPath, [join(c.install.binDir, 'aer-hook'), ...V2, '--end-budget-ms', '8000'], { env, detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+      let hit = false;
+      const timer = setTimeout(() => { hit = true; killTree(child.pid); }, 1500);
+      child.on('exit', () => { clearTimeout(timer); killTree(child.pid); done(hit); });
+      child.stdin.end(JSON.stringify({ session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' }));
+    });
+    c.assert.equal(killed, true, 'the hook was not running at 1.5 s, so nothing was killed');
+    c.assert.equal(await completed(sink, 1), 1, 'the record was never completed');
+    c.assert.ok(phases(sink).includes('session_end'), 'the closing report never arrived');
+    c.assert.equal(sink.sessions.size, 1, 'sessions');
+    const drains = () => table().filter((r) => r.args.includes('--drain') && r.args.includes(sid));
+    for (let i = 0; i < 50 && drains().length > 0; i++) await wait(100);
+    c.assert.equal(drains().length, 0, 'a worker was left running after the record completed');
+    assertFewResends(c, sink);
   });
 
   t.case('aer-hook: 5xx on open, exit 0, and the next event still records', async (c) => {
@@ -593,7 +668,7 @@ export default function register(registry) {
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' });
     c.assert.equal(sink.sessions.size, 1, 'sessions');
     c.assert.equal(byType(sink, 'tool.started').length, 1, 'tool.started');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
   });
 
   // ── delivery under the conditions production has ─────────────────────────
@@ -610,7 +685,12 @@ export default function register(registry) {
     const lead = { session_id: sid, cwd: proj, permission_mode: 'default' };
     const sub = (id) => ({ ...lead, agent_id: id, agent_type: 'Explore' });
     const start = fire(c, env, { ...lead, hook_event_name: 'SessionStart', source: 'startup' });
-    await wait(300);
+    // Claude Code runs nothing else until SessionStart's hook has run, so no
+    // subagent event can come first. Wait until the start has queued, not a
+    // fixed time: under load a fixed wait let subagent events arrive with no
+    // lead yet, which the hook rightly counts as unattached and never sends.
+    const stateDir = join(home, '.cache', 'aer-hooks');
+    for (let i = 0; i < 500 && !(existsSync(stateDir) && readdirSync(stateDir).some((f) => /^[0-9a-f]{32}\.json$/.test(f))); i++) await wait(20);
     const rest = [
       { ...lead, hook_event_name: 'UserPromptSubmit' },
       { ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'l1' },
@@ -625,18 +705,22 @@ export default function register(registry) {
     ];
     await Promise.all([start, ...rest.map((p) => fire(c, env, p))]);
     await fire(c, env, { ...lead, hook_event_name: 'SessionEnd', reason: 'other' });
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     c.assert.equal(opens(sink).length, 1, 'opens (each extra open mints a token toward the server cap)');
-    c.assert.equal(completes(sink).length, 1, 'completes');
     c.assert.equal(byType(sink, 'tool.started').length, 3, 'tool.started');
     const ph = phases(sink);
     c.assert.equal(ph.filter((p) => p === 'subagent_start').length, 2, `subagent_start (${ph})`);
     c.assert.equal(ph.filter((p) => p === 'subagent_end').length, 2, `subagent_end (${ph})`);
-    const seqs = sink.events().map((e) => e.payload?.seq).filter((n) => typeof n === 'number').sort((a, b) => a - b);
+    // A request abandoned when a hook runs out of time can have reached the
+    // sink anyway; its resend carries the same event_id, which the API stores
+    // once. Count what the API would store.
+    const seqs = stored(sink).map((e) => e.payload?.seq).filter((n) => typeof n === 'number').sort((a, b) => a - b);
     c.assert.equal(seqs.join(','), seqs.map((_, i) => i + 1).join(','), 'seq is not unique and contiguous');
     const end = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_end');
     c.assert.equal(end?.payload?.events_emitted, end?.payload?.seq, 'events_emitted on the closing report');
     c.assert.equal(end?.payload?.subagent_events_unattached, undefined, 'subagent events went unattached');
     c.assert.equal(end?.payload?.events_dropped_budget, undefined, 'events were dropped');
+    assertFewResends(c, sink);
   });
 
   t.case('aer-hook: a subagent event with no lead is counted on the record, never opens one', async (c) => {
@@ -649,6 +733,8 @@ export default function register(registry) {
     c.assert.equal(sink.requests.length, 0, 'an orphan subagent event reached the API');
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' });
+    // No declared budget: under load the worker may send the closing report.
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     const reports = byType(sink, 'collector.report');
     c.assert.equal(reports.map((r) => r.payload?.subagent_events_unattached).join(','), '1,1', 'subagent_events_unattached on every report');
     c.assert.equal(opens(sink).length, 1, 'opens');
@@ -668,6 +754,7 @@ export default function register(registry) {
     c.assert.equal(o[0].json.client_ref, o[1].json.client_ref, 'client_ref changed on reopen');
     const second = [...sink.sessions.values()].find((s) => s.status === 'running');
     c.assert.ok(second && second.events.some((e) => e.event_type === 'tool.started'), 'the tool event did not reach the new session');
+    assertNoResends(c, sink);
   });
 
   // ── credentials from a file ───────────────────────────────────────────────
@@ -690,19 +777,20 @@ export default function register(registry) {
     c.assert.excludes(bad.stdout + bad.stderr, id.AER_API_KEY, 'install printed the key');
     const inst = await c.bin('aer-hooks', ['install', 'claude-code', '--env-file', file], { env, cwd: home });
     c.assert.exit(inst, 0, 'install --env-file');
-    const cmd = wiredCommands(readJson(join(home, '.claude', 'settings.json'))).SessionStart.find((h) => /--harness/.test(h.command)).command;
-    c.assert.includes(cmd, `--env-file '${file}'`, 'wired command');
+    const wired = wiredCommands(readJson(join(home, '.claude', 'settings.json')));
+    const cmdFor = (ev) => wired[ev].find((h) => /--harness/.test(h.command)).command;
+    c.assert.includes(cmdFor('SessionStart'), `--env-file '${file}'`, 'wired command');
     const sid = randomUUID();
     const proj = c.tmp('proj-');
     // No AER_* in the environment at all: everything comes from the file.
     for (const ev of ['SessionStart', 'SessionEnd']) {
-      const r = await c.run('/bin/sh', ['-c', cmd], { env, input: JSON.stringify({ session_id: sid, cwd: proj, hook_event_name: ev }), timeoutMs: 20_000 });
+      const r = await c.run('/bin/sh', ['-c', cmdFor(ev)], { env, input: JSON.stringify({ session_id: sid, cwd: proj, hook_event_name: ev }), timeoutMs: 20_000 });
       c.assert.exit(r, 0, `wired command on ${ev}`);
       c.assert.excludes(r.stderr, id.AER_API_KEY, 'stderr leaked the key');
     }
     c.assert.equal(opens(sink).length, 1, 'opens');
     c.assert.equal(opens(sink)[0].json.agent_id, id.AER_AGENT_ID, 'agent from the file');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(completes(sink).length, 1, 'the wired SessionEnd did not complete the record before it exited');
     // status warns when a key is exported in the shell as well, without showing it.
     const st = await c.bin('aer-hooks', ['status', '--json'], { env: { ...env, AER_API_KEY: 'exported-matrix-key', AER_BASE_URL: sink.url }, cwd: home });
     const f = JSON.parse(st.stdout).hooks.stale_registrations.find((s) => s.reason === 'key_in_shell_env');
@@ -733,7 +821,7 @@ export default function register(registry) {
     ];
     for (const [ev, payload] of steps) await fire(c, env, payload, [...agy, '--event', ev]);
     c.assert.equal(opens(sink).length, 1, 'opens');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
     c.assert.equal(start?.payload?.harness, 'antigravity', 'harness');
     c.assert.equal(start?.payload?.model, 'gemini-matrix-flash', 'model');
@@ -742,6 +830,7 @@ export default function register(registry) {
     const done = byType(sink, 'tool.completed');
     c.assert.equal(done.map((e) => e.payload.is_error).join(','), 'false,true', 'tool outcome');
     assertNoCanaries(sink.allText(), cn);
+    assertNoResends(c, sink);
   });
 
   t.case('opencode plugin: the installed package records one session per opencode session, bodies-off', async (c) => {
@@ -766,7 +855,7 @@ export default function register(registry) {
     `, { home });
     c.assert.exit(r, 0, 'opencode plugin script');
     c.assert.equal(opens(sink).length, 1, 'opens');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     c.assert.equal(byType(sink, 'tool.started')[0]?.payload?.tool, 'bash', 'tool.started');
     c.assert.equal(byType(sink, 'tool.completed').length, 1, 'tool.completed');
     const llm = byType(sink, 'llm.completed');
@@ -774,6 +863,7 @@ export default function register(registry) {
     c.assert.equal(llm[0]?.payload?.model, 'model-matrix-oc', 'model');
     c.assert.equal(llm[0]?.payload?.input_tokens, 321, 'input tokens');
     assertNoCanaries(sink.allText(), cn);
+    assertNoResends(c, sink);
   });
 }
 

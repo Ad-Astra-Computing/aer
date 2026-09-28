@@ -30,8 +30,8 @@ for the whole run lifecycle: SessionStart, UserPromptSubmit, PreToolUse,
 PostToolUse, Stop, SubagentStart, SubagentStop and SessionEnd. `Stop` fires
 once per assistant turn, so the record is completed at `SessionEnd` and a
 multi-turn conversation stays one record. On Claude Code the SessionEnd entry
-carries its own `timeout`, because that harness shares 1.5 seconds across
-every SessionEnd hook and completing a record takes longer than that. If `aer-hook` is not on `PATH` at install
+carries its own `timeout`, because that harness otherwise allows SessionEnd
+hooks 1.5 seconds. If `aer-hook` is not on `PATH` at install
 time, the installer writes the absolute path of the copy it is running from and
 says so, which keeps recording working but ties the config to that install
 location. `npx @adastracomputing/aer-hooks install ...` works the same way, and
@@ -182,14 +182,49 @@ retained plaintext with a key that never leaves your machine.
 ## Fail-open, never blocking
 
 The `aer-hook` binary is designed so it can never break or slow the harness. It
-wraps everything in try/catch, caps its own runtime with a hard timeout (default
-10000ms, override with `AER_HOOK_TIMEOUT_MS`) after which it exits 0 regardless
-and never writes to stdout (some harnesses interpret hook stdout). It stops
-starting network calls shortly before the budget runs out, so what it could not
-send stays queued for the next event rather than being cut off mid-request; if
-the budget is exceeded anyway, it writes one stderr line saying so. If AER is
-unconfigured it does nothing and exits 0. Recording is always best-effort
-and never in the critical path of the tool the harness is running.
+wraps everything in try/catch, never writes to stdout (some harnesses interpret
+hook stdout) and caps its own runtime with a hard timeout (default 10000ms,
+override with `AER_HOOK_TIMEOUT_MS`), after which it exits 0 regardless. The one
+exception is the entry that ends a session: it runs for the budget it declares,
+even past `AER_HOOK_TIMEOUT_MS`, and never past 30 seconds (see below). The hook
+stops starting network calls shortly before its time runs out, so what it could
+not send stays queued for the next event rather than being cut off mid-request;
+if the time is exceeded anyway, it writes one stderr line saying so. If AER is
+unconfigured it does nothing and exits 0. Recording is always best-effort and
+never in the critical path of the tool the harness is running.
+
+### How the end of a session is delivered
+
+A harness does not wait long for the hook that ends a session. Claude Code allows a
+SessionEnd hook 1.5 seconds unless its entry sets a `timeout`, and in print mode
+(`claude -p`) cancels the hook and every process it started when that runs out.
+Codex caps its SessionEnd hooks at 3 seconds. Antigravity has no SessionEnd: its
+session ends at a `Stop` with `fullyIdle`, and its hooks run for up to 30 seconds by
+default. Against a real API, sending the closing report and completing the record
+can take several seconds.
+
+So the installer declares on the entry that ends a session how long the harness
+allows it (`--end-budget-ms`: 13.5 seconds within the 15-second `timeout` it sets on
+Claude Code's SessionEnd, 2.5 seconds for Codex, 25 seconds on Antigravity's
+`Stop`). The hook delivers for that long itself, whatever `AER_HOOK_TIMEOUT_MS`
+says, and never for more than 30 seconds. As a fallback it also starts a
+short-lived background process that outlives the harness: when the entry declares
+no budget (a hand-written or edited config), the hook delivers for at most 1.2
+seconds from its start and leaves the rest to that process. It sends whatever is
+still queued, completes the record and exits after about a minute at most. It gets only the
+variables it needs (paths, locale, proxy and certificate settings, `AER_*`), not the
+rest of the harness's environment, and reads the credential file itself. It writes
+nothing to the terminal: what it has to report goes to `drain.log` in the state
+directory, which is kept under 64 KB and never holds a token or a credential.
+
+Two limits. A container, CI step or sandbox that ends with the harness ends the
+background process too, so there the record completes only if the declared budget
+was enough. Codex's is the tightest: 2.5 seconds inside its 3-second cap, so against
+a slow API a Codex session end often leaves completing the record to the background
+process. On a platform without `/bin/sh` (Windows) no background process starts
+and the hook delivers within its own time as before. Either way the closing report
+stays queued however long the API is unreachable, so a resumed session completes
+the record.
 
 ## Install safety
 

@@ -46,7 +46,9 @@ describe('install for antigravity', () => {
     for (const ev of Object.keys(group)) {
       if (ev === 'enabled') continue;
       const entry = (group[ev] as Array<Record<string, unknown>>)[0]!;
-      expect(entry['command']).toBe(`aer-hook --harness antigravity --lifecycle v2 --event ${ev}`);
+      // Stop ends an Antigravity session, so it also carries the time allowed for that.
+      const budget = ev === 'Stop' ? ' --end-budget-ms 25000' : '';
+      expect(entry['command']).toBe(`aer-hook --harness antigravity --lifecycle v2 --event ${ev}${budget}`);
       // The nested typed-object form is what the CLI rejects outright.
       expect(entry).not.toHaveProperty('hooks');
       expect(entry).not.toHaveProperty('type');

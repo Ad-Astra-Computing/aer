@@ -286,3 +286,16 @@ function saveRawPidAlias(dir: string, pid: string, data: Record<string, unknown>
   fs.mkdirSync(sub, { recursive: true });
   fs.writeFileSync(path.join(sub, `pid-${pid}.json`), JSON.stringify(data));
 }
+
+describe('the queue cap', () => {
+  it('never drops the closing report to make room', () => {
+    const st = freshState(1);
+    const closing = { id: 'end', type: 'collector.report', ts: 'x', payload: { phase: 'session_end' } };
+    const ev = (i: number) => ({ id: `e${i}`, type: 'tool.started', ts: 'x', payload: { i } });
+    enqueue(st, [closing]);
+    enqueue(st, Array.from({ length: MAX_OUTBOX_EVENTS + 5 }, (_, i) => ev(i)));
+    expect(st.outbox).toHaveLength(MAX_OUTBOX_EVENTS);
+    expect(st.outbox[0]!.id).toBe('end');
+    expect(st.droppedBudget).toBe(6);
+  });
+});

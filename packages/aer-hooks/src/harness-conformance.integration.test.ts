@@ -12,6 +12,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { distProblem } from '../../../scripts/require-dist.mjs';
 
+// What the installer declares on the entry that ends a session, so the hook
+// completes the record itself instead of leaving it to its background worker
+// after this test's server has closed.
+const END_BUDGET = ['--end-budget-ms', '8000'];
+
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hookBin = join(pkgRoot, 'dist', 'cli.js');
 const dirs: string[] = [];
@@ -49,7 +54,7 @@ function server(posted: Posted[]): Server {
 
 function runHook(cache: string, baseUrl: string, args: string[], payload: unknown): Promise<number> {
   return new Promise((done) => {
-    const child = spawn(process.execPath, [hookBin, ...args], {
+    const child = spawn(process.execPath, [hookBin, ...args, ...END_BUDGET], {
       env: {
         // Only what the hook needs, never the developer's shell: it can carry
         // real AER credentials that would record into the live service.

@@ -14,6 +14,11 @@ import { distProblem } from '../../../scripts/require-dist.mjs';
 // tested in process. This runs the actual built binary the way Claude Code
 // runs it, and holds both promises there.
 
+// What the installer declares on the entry that ends a session, so the hook
+// completes the record itself instead of leaving it to its background worker
+// after this test's server has closed.
+const END_BUDGET = ['--end-budget-ms', '8000'];
+
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hookBin = join(pkgRoot, 'dist', 'cli.js');
 const caches: string[] = [];
@@ -92,7 +97,7 @@ function runHookAsync(
   envExtra: NodeJS.ProcessEnv = {},
 ): Promise<number> {
   return new Promise((resolvePromise) => {
-    const child = spawn(process.execPath, [hookBin, '--harness', 'claude-code', ...extraArgs], {
+    const child = spawn(process.execPath, [hookBin, '--harness', 'claude-code', ...extraArgs, ...END_BUDGET], {
       env: { ...baseEnv(cache, baseUrl), ...envExtra },
     });
     child.stdin.end(JSON.stringify(ev));
