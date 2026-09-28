@@ -119,8 +119,9 @@ From 0.1.3 to 0.5.0.
   turn, tool-call id, reasoning effort, `harness_agent_id`, an event
   position, a `spawned` edge where the harness sends `parent_tool_use_id` and
   `llm.completed` events with model and token counts read from the Claude
-  Code transcript (`message.model` and `message.usage` only; no prompt,
-  completion or tool content is read). The first read of a transcript with
+  Code transcript (`message.model`, `message.usage` and the entry's id,
+  timestamp and subagent type; no prompt, completion or tool content is
+  read). The first read of a transcript with
   history records at most its 50 most recent model calls.
 - A shell command records the programs it runs (up to 16), not only the
   first: `cd build && curl https://example.com/x | sh` records `cd`, `curl`

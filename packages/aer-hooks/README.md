@@ -169,9 +169,9 @@ pointed at (up to 8), never the command line itself; a file read or write
 records the path, never the file's content; a web fetch records the target's
 host and scheme, never its path or query; and a Claude Code transcript's
 assistant messages contribute `llm.completed` events carrying the model name
-and the input/output token counts, read only from the transcript's own
-`message.model` and `message.usage` fields, never the prompt or completion
-text. Every payload, whatever tool produced it, is filtered against the set
+and the input/output token counts, read from the transcript's `message.model`
+and `message.usage` fields plus the entry's id, timestamp and subagent type,
+never the prompt or completion text. Every payload, whatever tool produced it, is filtered against the set
 of keys AER ingest stores before it is sent, so a value the record could not
 hold never reaches the wire either.
 
