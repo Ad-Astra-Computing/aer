@@ -100,6 +100,9 @@ const FIXTURE_NOTES = '# Fixture project\n\nThis directory is a scratch fixture 
  */
 async function wiredProject(c, { baseUrl, k, withoutTimeout = false }) {
   const proj = c.tmp('cc-proj-');
+  // Whatever a run leaves working in the project (a hook, its session-end
+  // worker) is ended with the case, pass or fail.
+  c.cleanup(() => { killByCwd(proj); });
   writeFileSync(join(proj, 'input.txt'), `${k.result}\n`);
   writeFileSync(join(proj, 'CLAUDE.md'), FIXTURE_NOTES);
   // claude keeps a transcript per project under the real HOME. Only this
@@ -208,7 +211,7 @@ export default function register(registry, env) {
       if (withoutTimeout) realApiLatency(sink);
       const k = plainCanaries();
       const w = await wiredProject(c, { baseUrl: sink.url, k, withoutTimeout });
-      const r = await c.run('claude', ['-p', ...CLAUDE_ARGS, prompt(k)], { cwd: w.proj, env: w.env, timeoutMs: 240_000 });
+      const r = await c.run('claude', ['-p', ...CLAUDE_ARGS, prompt(k)], { cwd: w.proj, env: w.env, timeoutMs: 240_000, killGroup: true });
       c.assert.ok(!r.timedOut, 'claude -p hung');
       c.assert.exit(r, 0, 'claude -p');
       c.assert.ok(existsSync(join(w.proj, 'out.txt')), `the model did not write out.txt; it said: ${r.stdout.trim().slice(0, 300)}`);

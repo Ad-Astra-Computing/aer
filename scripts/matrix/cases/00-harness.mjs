@@ -82,6 +82,22 @@ export default function register(registry) {
     c.assert.equal(forgetClaudeProjects([mine], { file }), 0, 'a second pass is a no-op');
   });
 
+  t.case('a timed-out run with killGroup ends everything it started', async (c) => {
+    const pidFile = joinH(c.tmp('grp-'), 'pid');
+    // A shell that leaves a grandchild behind, then outlives the timeout.
+    const r = await run('/bin/sh', ['-c', `sleep 60 & echo $! > '${pidFile}'; sleep 60`], { timeoutMs: 500, killGroup: true });
+    c.assert.ok(r.timedOut, 'the run was not timed out');
+    // Killing only the shell leaves the grandchild holding the output pipes,
+    // and the run then waits for it.
+    c.assert.ok(r.ms < 5000, `the run returned after ${r.ms} ms`);
+    const pid = Number(readFileSyncH(pidFile, 'utf8').trim());
+    await new Promise((res) => setTimeout(res, 300));
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    if (alive) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    c.assert.ok(!alive, 'the grandchild outlived the timeout');
+  });
+
   t.case('every certificate the harness mints is one Node accepts', (c) => {
     // A serial whose first byte came out zero was DER Node refuses ("illegal
     // padding"), about one mint in 500, so an HTTPS case failed at random.

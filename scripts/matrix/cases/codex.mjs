@@ -225,7 +225,7 @@ export default function register(registry, env) {
     const sink = await c.sink();
     const k = canaries('CXEXEC');
     const w = await wiredProject(c, { baseUrl: sink.url, k, command: shellLine(k) });
-    const r = await c.run(cx.bin, EXEC_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000 });
+    const r = await c.run(cx.bin, EXEC_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000, killGroup: true });
     c.assert.ok(!r.timedOut, 'codex exec hung');
     c.assert.exit(r, 0, 'codex exec');
     c.assert.includes(r.stdout, k.result, 'the model answer on stdout');
@@ -240,7 +240,7 @@ export default function register(registry, env) {
     const k = canaries('CXHOME');
     const w = await wiredProject(c, { baseUrl: sink.url, k, command: shellLine(k), codexHomeVar: true });
     c.assert.ok(!existsSync(join(w.home, '.codex', 'hooks.json')), 'the installer wrote ~/.codex/hooks.json, which Codex does not read here');
-    const r = await c.run(cx.bin, EXEC_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000 });
+    const r = await c.run(cx.bin, EXEC_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000, killGroup: true });
     c.assert.exit(r, 0, 'codex exec');
     await assertOneCompletedRecord(c, sink, { id: w.id, harness: 'codex' });
     assertCodexRun(c, sink, { proj: w.proj, k });
@@ -253,7 +253,7 @@ export default function register(registry, env) {
     realApiLatency(sink);
     const k = canaries('CXSLOW');
     const w = await wiredProject(c, { baseUrl: sink.url, k, command: shellLine(k) });
-    const r = await c.run(cx.bin, EXEC_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 180_000 });
+    const r = await c.run(cx.bin, EXEC_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 180_000, killGroup: true });
     c.assert.ok(!r.timedOut, 'codex exec hung');
     c.assert.exit(r, 0, 'codex exec');
     c.assert.includes(r.stdout, k.result, 'the model answer on stdout');
@@ -268,7 +268,7 @@ export default function register(registry, env) {
     const k = canaries('CXDOWN');
     const port = await deadPort();
     const w = await wiredProject(c, { baseUrl: `http://127.0.0.1:${port}`, k, command: shellLine(k) });
-    const r = await c.run(cx.bin, EXEC_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000 });
+    const r = await c.run(cx.bin, EXEC_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000, killGroup: true });
     c.assert.ok(!r.timedOut, 'codex exec hung with the AER API unreachable');
     c.assert.exit(r, 0, 'codex exec');
     c.assert.includes(r.stdout, k.result, 'the model answer on stdout');
@@ -281,7 +281,7 @@ export default function register(registry, env) {
     const sink = await c.sink();
     const k = canaries('CXTRUST');
     const w = await wiredProject(c, { baseUrl: sink.url, k, command: shellLine(k) });
-    const r = await c.run(cx.bin, ['exec', '--skip-git-repo-check', `Show input.txt and note it. ${k.prompt}`], { cwd: w.proj, env: w.env, timeoutMs: 120_000 });
+    const r = await c.run(cx.bin, ['exec', '--skip-git-repo-check', `Show input.txt and note it. ${k.prompt}`], { cwd: w.proj, env: w.env, timeoutMs: 120_000, killGroup: true });
     c.assert.exit(r, 0, 'codex exec');
     c.assert.includes(r.stdout, k.result, 'the model answer on stdout');
     await new Promise((res) => setTimeout(res, 2000));

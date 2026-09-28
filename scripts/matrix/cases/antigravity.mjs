@@ -97,6 +97,9 @@ function agyVersion(env) {
 async function wiredProject(c, { baseUrl, k, command }) {
   const home = c.home();
   const proj = c.tmp('agy-proj-');
+  // Whatever a run leaves working in the project (a hook, its session-end
+  // worker) is ended with the case, pass or fail.
+  c.cleanup(() => { killByCwd(proj); });
   writeFileSync(join(proj, 'input.txt'), `${k.secret}\n`);
   const model = await startModelServer(c, k, { proj, command });
   mkdirSync(join(home, '.gemini', 'antigravity-cli'), { recursive: true });
@@ -198,7 +201,7 @@ export default function register(registry, env) {
     const sink = await c.sink();
     const k = canaries('AGP');
     const w = await wiredProject(c, { baseUrl: sink.url, k, command: shellLine(k) });
-    const r = await c.run('agy', PRINT_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000 });
+    const r = await c.run('agy', PRINT_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000, killGroup: true });
     c.assert.ok(!r.timedOut, 'agy -p hung');
     c.assert.exit(r, 0, 'agy -p');
     c.assert.includes(r.stdout, k.result, 'the model answer on stdout');
@@ -217,7 +220,7 @@ export default function register(registry, env) {
     realApiLatency(sink);
     const k = canaries('AGSLOW');
     const w = await wiredProject(c, { baseUrl: sink.url, k, command: shellLine(k) });
-    const r = await c.run('agy', PRINT_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 240_000 });
+    const r = await c.run('agy', PRINT_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 240_000, killGroup: true });
     c.assert.ok(!r.timedOut, 'agy -p hung');
     c.assert.exit(r, 0, 'agy -p');
     const exitedAt = Date.now();
@@ -230,7 +233,7 @@ export default function register(registry, env) {
     const k = canaries('AGDOWN');
     const port = await deadPort();
     const w = await wiredProject(c, { baseUrl: `http://127.0.0.1:${port}`, k, command: shellLine(k) });
-    const r = await c.run('agy', PRINT_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000 });
+    const r = await c.run('agy', PRINT_ARGS(`Show input.txt and note it. ${k.prompt}`), { cwd: w.proj, env: w.env, timeoutMs: 120_000, killGroup: true });
     c.assert.ok(!r.timedOut, 'agy -p hung with the AER API unreachable');
     c.assert.exit(r, 0, 'agy -p');
     c.assert.includes(r.stdout, k.result, 'the model answer on stdout');
