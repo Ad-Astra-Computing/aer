@@ -183,9 +183,15 @@ From 0.1.2 to 0.4.0.
   and `deriveClientRef` make a repeated session open reuse the running
   session. All of this is additive for callers, but a custom `EventSink`
   implementation typed against 0.1.2 should be rechecked.
-- Known limitation, unchanged from 0.1.2: a batch that fails three retries,
-  or is refused with a 4xx, is dropped with one stderr line. `close()` still
-  resolves and `onComplete` still reports `true`.
+- Known limitation, unchanged from 0.1.2: a batch the API does not accept is
+  dropped, never handed back to your code. A network error or a 429, 502,
+  503 or 504 gets three retries, then the batch is dropped; any other
+  non-2xx drops the batch at once; a 401, 403, 404 or 409 disables the sink,
+  so every later event is dropped too. Each of these prints one stderr line
+  the first time it happens in a process and nothing on later occurrences,
+  so a run that looked clean on stderr can still be missing events.
+  `close()` still resolves and `onComplete` still reports `true` once
+  `/complete` succeeds.
 
 ## aer-sdk-ts
 

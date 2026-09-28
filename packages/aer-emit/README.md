@@ -36,9 +36,13 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
 Every network call is best-effort. A failed session open, event POST or complete is
 swallowed, logged to stderr at most once and never thrown. Emitting is never in the
 critical path of the producer's real work. An idle producer that never emits never
-touches the network. A batch of events that fails three retries, or is refused with
-a 4xx, is dropped with one stderr line; `close()` still resolves and `onComplete`
-still reports `true` once `/complete` succeeds.
+touches the network. A batch the API does not accept is dropped, never handed back
+to your code. A network error or a 429, 502, 503 or 504 gets three retries, then the
+batch is dropped; any other non-2xx drops the batch at once; a 401, 403, 404 or 409
+disables the sink, so every later event is dropped too. Each of these prints one
+stderr line the first time it happens in a process and nothing on later occurrences,
+so a run that looked clean on stderr can still be missing events. `close()` still
+resolves and `onComplete` still reports `true` once `/complete` succeeds.
 
 ## Environment
 
