@@ -84,16 +84,18 @@ From 0.1.4 to 0.4.2.
 
 From 0.1.3 to 0.6.0.
 
-- Re-run `aer-hooks install <harness>` again for Claude Code, Codex and
+New in 0.6.0, from 0.5.1:
+
+- Re-run `aer-hooks install <harness>` for Claude Code, Codex and
   Antigravity to add `--end-budget-ms` to the entry that ends a session, so
   it can declare how long the harness actually allows it and hand the rest
   to a short-lived background process that outlives the harness. Until you
   re-run it, `aer-hooks status` and `aer doctor` report `no_end_budget`.
-- Re-run `aer-hooks install antigravity` again on its own. A 0.5.x install
-  wrote Antigravity's tool events in a flat form Antigravity loads and never
-  runs, so those registrations record turns and no tool calls.
-  `aer-hooks status` and `aer doctor` report this as
-  `antigravity_flat_tool_entry` and name the command to fix it.
+- Re-run `aer-hooks install antigravity`. A 0.5.x install wrote Antigravity's
+  tool events in a flat form Antigravity loads and never runs, so those
+  registrations record turns and no tool calls. `aer-hooks status` and
+  `aer doctor` report this as `antigravity_flat_tool_entry` and name the
+  command to fix it.
 - Codex users must approve the hook again after either re-install, because
   it changes the registered command and Codex records trust against the
   exact command text. A hook Codex does not trust is skipped silently, with
@@ -124,10 +126,12 @@ From 0.1.3 to 0.6.0.
   never the command line, file content or URL path. Anything reading
   opencode records should expect the smaller shape. Plugin `dispose`, which
   is how `opencode run` ends, now waits at most 3 seconds for the API.
-- A tool name longer than 200 UTF-16 code units or containing control
-  characters, from either the shell hooks or the opencode plugin, is now
-  recorded as `(unrecordable tool name)` instead of being refused outright;
-  the call's `collector.report` counts it under `tool_name_replaced`.
+- A tool name in the opencode plugin longer than 200 UTF-16 code units or
+  containing control characters is now recorded as `(unrecordable tool
+  name)` instead of being refused, and each such call adds a
+  `collector.report` marker with phase `tool_name_replaced`.
+
+From earlier releases, 0.1.3 to 0.5.0:
 
 - Re-run `aer-hooks install <harness>` after upgrading. The record now
   closes on `SessionEnd` instead of on every `Stop`, and the hook is
@@ -206,13 +210,17 @@ From 0.1.2 to 0.3.2.
 
 From 0.3.0 to 0.6.0.
 
-- The usage policy is now fetched once, when the collector starts for its
-  configured agent, instead of by each session on its first call. A call
-  made while that first fetch is still in flight waits for it, never more
-  than 3 seconds, and a policy in block mode now governs even the process's
-  first call on the OpenAI, Anthropic and Vercel AI SDK paths. A block-mode
-  call to a denied model on the Vercel path now throws `AerPolicyError`
-  before the request is sent, where 0.5.0 let it through unrecorded.
+New in 0.6.0, from 0.5.0:
+
+- The usage policy is now fetched when the collector starts for its
+  configured agent, instead of by each session on its first call, kept
+  fresh for 5 minutes and, on a failed fetch, retried after 30 seconds. A
+  call made while that first fetch is still in flight waits for it, never
+  more than 3 seconds, and a policy in block mode now governs even the
+  process's first call on the OpenAI, Anthropic and Vercel AI SDK paths. A
+  block-mode call to a denied model on the Vercel path now throws
+  `AerPolicyError` before the request is sent, where 0.5.0 let it through
+  with no policy check.
 - `fail_closed` now takes effect once the last fetched policy is more than 5
   minutes old and the latest refresh has failed, refusing every LLM call in
   new sessions with rule `policy_unavailable`, rather than only when no
@@ -228,6 +236,9 @@ From 0.3.0 to 0.6.0.
   `(unrecordable tool name)` and counted per provider in
   `adapter_activity`'s new `tool_names_replaced`, rather than refusing the
   whole `tool.selected` event.
+
+From earlier releases, 0.3.0 to 0.5.0:
+
 - The collector does not start inside a Claude Code tool shell
   (`CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT` set). Claude Code exports its
   environment into every command it runs, so a test suite an agent started
