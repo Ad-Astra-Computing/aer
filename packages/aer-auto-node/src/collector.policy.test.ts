@@ -224,4 +224,65 @@ describe('collector usage-policy enforcement', () => {
     createCollector(resolveConfig({ env: { AER_API_KEY: 'k' }, configFile: {} }), { transport: recordingTransport().transport, patchInstaller: false, adapterInstaller: false, policyFetcher: fetcher });
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  it('fail_closed: a block policy that cannot be refreshed past its TTL refuses every call in new sessions', async () => {
+    let now = 0;
+    let down = false;
+    const original = vi.fn(async () => ({ model: 'gpt-4o' }));
+    const proto = fakeProto(original);
+    const collector = createCollector(
+      resolveConfig({ env: { AER_API_KEY: 'k', AER_AGENT_ID: 'agent-1' }, configFile: { session: { strategy: 'task' } } }),
+      {
+        transport: recordingTransport().transport,
+        patchInstaller: false,
+        adapterInstaller: adapterInstaller(proto),
+        sessionTransportFactory: () => recordingTransport().transport,
+        policyFetcher: async () => { if (down) throw new Error('unreachable'); return policy({ mode: 'block', on_unavailable: 'fail_closed', llm: { denied_models: ['nope-*'] } }); },
+        now: () => now,
+      },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    const call = () => collector.withSession({}, async () => proto.create({ model: 'gpt-4o' }));
+    await expect(call()).resolves.toBeDefined();
+    // Past the TTL with the API down: the session that notices still runs on
+    // the last good policy while its refresh fails.
+    down = true;
+    now = 6 * 60_000;
+    await expect(call()).resolves.toBeDefined();
+    await new Promise((r) => setTimeout(r, 0));
+    // Every session after that is refused.
+    await expect(call()).rejects.toMatchObject({ rule: 'policy_unavailable' });
+    // Once the API answers again, calls go through.
+    down = false;
+    now += 31_000;
+    await call().catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 0));
+    await expect(call()).resolves.toBeDefined();
+    expect(original).toHaveBeenCalledTimes(3);
+  });
+
+  it('fail_open: the last good policy keeps governing when a refresh fails', async () => {
+    let now = 0;
+    let down = false;
+    const original = vi.fn(async () => ({ model: 'gpt-4o' }));
+    const proto = fakeProto(original);
+    const collector = createCollector(
+      resolveConfig({ env: { AER_API_KEY: 'k', AER_AGENT_ID: 'agent-1' }, configFile: { session: { strategy: 'task' } } }),
+      {
+        transport: recordingTransport().transport,
+        patchInstaller: false,
+        adapterInstaller: adapterInstaller(proto),
+        sessionTransportFactory: () => recordingTransport().transport,
+        policyFetcher: async () => { if (down) throw new Error('unreachable'); return policy({ mode: 'block', on_unavailable: 'fail_open', llm: { denied_models: ['nope-*'] } }); },
+        now: () => now,
+      },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    down = true;
+    now = 6 * 60_000;
+    await collector.withSession({}, async () => undefined);
+    await new Promise((r) => setTimeout(r, 0));
+    await expect(collector.withSession({}, async () => proto.create({ model: 'gpt-4o' }))).resolves.toBeDefined();
+    await expect(collector.withSession({}, async () => proto.create({ model: 'nope-1' }))).rejects.toMatchObject({ rule: 'model_denied' });
+  });
 });

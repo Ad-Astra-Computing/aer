@@ -84,15 +84,69 @@ describe('the per-process usage-policy cache', () => {
     expect(cache.peek('a1')).toEqual({ known: true, policy: report });
   });
 
-  it('never throws and never rejects when the fetcher does', async () => {
+  it('never throws and never rejects when the fetcher does, and a failed first fetch stays unknown', async () => {
     const cache = createPolicyCache({ fetcher: () => { throw new Error('boom'); } });
     expect(() => cache.prefetch('a1')).not.toThrow();
     await expect(cache.settled('a1')).resolves.toBeUndefined();
-    expect(cache.peek('a1')).toEqual({ known: true, policy: null });
+    expect(cache.peek('a1')).toEqual({ known: false });
     const rejecting = createPolicyCache({ fetcher: async () => { throw new Error('boom'); } });
     rejecting.prefetch('a1');
     await expect(rejecting.settled('a1')).resolves.toBeUndefined();
-    expect(rejecting.peek('a1')).toEqual({ known: true, policy: null });
+    expect(rejecting.peek('a1')).toEqual({ known: false });
+  });
+
+  it('retries a failed first fetch after 30 s, and never offers a wait on a retry', async () => {
+    let now = 0;
+    let fail = true;
+    const fetcher = vi.fn(async () => { if (fail) throw new Error('down'); return block; });
+    const cache = createPolicyCache({ fetcher, now: () => now });
+    cache.prefetch('a1');
+    await cache.settled('a1');
+    now = 29_000;
+    expect(cache.peek('a1')).toEqual({ known: false });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    now = 31_000;
+    fail = false;
+    expect(cache.peek('a1')).toEqual({ known: false });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await cache.settled('a1');
+    expect(cache.peek('a1')).toEqual({ known: true, policy: block });
+  });
+
+  it('keeps the last good policy when a refresh fails, and retries in 30 s', async () => {
+    let now = 0;
+    let fail = false;
+    const fetcher = vi.fn(async () => { if (fail) throw new Error('down'); return block; });
+    const cache = createPolicyCache({ fetcher, now: () => now, ttlMs: 60_000 });
+    cache.prefetch('a1');
+    await cache.settled('a1');
+    fail = true;
+    now = 61_000;
+    expect(cache.peek('a1')).toEqual({ known: true, policy: block });
+    await cache.settled('a1');
+    // The refresh failed: still the last good policy, now marked unavailable.
+    expect(cache.peek('a1')).toEqual({ known: true, policy: block, unavailable: true });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    now = 80_000;
+    cache.peek('a1');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    now = 92_000;
+    fail = false;
+    cache.peek('a1');
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    await cache.settled('a1');
+    expect(cache.peek('a1')).toEqual({ known: true, policy: block });
+  });
+
+  it('caches "no policy" as an answer, unlike a failure', async () => {
+    let now = 0;
+    const fetcher = vi.fn(async () => null);
+    const cache = createPolicyCache({ fetcher, now: () => now });
+    cache.prefetch('a1');
+    await cache.settled('a1');
+    now = 60_000;
+    expect(cache.peek('a1')).toEqual({ known: true, policy: null });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it('tells a subscriber when the policy lands', async () => {

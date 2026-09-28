@@ -23,7 +23,7 @@ import { buildDependencySnapshot } from './dependencies/snapshot.js';
 import { resolveRunId, threadIdentity } from './run-id.js';
 import { createAttestor, type Attestor } from './attestor.js';
 import { PolicyEnforcer } from './policy.js';
-import { fetchUsagePolicy } from './policy-fetch.js';
+import { fetchUsagePolicyOutcome } from './policy-fetch.js';
 import { createPolicyCache } from './policy-cache.js';
 import { startFrameworkObserver, type FrameworkObserver } from './frameworks/observe.js';
 
@@ -96,10 +96,12 @@ export interface CreateCollectorDeps {
   /**
    * Fetch the governing usage policy for a session (P3 slice 2). Defaults to the
    * best-effort HTTP fetch over the pristine fetch. Tests inject a fake to
-   * exercise enforcement / fail-open without the network. Returns null =>
-   * enforcement disabled for that session.
+   * exercise enforcement / fail-open without the network. Resolves null when
+   * the agent has no policy; throws or rejects when it could not find out.
    */
   policyFetcher?: (opts: { baseUrl: string; agentId?: string | undefined; apiKey?: string | undefined }) => Promise<import('./policy.js').UsagePolicy | null>;
+  /** Clock for the usage-policy cache (tests). */
+  now?: () => number;
 }
 
 export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps = {}): Collector {
@@ -137,8 +139,11 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   }
   const sessionPolicy = new WeakMap<SessionManager, PerSessionPolicy>();
   const policyFetcher = deps.policyFetcher
-    ?? ((o: { baseUrl: string; agentId?: string | undefined; apiKey?: string | undefined }) =>
-      fetchUsagePolicy({ ...o, ...(pristineFetch ? { fetchImpl: pristineFetch } : {}) }));
+    ?? (async (o: { baseUrl: string; agentId?: string | undefined; apiKey?: string | undefined }) => {
+      const out = await fetchUsagePolicyOutcome({ ...o, ...(pristineFetch ? { fetchImpl: pristineFetch } : {}) });
+      if (out.status === 'unavailable') throw new Error('usage policy unavailable');
+      return out.status === 'policy' ? out.policy : null;
+    });
   const policyKey = (baseUrl: string, agentId: string): string => JSON.stringify([baseUrl, agentId]);
   const policyCache = createPolicyCache({
     fetcher: async (key) => {
@@ -146,10 +151,11 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       try {
         return await policyFetcher({ baseUrl, agentId, ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}) });
       } catch (err) {
-        try { onError(err, 'policy-fetch'); } catch { /* never reject */ }
-        return null;
+        try { onError(err, 'policy-fetch'); } catch { /* reported, then treated as no answer */ }
+        throw err;
       }
     },
+    ...(deps.now ? { now: deps.now } : {}),
   });
 
   // Build a SessionManager around a transport (used for both the default
@@ -176,10 +182,10 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     sessionPolicy.set(session, state);
     // When an active policy governs this session, emit ONE policy.applied
     // event so the bundle records which policy governed the run.
-    const apply = (policy: import('./policy.js').UsagePolicy | null): void => {
+    const apply = (policy: import('./policy.js').UsagePolicy | null, unavailable = false): void => {
       delete state.awaiting;
       if (!policy) return;
-      const enforcer = new PolicyEnforcer(policy);
+      const enforcer = new PolicyEnforcer(policy, { unavailable });
       state.enforcer = enforcer;
       if (enforcer.active) {
         session.capture({
@@ -193,10 +199,10 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       const key = policyKey(opts.baseUrl ?? config.baseUrl, agentId);
       const now = policyCache.peek(key);
       if (now.known) {
-        apply(now.policy);
+        apply(now.policy, now.unavailable === true);
       } else {
         state.awaiting = key;
-        policyCache.onSettled(key, apply);
+        policyCache.onSettled(key, (p) => apply(p));
       }
     }
     return session;

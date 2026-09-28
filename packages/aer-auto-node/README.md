@@ -325,12 +325,21 @@ signed record shows which policy governed the run, and a `policy.violation` even
 per breach. Policy events carry the model name and counts only, never prompts or
 content, consistent with the metadata-only rule.
 
-The fetch is best-effort and time-bound (3 seconds). If the policy endpoint is
-unreachable or returns nothing, enforcement is off (fail-open). This is a cost
-control rather than a security boundary, and a fetch you could not complete has
-no mode to honor. The answer, including "no policy", is kept for 5 minutes and then
-refreshed in the background; calls go on using the previous answer meanwhile and
-never wait for a refresh.
+The fetch is best-effort and time-bound (3 seconds). A 404 means the agent has
+no policy, and that answer is kept like any other. Anything else that is not a
+policy (a network error, a timeout, another status, a body that cannot be read)
+is not an answer, and the collector tries again after 30 seconds:
+
+- **No answer yet.** When the first fetch for an agent fails, sessions run
+  ungoverned (fail-open) until a later fetch succeeds. This is a cost control
+  rather than a security boundary, and a policy that was never fetched has no
+  mode to honor.
+- **An earlier answer.** When a refresh fails, the last policy fetched keeps
+  governing new sessions. Once it is more than 5 minutes old and the latest
+  refresh has failed, a new session applies `on_unavailable` as the policy
+  says: with `fail_closed` in block mode, every LLM call in that session is
+  refused with `AerPolicyError` and rule `policy_unavailable`; with `fail_open`,
+  or in report mode, the last policy goes on governing as before.
 
 **Latency.** The only call that can wait is one made while the process's first
 fetch for its agent is still in flight, which in practice is a call made in the
