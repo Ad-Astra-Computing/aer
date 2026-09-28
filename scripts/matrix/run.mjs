@@ -38,6 +38,12 @@ const HELP = `usage: node scripts/matrix/run.mjs [options]
   --skip-nix                report the Nix suite as SKIP instead of running it
   --skip-python             report the Python SDK suite as SKIP
   --skip-build              local mode: pack the existing dist, do not rebuild
+  --with <requirement>      run the cases that need it (repeatable); today
+                            only claude-login: the Claude Code suite drives
+                            the signed-in claude on PATH and spends real
+                            model tokens. Off by default in CI (CI set),
+                            on by default elsewhere when claude is signed in
+  --without <requirement>   report those cases as SKIP even when available
   --live                    also run the live suite: verify the public demo
                             record on api.aer.run with the installed CLI and
                             its pinned production trust root (read-only, no
@@ -52,7 +58,7 @@ const HELP = `usage: node scripts/matrix/run.mjs [options]
   -h, --help                this text`;
 
 function parseArgs(argv) {
-  const o = { source: 'local', tag: 'next', versions: {}, only: [], json: false, keep: false, skipNix: false, skipPython: false, skipBuild: false, retryMinutes: 5 };
+  const o = { source: 'local', tag: 'next', versions: {}, only: [], with: [], without: [], json: false, keep: false, skipNix: false, skipPython: false, skipBuild: false, retryMinutes: 5 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => {
@@ -75,6 +81,8 @@ function parseArgs(argv) {
       case '--skip-nix': o.skipNix = true; break;
       case '--skip-python': o.skipPython = true; break;
       case '--skip-build': o.skipBuild = true; break;
+      case '--with': o.with.push(...val().split(',').filter(Boolean)); break;
+      case '--without': o.without.push(...val().split(',').filter(Boolean)); break;
       case '--live': o.live = true; break;
       case '--install-dir': o.installDir = val(); break;
       case '--prepare-only': o.prepareOnly = true; break;
@@ -89,6 +97,38 @@ function parseArgs(argv) {
   }
   if (!['local', 'registry'].includes(o.source)) throw new Error(`--source must be local or registry, got ${o.source}`);
   return o;
+}
+
+const KNOWN_REQUIREMENTS = ['claude-login'];
+const requirementCache = new Map();
+
+/**
+ * Whether a case's requirement is met, as undefined, or why not. Checked once
+ * per run. claude-login runs `claude auth status` and reads only its
+ * loggedIn flag; nothing else it prints is kept, and no credential file is
+ * ever read by the matrix itself.
+ */
+function requirement(name, opts) {
+  if (!requirementCache.has(name)) requirementCache.set(name, checkRequirement(name, opts));
+  return requirementCache.get(name);
+}
+
+async function checkRequirement(name, opts) {
+  if (!KNOWN_REQUIREMENTS.includes(name)) return `unknown requirement ${name}`;
+  if (opts.without.includes(name)) return `${name} excluded with --without ${name}`;
+  if (name === 'claude-login') {
+    if (process.env.CI && !opts.with.includes(name)) {
+      return 'needs a signed-in claude and spends real model tokens, so it is opt-in under CI: pass --with claude-login';
+    }
+    const { spawnSync } = await import('node:child_process');
+    const v = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 30_000 });
+    if (v.status !== 0) return 'claude is not on PATH, so the Claude Code suite has no harness to drive';
+    const r = spawnSync('claude', ['auth', 'status', '--json'], { encoding: 'utf8', timeout: 30_000 });
+    let loggedIn = false;
+    try { loggedIn = JSON.parse(r.stdout).loggedIn === true; } catch { /* not JSON: not signed in */ }
+    if (!loggedIn) return 'claude on PATH is not signed in (claude auth status reports loggedIn false); sign in with claude auth login to run these cases';
+  }
+  return undefined;
 }
 
 async function loadRegistry(env) {
@@ -131,6 +171,7 @@ async function main() {
     // Third-party packages a suite pinned and installed (the Vercel AI SDK,
     // opencode), by name, so the report says what was tested against.
     thirdParty: {},
+    requirement: (name) => requirement(name, opts),
   };
 
   if (opts.list) {
