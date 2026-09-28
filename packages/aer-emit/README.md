@@ -15,15 +15,30 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
 
 - `EventSink`: `emit(eventType, payload, eventId?)` and `close()`. `eventId` lets a
   caller that can derive a stable id for an event make re-emitting it idempotent at
-  ingest; omitted, the sink assigns a fresh random id.
+  ingest; omitted, the sink assigns a fresh random id. `eventId` must be a
+  lowercase UUID; anything else is treated as not supplied and a random id is
+  generated instead, silently.
 - `NullSink`: a no-op sink used when AER is not configured.
 - `createHttpSink(opts)`: opens a session lazily on the first emit, batches events
-  and completes the session on close. `opts.clientRef` (paired with
-  `deriveClientRef`) makes a repeated session open reuse the running session
-  instead of minting a duplicate. `opts.onComplete(ok)` reports whether the
-  closing `/complete` call succeeded. `opts.collector` names which collector
-  opened the session, for a reader that needs to tell a harness recording from a
-  wrapped process.
+  and completes the session on close. Batches at `opts.batchSize` events (default
+  64); a buffer over `opts.maxPending` events (default 10000) drops its oldest
+  events to make room, reported once on stderr, a second, silent-after-the-first
+  drop path distinct from the ingest failures above. `opts.requestTimeoutMs`
+  (default 10000) bounds each request. `opts.session` attaches to an
+  already-open session (`{ id, ingestToken }`) instead of opening a new one, for
+  a sink that shares one AER session with another process; `opts.completeOnClose`
+  (default `true`) can be set `false` on such an attached sink so its `close()`
+  does not end a session another process owns. `opts.onOpen` fires once, with
+  the session identity, the moment a session is opened lazily (never in attach
+  mode). `opts.clientRef` (paired with `deriveClientRef`) makes a repeated
+  session open reuse the running session instead of minting a duplicate; a
+  server that predates `clientRef` and rejects the open outright is retried
+  once without it. `opts.onComplete(ok)` fires once close() has a session to
+  complete, whether opened lazily or attached, and `completeOnClose` is not
+  `false`; it does not fire for a disabled sink or one whose session never
+  opened. `opts.collector` (`{ name, version?, schema_capability? }`) names
+  which collector opened the session, for a reader that needs to tell a
+  harness recording from a wrapped process.
 - `deriveClientRef(harness, rootHarnessSessionId, agentId)`: derives the
   deterministic `client_ref` a caller passes to `createHttpSink`.
 - `sinkFromEnv(env?, overrides?)`: builds a sink from the standard `AER_*` env
