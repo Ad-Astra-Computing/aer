@@ -158,10 +158,19 @@ silently split across two records.
 ## Redaction, with no way to turn it off
 
 The hook records tool names, argument KEY names (the `Object.keys` of the tool
-input) and result flags only. It never records argument values or result content,
-and there is no flag that changes that. Every payload is filtered against the set
-of keys AER ingest stores before it is sent, so a value the record could not hold
-never reaches the wire either.
+input) and result flags for most tools, never argument values or result
+content, and there is no flag that changes that. A few tools carry a narrow,
+named exception instead of the bare key-name rule: a shell command is reduced
+to the programs it runs (up to 16) and the hosts its network clients were
+pointed at (up to 8), never the command line itself; a file read or write
+records the path, never the file's content; a web fetch records the target's
+host and scheme, never its path or query; and a Claude Code transcript's
+assistant messages contribute `llm.completed` events carrying the model name
+and the input/output token counts, read only from the transcript's own
+`message.model` and `message.usage` fields, never the prompt or completion
+text. Every payload, whatever tool produced it, is filtered against the set
+of keys AER ingest stores before it is sent, so a value the record could not
+hold never reaches the wire either.
 
 If you need evidence about the arguments themselves, use content commitments
 (ADR-011): the record carries a one-way tag you can later open against your own
