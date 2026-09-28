@@ -97,9 +97,13 @@ produced, with no prompt, argument, file content or answer in it.
   `--setting-sources project`, so it loads only the throwaway project's
   settings, where the hooks are wired. Its model calls go to the real
   Anthropic API through that sign-in, which the matrix never reads, on the
-  cheapest model, through a proxy that allows `api.anthropic.com` alone. It
-  covers `claude -p` and the TUI, each also with the SessionEnd `timeout`
-  key removed against a slow API. These cases are marked
+  cheapest model, through a proxy that allows `api.anthropic.com` alone. The
+  model may run only `cat`, `echo` and `curl` and edit files in the
+  throwaway project. claude records each folder it opens in the real
+  `~/.claude.json` and keeps a transcript under `~/.claude/projects`; every
+  case removes both for its own project when it ends, pass or fail, and
+  touches nothing else there. It covers `claude -p` and the TUI, each also
+  with the SessionEnd `timeout` key removed against a slow API. These cases are marked
   `requires: claude-login`: they are reported as SKIP where `claude` is
   missing or signed out, and under CI (when `CI` is set) they run only with
   `--with claude-login`. `--without claude-login` skips them anywhere.

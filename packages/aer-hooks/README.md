@@ -39,7 +39,12 @@ is the case that needs the absolute path, since `npx` puts nothing on `PATH`.
 
 Codex keeps its configuration in `$CODEX_HOME` when that is set, rather than
 `~/.codex`, so `aer-hooks install codex` (and `status` and `uninstall`) use
-`$CODEX_HOME/hooks.json` in that case.
+`$CODEX_HOME/hooks.json` in that case, also with `--dir` set to your home
+directory. `CODEX_HOME` has to be an absolute path: Codex resolves a relative
+one against whatever directory it starts in, so `install` refuses it and
+`status` reports it. If AER hooks are still in `~/.codex/hooks.json` from
+before `CODEX_HOME` was set, `install` and `status` warn that they would fire
+again if it were unset, and print the command that removes them.
 
 That command is idempotent: running it again after an upgrade updates the
 existing registration in place, rather than leaving it on an older hook
@@ -180,7 +185,10 @@ content, and there is no flag that changes that. A few tools carry a narrow,
 named exception instead of the bare key-name rule: a shell command is reduced
 to the programs it runs (up to 16) and the hosts its network clients were
 pointed at (up to 8), never the command line itself; a file read or write
-records the path, never the file's content; a web fetch records the target's
+records the path, never the file's content (for a Codex `apply_patch`, the
+path each file header names, joined to the session's working directory when
+it is relative, up to 16 per patch, with the number of files it named in
+`count` when that is more); a web fetch records the target's
 host and scheme, never its path or query; and a Claude Code transcript's
 assistant messages contribute `llm.completed` events carrying the model name
 and the input/output token counts, read from the transcript's `message.model`
@@ -241,6 +249,11 @@ stays queued however long the API is unreachable, so a resumed session completes
 the record.
 
 ### Antigravity records each turn
+
+An `aer-hooks` release before this one registered Antigravity's tool events
+in a form Antigravity loads and never runs, so those installs record turns
+and no tool calls. `aer-hooks status` and `aer doctor` report such a
+registration; `aer-hooks install antigravity` rewrites it.
 
 Antigravity has no event for the end of a conversation: it fires `Stop` at
 the end of every turn and starts the next turn afresh. The hook completes the

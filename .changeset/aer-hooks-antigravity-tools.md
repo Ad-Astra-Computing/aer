@@ -12,3 +12,5 @@ registration. The hook also reads the argument names Antigravity actually
 sends (`CommandLine`, `AbsolutePath`, `TargetFile`, `Url`), so a shell line is
 reduced to its programs and hosts, and a file read or write records its path,
 as they already were for Claude Code and Codex.
+Until it is, `aer-hooks status` and `aer doctor` report such a registration
+as recording no tool calls and name that command.
