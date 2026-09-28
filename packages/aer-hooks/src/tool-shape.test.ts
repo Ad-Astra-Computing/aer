@@ -141,6 +141,11 @@ describe('what a tool call reduces to', () => {
     expect(shapesOfToolCall('apply_patch', { command: '*** Add File: loose.txt\n+x\n' })).toEqual([]);
   });
 
+  it('records nothing for a header that names no file', () => {
+    const text = '*** Begin Patch\n*** Update File:    \n*** Add File: \n+x\n*** End Patch\n';
+    expect(shapesOfToolCall('apply_patch', { command: text }, { cwd: '/w' })).toEqual([]);
+  });
+
   it('records at most sixteen files from one patch and never the same one twice', () => {
     const lines = ['*** Begin Patch'];
     for (let i = 0; i < 40; i++) lines.push(`*** Add File: f${i % 20}.txt`, '+x');

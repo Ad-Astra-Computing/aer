@@ -76,6 +76,9 @@ function patchedFiles(patch: unknown, cwd: string | undefined): ToolShape[] {
     const m = PATCH_FILE_HEADER.exec(line);
     if (m === null) continue;
     const named = m[1]!.trim();
+    // A header with nothing after it names no file; joined to cwd it would
+    // record the working directory itself as written.
+    if (named.length === 0) continue;
     const path = bounded(cwd !== undefined && !isAbsolute(named) ? join(cwd, named) : named);
     if (path === undefined || seen.has(path)) continue;
     seen.add(path);
