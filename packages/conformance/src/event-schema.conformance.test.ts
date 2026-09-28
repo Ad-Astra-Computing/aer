@@ -53,6 +53,9 @@ async function emitted(args: string[], payloads: { args?: string[]; payload: unk
             AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
             XDG_CACHE_HOME: cache,
             HOME: cache,
+            // A session end hands leftover delivery to a detached worker that
+            // writes into this cache. Keep its life short.
+            AER_HOOK_DRAIN_BUDGET_MS: '2000',
           }),
         });
         child.stdin.end(JSON.stringify(step.payload));
@@ -61,7 +64,8 @@ async function emitted(args: string[], payloads: { args?: string[]; payload: unk
     }
   } finally {
     await new Promise((r) => api.close(() => r(null)));
-    rmSync(cache, { recursive: true, force: true });
+    // The worker may still be writing its last state when the hook exits.
+    rmSync(cache, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 });
   }
   return bodies.flatMap((b) => JSON.parse(b) as unknown[]);
 }
