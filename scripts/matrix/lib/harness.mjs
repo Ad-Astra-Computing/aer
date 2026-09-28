@@ -165,6 +165,14 @@ export async function runSuites(registry, env, { only, gates = [] } = {}) {
         env.log(`  SKIP  ${suite.name} :: ${c.name} (${c.reason})`);
         continue;
       }
+      // A case that needs something the run was not given (a signed-in
+      // harness, say) is reported as SKIP with the reason, never run blind.
+      const unmet = c.requires ? await env.requirement?.(c.requires) : undefined;
+      if (unmet) {
+        results.push({ ...base, status: 'SKIP', detail: unmet, ms: 0, requires: c.requires });
+        env.log(`  SKIP  ${suite.name} :: ${c.name} (${unmet})`);
+        continue;
+      }
       const ctx = makeContext(env, suite, c.name);
       const started = Date.now();
       let status;

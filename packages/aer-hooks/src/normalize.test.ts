@@ -157,6 +157,36 @@ describe('normalizeCodex', () => {
     expect(e.ok).toBe(true);
   });
 
+  it('records the files a real apply_patch call writes, against the session cwd', () => {
+    // The payload Codex 0.158 sends for apply_patch: the whole patch rides in
+    // tool_input.command, file content included.
+    const e = normalizeCodex({
+      session_id: 'sess-9',
+      turn_id: 't-1',
+      cwd: '/work/proj',
+      hook_event_name: 'PreToolUse',
+      model: 'gpt-5.5',
+      tool_name: 'apply_patch',
+      tool_input: { command: '*** Begin Patch\n*** Add File: notes.txt\n+SECRET CONTENT\n*** End Patch\n' },
+      tool_use_id: 'call_2',
+    }, 2);
+    expect(e.tool).toBe('apply_patch');
+    expect(e.argKeys).toEqual(['command']);
+    expect(e.shapes).toEqual([{ eventType: 'file.written', payload: { path: '/work/proj/notes.txt' } }]);
+    expect(JSON.stringify(e)).not.toContain('SECRET');
+  });
+
+  it('says how many files a patch named when it names more than are recorded', () => {
+    const lines = ['*** Begin Patch'];
+    for (let i = 0; i < 20; i++) lines.push(`*** Add File: f${i}.txt`, '+SECRET');
+    lines.push('*** End Patch');
+    const big = normalizeCodex({ hook_event_name: 'PreToolUse', cwd: '/w', turn_id: 't', tool_name: 'apply_patch', tool_input: { command: lines.join('\n') } }, 2);
+    expect(big.shapes?.length).toBe(16);
+    expect(big.filesNamed).toBe(20);
+    const small = normalizeCodex({ hook_event_name: 'PreToolUse', cwd: '/w', turn_id: 't', tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Add File: a\n+x\n*** End Patch' } }, 2);
+    expect(small.filesNamed).toBeUndefined();
+  });
+
   it('falls back to `arguments` when tool_input is absent', () => {
     const e = normalizeCodex(
       { hook_event_name: 'PreToolUse', tool_name: 'x', arguments: { a: 1, b: 2 } },

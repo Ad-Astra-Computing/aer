@@ -105,7 +105,10 @@ export function strippedPath() {
  * @param {string} cmd
  * @param {string[]} args
  * @param {{ cwd?: string, env?: Record<string,string>, input?: string|Buffer,
- *           timeoutMs?: number }} [opts]
+ *           timeoutMs?: number, killGroup?: boolean }} [opts]
+ * killGroup runs the command in a process group of its own and kills the
+ * whole group on timeout, so nothing it started (a harness's hook, a worker)
+ * outlives the case or holds its output open.
  * @returns {Promise<{ code: number|null, signal: string|null, stdout: string,
  *           stderr: string, stdoutBuf: Buffer, timedOut: boolean, ms: number }>}
  */
@@ -137,6 +140,7 @@ export function run(cmd, args = [], opts = {}) {
         cwd: opts.cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
+        detached: opts.killGroup === true,
       });
     } catch (err) {
       resolve({ code: null, signal: null, stdout: '', stderr: String(err), stdoutBuf: Buffer.alloc(0), timedOut: false, ms: 0, spawnError: err });
@@ -147,7 +151,14 @@ export function run(cmd, args = [], opts = {}) {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      if (opts.killGroup === true) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+        // What held the pipes is gone; do not wait on them.
+        child.stdout.destroy();
+        child.stderr.destroy();
+      } else {
+        child.kill('SIGKILL');
+      }
     }, timeoutMs);
     child.stdout.on('data', (d) => out.push(d));
     child.stderr.on('data', (d) => errc.push(d));
