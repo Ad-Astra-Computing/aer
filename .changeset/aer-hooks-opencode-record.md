@@ -1,5 +1,5 @@
 ---
-'@adastracomputing/aer-hooks': patch
+'@adastracomputing/aer-hooks': minor
 ---
 
 The opencode plugin now reduces tool calls the way the shell hooks do: a
