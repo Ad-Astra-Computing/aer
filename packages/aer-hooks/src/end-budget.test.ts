@@ -12,6 +12,7 @@ import { install } from './install.js';
 import { staleRegistrations } from './hooks-doctor.js';
 import { runHook, main, parseEndBudgetMs, endBudgetWindowMs } from './cli.js';
 import { FakeApi } from './fake-api.test-support.js';
+import { loadState } from './session-store.js';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-end-budget-')); });
@@ -113,6 +114,12 @@ describe('the declared budget sets how long a session end may run', () => {
     });
     expect(api.completes()).toHaveLength(1);
     expect(Date.now() - started).toBeLessThan(13_500);
+    // The fake API counts a request when it arrives, so the complete above
+    // could be one the hook sent and then abandoned. Only a hook still
+    // running past 10 s gets the answer and records the session as ended.
+    const st = loadState('cc-long-end', env)!;
+    expect(st.complete).toBeUndefined();
+    expect(st.ended).toBe(true);
   }, 30_000);
 });
 
