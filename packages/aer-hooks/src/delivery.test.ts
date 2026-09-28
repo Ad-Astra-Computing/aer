@@ -471,6 +471,24 @@ describe('the end of a session the harness will not wait for', () => {
     expect(s.events.map((e) => e.payload['phase'])).toEqual(['session_start', 'session_end']);
   });
 
+  it('counts the inline window from process start, and sends nothing when too little of it is left', async () => {
+    const lead = { session_id: 'cc-late-end', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' });
+    const before = api.requests.length;
+    const handed: string[][] = [];
+    const t = Date.now();
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+      // Node startup, stdin and the config reads already took a second.
+      processStart: Date.now() - 1000,
+    });
+    expect(Date.now() - t).toBeLessThan(400);
+    expect(api.requests.length).toBe(before);
+    expect(handed).toHaveLength(1);
+  });
+
   it('completes inline when the API answers quickly, and the worker then finds nothing to do', async () => {
     const lead = { session_id: 'cc-fast-end', cwd: dir };
     await fire({ ...lead, hook_event_name: 'SessionStart' });

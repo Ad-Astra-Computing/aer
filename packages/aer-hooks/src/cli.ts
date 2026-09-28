@@ -79,11 +79,11 @@ const POST_BATCH = 100;
 // the server never takes cannot hold up the rest forever.
 const MAX_SEND_ATTEMPTS = 5;
 const MAX_ROUNDS = 40;
-// How long a session end delivers in the hook itself before leaving the rest
-// to the worker. Claude Code gives SessionEnd hooks 1.5 s unless the entry
-// sets a timeout, and in print mode it kills the hook and everything it
-// started when that runs out; Codex caps its own at a few seconds.
-const SESSION_END_INLINE_MS = 900;
+// How long after the hook process started a session end may still deliver
+// itself, when its entry declares no budget, before leaving the rest to the
+// worker. Claude Code gives a SessionEnd hook with no timeout 1.5 s from
+// start, then cancels it.
+const SESSION_END_INLINE_MS = 1200;
 // How long the worker that finishes a session end may take, and how much
 // longer before it is stopped whatever it is doing.
 const DRAIN_BUDGET_MS = 60_000;
@@ -260,6 +260,11 @@ export interface RunHookDeps {
    * no worker unless this is given too.
    */
   handOff?: (drainArgv: string[]) => boolean;
+  /**
+   * When this hook's process started, epoch ms, which is when the harness's
+   * clock for it started too. Defaults to when runHook was called.
+   */
+  processStart?: number;
   /** The worker's budget, for tests. Never more than DRAIN_BUDGET_MS. */
   drainBudgetMs?: number;
 }
@@ -857,7 +862,7 @@ async function orchestrateAndEmit(
   base: HttpSinkOptions & { sourceType: 'harness'; collector: { name: string; version: string } },
   env: NodeJS.ProcessEnv,
   now: number,
-  opts: { rootSession: string | undefined; deadline: number; deps: RunHookDeps; argv: string[] },
+  opts: { rootSession: string | undefined; deadline: number; deps: RunHookDeps; argv: string[]; invokedAt: number },
 ): Promise<void> {
   const ref = event.sessionRef;
   const isSubagent = isSubagentEvent(event);
@@ -1005,7 +1010,8 @@ async function orchestrateAndEmit(
     // The worker finishes whatever this hook cannot send in the time the
     // harness allows. Delivering here as well means a fast API completes the
     // record at once; the lease keeps the two from sending twice.
-    ctx.deadline = Math.min(ctx.deadline, ctx.clock() + SESSION_END_INLINE_MS);
+    const left = (opts.deps.processStart ?? opts.invokedAt) + SESSION_END_INLINE_MS - Date.now();
+    ctx.deadline = Math.min(ctx.deadline, ctx.clock() + left);
   }
   await deliver(ctx);
 }
@@ -1172,6 +1178,7 @@ export async function runHook(
   env: NodeJS.ProcessEnv = process.env,
   deps: RunHookDeps = {},
 ): Promise<void> {
+  const invokedAt = Date.now();
   try {
     // Credentials from an owner-only file, for this process alone.
     env = envWithFile(argv, env, deps.logError ?? ((m) => process.stderr.write(m + '\n')));
@@ -1192,7 +1199,7 @@ export async function runHook(
     const event = normalize(payload, harness, parseEventFlag(argv), parseLifecycleFlag(argv));
     const hardTimeoutMs = deps.hardTimeoutMs ?? parseHardTimeoutMs(env, () => undefined) ?? DEFAULT_HARD_TIMEOUT_MS;
     const rootSession = parseRootSessionFlag(argv);
-    await orchestrateAndEmit(event, base, env, now, { rootSession, deadline: now + hardTimeoutMs, deps, argv });
+    await orchestrateAndEmit(event, base, env, now, { rootSession, deadline: now + hardTimeoutMs, deps, argv, invokedAt });
   } catch {
     /* fail open: never surface an error to the harness */
   }
@@ -1251,7 +1258,10 @@ export async function main(
     if (typeof t.unref === 'function') t.unref();
   });
   try {
-    await Promise.race([runHook(argv, env, { ...deps, hardTimeoutMs: deps.hardTimeoutMs ?? hardTimeoutMs }), timeout]);
+    await Promise.race([
+      runHook(argv, env, { ...deps, hardTimeoutMs: deps.hardTimeoutMs ?? hardTimeoutMs, processStart: deps.processStart ?? performance.timeOrigin }),
+      timeout,
+    ]);
   } catch {
     /* fail open */
   }
