@@ -291,6 +291,8 @@ export interface RunHookDeps {
    * clock for it started too. Defaults to when runHook was called.
    */
   processStart?: number;
+  /** The time a request may take, for tests. Defaults to REQUEST_TIMEOUT_MS. */
+  requestTimeoutMs?: number;
   /** The worker's budget, for tests. Never more than DRAIN_BUDGET_MS. */
   drainBudgetMs?: number;
 }
@@ -570,6 +572,8 @@ interface Ctx {
   ownPpid: number;
   /** The worker a session end left behind: no event follows it. */
   worker?: boolean;
+  /** The time a request may take at most, REQUEST_TIMEOUT_MS outside tests. */
+  requestTimeoutMs: number;
   warn: (kind: string, message: string) => void;
 }
 
@@ -645,11 +649,12 @@ function decide(state: SessionState | null, now: number, ctx: Ctx): { result: St
     } else {
       // A batch that already failed is retried one event at a time, so one
       // event the server keeps refusing cannot take its neighbours down too.
-      // So does one sent in a batch that got no answer at all: a request too
-      // large to finish in the time an invocation has would otherwise stay
-      // at the head of the queue for good.
+      // A batch that ran its full request time without an answer is halved
+      // next time: a request too large to finish would otherwise stay at the
+      // head of the queue for good, and halving gets through in a few
+      // requests where one event at a time could take a hundred.
       const head = state.outbox[0]!;
-      const size = (head.attempts ?? 0) >= 2 || head.stalled === true ? 1 : POST_BATCH;
+      const size = (head.attempts ?? 0) >= 2 ? 1 : (state.postLimit ?? POST_BATCH);
       step = { kind: 'post', session: state.session, batch: state.outbox.slice(0, size) };
     }
   } else if (state.complete !== undefined) {
@@ -725,7 +730,7 @@ async function deliver(ctx: Ctx): Promise<void> {
       round--;
       continue;
     }
-    const timeoutMs = Math.min(REQUEST_TIMEOUT_MS, remaining(ctx) - EXIT_MARGIN_MS);
+    const timeoutMs = Math.min(ctx.requestTimeoutMs, remaining(ctx) - EXIT_MARGIN_MS);
 
     if (step.kind === 'open') {
       const r = await openSession(ctx.api, ctx.clientRef, timeoutMs);
@@ -765,6 +770,7 @@ async function deliver(ctx: Ctx): Promise<void> {
         await withState(ctx, (st) => {
           if (st === null) return { result: undefined };
           st.outbox = st.outbox.filter((e) => !ids.has(e.id));
+          if (st.outbox.length === 0) delete st.postLimit;
           return { result: undefined, save: st };
         });
         continue;
@@ -820,12 +826,16 @@ async function deliver(ctx: Ctx): Promise<void> {
         st.outbox = st.outbox.filter((e) => {
           if (!ids.has(e.id)) return true;
           if (counts) e.attempts = (e.attempts ?? 0) + 1;
-          else if (step.batch.length > 1) e.stalled = true;
           if ((e.attempts ?? 0) < MAX_SEND_ATTEMPTS || isClosingReport(e)) return true;
           dropped += 1;
           return false;
         });
         st.droppedBudget += dropped;
+        // Only a request that had its whole time says anything about its
+        // size; one cut short by this invocation's own deadline does not.
+        if (!r.ok && r.timedOut === true && timeoutMs >= ctx.requestTimeoutMs && step.batch.length > 1) {
+          st.postLimit = Math.max(1, Math.floor(step.batch.length / 2));
+        }
         releaseLease(st, ctx);
         return { result: undefined, save: st };
       });
@@ -930,6 +940,7 @@ async function orchestrateAndEmit(
     deadline: opts.deadline,
     owner: `${process.pid}.${randomBytes(8).toString('hex')}`,
     final: completes(event),
+    requestTimeoutMs: opts.deps.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
     isSubagent,
     ownPpid: opts.deps.ownPpid ?? process.ppid,
     warn: (kind: string, message: string) => {
@@ -1219,6 +1230,7 @@ export async function runDrain(argv: string[], env: NodeJS.ProcessEnv = process.
       owner: `${process.pid}.${randomBytes(8).toString('hex')}`,
       final: true,
       worker: true,
+      requestTimeoutMs: deps.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
       isSubagent: false,
       ownPpid: Number.isInteger(ppid) && ppid > 0 ? ppid : process.ppid,
       warn: (kind, message) => {

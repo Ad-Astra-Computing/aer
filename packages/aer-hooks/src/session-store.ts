@@ -24,8 +24,7 @@ export interface OutboxEvent {
   payload: Record<string, unknown>;
   /** Failed sends so far; an event that keeps failing is eventually dropped and counted. */
   attempts?: number;
-  /** Sent in a batch that got no answer at all; sent on its own from then on. */
-  stalled?: boolean;
+
 }
 
 /** The AER session the current record is being written to. */
@@ -70,6 +69,12 @@ export interface SessionState {
   /** Network targets a shell line named that could not be reduced to a host. Local only. */
   hostsUnreduced?: number;
   outbox: OutboxEvent[];
+  /**
+   * The most events sent in one request since a batch ran its full request
+   * time with no answer: half that batch, halved again on each such batch,
+   * until the queue empties.
+   */
+  postLimit?: number;
 }
 
 /** Most events held for the server at once. Past this the oldest are dropped and counted. */
@@ -225,6 +230,7 @@ function parseState(p: Record<string, unknown>): SessionState | null {
   if (isInt(p['retryOpenAt'])) s.retryOpenAt = p['retryOpenAt'];
   if (p['complete'] === 'checkpoint' || p['complete'] === 'end') s.complete = p['complete'];
   if (p['ended'] === true) s.ended = true;
+  if (isInt(p['postLimit']) && p['postLimit'] > 0) s.postLimit = p['postLimit'];
   s.outbox = validOutbox(p['outbox']);
   return s;
 }

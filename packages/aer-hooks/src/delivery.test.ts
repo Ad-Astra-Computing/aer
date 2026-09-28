@@ -9,7 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { runHook, main, runDrain } from './cli.js';
 import { FakeApi } from './fake-api.test-support.js';
-import { loadState } from './session-store.js';
+import { loadState, saveState } from './session-store.js';
 
 const V2 = ['--harness', 'claude-code', '--lifecycle', 'v2'];
 
@@ -663,32 +663,58 @@ describe('what the worker writes down', () => {
 });
 
 describe('a batch that never gets an answer', () => {
-  it('is split, so a queue that only large requests fail on still drains', async () => {
-    const sid = 'cc-split';
-    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
-    // An API that answers one event at once but never answers a batch.
-    const onlySingles = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith('/events') && (JSON.parse(String(init?.body)) as unknown[]).length > 1) {
-        await new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+  /** An API that answers a batch of up to `max` events at once and never answers a larger one. */
+  function answersUpTo(max: number, counter: { posts: number }): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/events')) {
+        counter.posts += 1;
+        if ((JSON.parse(String(init?.body)) as unknown[]).length > max) {
+          await new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+        }
       }
       return api.fetch(input, init);
     }) as typeof fetch;
-    for (let i = 0; i < 5; i++) {
-      await runHook(V2, env(), {
-        readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: `/f${i}` } }),
-        fetch: onlySingles,
-        hardTimeoutMs: 1500,
-        logError: () => undefined,
-      });
+  }
+
+  async function queued(sid: string, n: number): Promise<void> {
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    const st = loadState(sid, env())!;
+    for (let i = 0; i < n; i++) {
+      st.seq += 1;
+      st.outbox.push({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, type: 'tool.started', ts: new Date().toISOString(), payload: { tool: 'Read', seq: st.seq } });
     }
+    saveState(sid, st, env());
+  }
+
+  it('is halved until it gets through, not sent one event at a time', async () => {
+    const sid = 'cc-halve';
+    await queued(sid, 100);
+    const counter = { posts: 0 };
     const drain = [`--drain=${sid}`, '--drain-harness=claude-code', '--harness-pid=1'];
     for (let i = 0; i < 4 && (loadState(sid, env())?.outbox.length ?? 0) > 0; i++) {
-      await runDrain(drain, env(), { fetch: onlySingles, drainBudgetMs: 3000, logError: () => undefined });
+      await runDrain(drain, env(), { fetch: answersUpTo(12, counter), drainBudgetMs: 20_000, requestTimeoutMs: 300, logError: () => undefined });
     }
     expect(loadState(sid, env())?.outbox).toEqual([]);
-    expect(api.eventsOf('tool.started')).toHaveLength(5);
-    expect(api.eventsOf('file.opened')).toHaveLength(5);
+    expect(api.eventsOf('tool.started')).toHaveLength(100);
+    // 100, 50 and 25 time out, then nine batches of at most 12: 12 requests, not 100.
+    expect(counter.posts).toBeLessThanOrEqual(13);
   }, 60_000);
+
+  it('is not split when this invocation ran out of time, which says nothing about its size', async () => {
+    const sid = 'cc-no-split';
+    await queued(sid, 20);
+    const counter = { posts: 0 };
+    // The hook's own deadline cuts the request short, well before the full timeout.
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/x' } }),
+      fetch: answersUpTo(1, counter),
+      hardTimeoutMs: 1500,
+      logError: () => undefined,
+    });
+    const st = loadState(sid, env())!;
+    expect(st.outbox.length).toBeGreaterThan(0);
+    expect(st.postLimit).toBeUndefined();
+  });
 });
 
 describe('the hook and its worker never send the same events at once', () => {
