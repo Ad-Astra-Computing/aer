@@ -166,14 +166,20 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       transport,
       eager,
       preamble: () => buildPreamble(config, enabledPatches, enabledAdapters, observer),
-      closingReport: () => buildCollectorReport(
-        config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
-        adapterEvidence(
-          config, enabledPatches, enabledAdapters, adapterStats, hostCounts, modelShapedCounts, uninstalled,
-          replacedAdapters(patchMark),
-        ),
-        observer,
-      ),
+      closingReport: (delivery) => {
+        const report = buildCollectorReport(
+          config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
+          adapterEvidence(
+            config, enabledPatches, enabledAdapters, adapterStats, hostCounts, modelShapedCounts, uninstalled,
+            replacedAdapters(patchMark),
+          ),
+          observer,
+        );
+        // The same field the hooks use for events they gave up sending; the
+        // API reads it off the closing report into the session summary.
+        if (delivery.eventsDropped > 0) report.payload['events_dropped_budget'] = delivery.eventsDropped;
+        return report;
+      },
       onError,
     });
     // Enforcer starts disabled (null) so a call made before the policy is

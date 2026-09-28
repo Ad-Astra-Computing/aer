@@ -145,3 +145,48 @@ describe('createSessionManager (process strategy)', () => {
     await expect(mgr.flush()).resolves.toBeUndefined();
   });
 });
+
+describe('events the collector could not deliver', () => {
+  it('are counted and handed to the closing report', async () => {
+    let fail = true;
+    const { transport } = fakeTransport({
+      async emit(events) { if (fail && events.some((e) => e.event_type === 'lost')) throw new Error('timed out'); },
+    });
+    let seen: number | undefined;
+    const mgr = createSessionManager({
+      transport,
+      preamble,
+      closingReport: (s) => { seen = s.eventsDropped; return { event_type: 'collector.report', payload: { collector: 'x' } }; },
+    });
+    mgr.capture(ev('lost'));
+    await mgr.flush();
+    mgr.capture(ev('lost'));
+    mgr.capture(ev('lost'));
+    await mgr.flush();
+    fail = false;
+    mgr.capture(ev('kept'));
+    await mgr.flush();
+    await mgr.complete();
+    expect(seen).toBe(3);
+  });
+
+  it('counts a preamble that could not be sent', async () => {
+    const { transport } = fakeTransport({
+      async emit(events) { if (events.some((e) => e.event_type === 'session.started')) throw new Error('down'); },
+    });
+    let seen: number | undefined;
+    const mgr = createSessionManager({ transport, preamble, closingReport: (s) => { seen = s.eventsDropped; return null; } });
+    mgr.capture(ev('x'));
+    await mgr.complete();
+    expect(seen).toBe(3);
+  });
+
+  it('are zero when every batch arrived', async () => {
+    const { transport } = fakeTransport();
+    let seen: number | undefined;
+    const mgr = createSessionManager({ transport, preamble, closingReport: (s) => { seen = s.eventsDropped; return null; } });
+    mgr.capture(ev('x'));
+    await mgr.complete();
+    expect(seen).toBe(0);
+  });
+});

@@ -183,6 +183,14 @@ keyed by provider and only lists adapters that actually ran:
 and `tool_selections` counts tool calls observed in responses. Counts are
 metadata only.
 
+When a batch of events cannot be delivered (the AER API refused it, failed or
+did not answer within 10 seconds), the collector drops it rather than retrying
+without end, and counts its events. The final `collector.report` then carries
+`events_dropped_budget`, the number of events the collector could not confirm,
+so the record says it is short instead of looking complete. A batch that timed
+out may still have arrived, so the count is an upper bound. The field is
+absent when every batch arrived.
+
 A tool name comes from the model, so it is recorded only when the record can
 keep it: a string of at most 200 UTF-16 code units with no control characters.
 The AER API accepts names up to 512, but a longer name would break the
