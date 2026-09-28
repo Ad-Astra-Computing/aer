@@ -236,6 +236,12 @@ does not open idempotently with `client_ref`, number events with `seq`, write
 checkpoint or `events_registered` evidence, or attach subagent sessions to their
 lead.
 
+opencode installs `@opencode-ai/plugin` into `.opencode` when it starts and
+finds a plugin there. On a machine that has never reached the npm registry, or
+sits behind a proxy that blocks it, that install retries for about a minute
+before opencode goes on, so an offline first run is slow once. Later runs reuse
+the installed package.
+
 Beyond tools, the opencode plugin also records LLM usage. Each assistant
 `message.updated` carries the model, provider and token counts, so the plugin emits
 `llm.requested` on first sighting of a message and `llm.completed` when it settles

@@ -56,6 +56,15 @@ cases do:
   unconfigured. opencode is a Bun binary rather than Node; Bun honours the
   same proxy variables, so the network guard below covers it too.
 
+  opencode installs `@opencode-ai/plugin` into each config directory when it
+  starts, and with the registry blocked it retries for about a minute. The
+  suite installs that package once per run and seeds each case's `.opencode`
+  and global config directories with its `package.json`, lockfile and a
+  symlink to its `node_modules`. A real machine has a real `node_modules`
+  there, not a symlink. If a later opencode release reinstalls or rejects the
+  seed, the suite slows down or fails for that reason; check the seed before
+  suspecting the plugin.
+
 The pins sit at the top of `scripts/matrix/cases/vercel-ai.mjs` and
 `scripts/matrix/cases/opencode.mjs`. They are printed at the end of a run and
 recorded under `thirdParty` in the JSON report, so moving to a newer SDK or
