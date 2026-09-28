@@ -321,9 +321,19 @@ aborts it if the body throws.
 ## Usage policies
 
 When an operator has set a usage policy for the agent (via the control plane), the
-collector enforces it against every LLM call. It fetches the policy once per agent
-per process when the collector starts. Every session in the process reads that
-answer; each session still counts its own calls and tokens.
+collector enforces it against every LLM call. When an API key and an agent id
+are configured, it fetches that agent's policy as soon as the collector starts.
+A session for any other agent (`withAerSession({ agentId })`) fetches its
+agent's policy when the first such session starts. The answer is kept per
+agent for the whole process and shared by every session; each session still
+counts its own calls and tokens.
+
+Each session keeps the policy it started with. A session started more than 5
+minutes after the last fetch for its agent starts a refresh and uses the
+previous answer until the refresh arrives; sessions after it get the new one.
+With the default process strategy there is one session per process, so a
+changed policy takes effect when the process next starts. With the task and
+server strategies it takes effect in sessions that start after the refresh.
 A policy can allow or deny models by glob (`gpt-*`, `*-vision`) and cap the calls
 and tokens per session. It runs in one of three modes:
 
@@ -358,8 +368,9 @@ is not an answer, and the collector tries again after 30 seconds:
   or in report mode, the last policy goes on governing as before.
 
 **Latency.** The only call that can wait is one made while the process's first
-fetch for its agent is still in flight, which in practice is a call made in the
-first moments after the process starts. It waits until that fetch answers, and
+fetch for its agent is still in flight: in practice a call made in the first
+moments after the process starts, or the first calls of a session for an agent
+the process has not fetched yet. It waits until that fetch answers, and
 never later than 3 seconds after the fetch started; after that it goes ahead
 ungoverned. Until the answer arrives its mode is not known, so this applies
 whatever the policy turns out to be, or when there is none. Once any answer
@@ -370,8 +381,10 @@ SDK's own; an SDK build without that hook is not held, and such a racing call
 is not governed.
 
 Requests the collector itself makes to the AER API are abandoned after
-10 seconds, so an API that accepts connections and never answers delays your
-process's exit by about that much and never blocks it.
+10 seconds each, so an API that accepts connections and never answers never
+blocks your process's exit. It can delay it by up to about 30 seconds: at exit
+the collector sends the last batch of events, the closing report and the
+completion one after another, and each can take the full 10 seconds.
 
 ```ts
 import { AerPolicyError } from '@adastracomputing/aer-auto-node';
