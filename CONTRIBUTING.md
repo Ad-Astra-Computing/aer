@@ -39,13 +39,15 @@ Two suites drive third-party software end to end at pinned versions, installed
 from npm once per run, so their setup needs the registry the way the LLM SDK
 cases do:
 
-- `vercel-ai` runs the real `ai` package with `@ai-sdk/openai` and
-  `@ai-sdk/anthropic` under the collector's register hook, against a local
-  server that speaks each provider's own wire format, streaming included. It
+- `vercel-ai` runs the real `ai` package with `@ai-sdk/openai`,
+  `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/mistral` and `@ai-sdk/groq`
+  under the collector's register hook, against a local server that speaks each
+  provider's own wire format, streaming included. It
   covers `generateText`, `streamText` read to the end and aborted midway,
   `generateObject` and `streamObject`, a tool loop, a provider the collector
   does not instrument (`@ai-sdk/openai-compatible`), a usage policy in block
-  mode and an unreachable AER API.
+  mode, an unreachable AER API and one that accepts connections and never
+  answers.
 - `opencode` installs the real `opencode-ai` binary, wires the plugin file
   from the `aer-hooks` README into a throwaway project and runs `opencode run`
   against a local OpenAI-compatible model server that answers with tool calls,

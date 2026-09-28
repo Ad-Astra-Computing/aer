@@ -36,6 +36,9 @@ export const VERCEL_PINS = {
   '@ai-sdk/openai': '4.0.78',
   '@ai-sdk/anthropic': '4.0.65',
   '@ai-sdk/openai-compatible': '3.0.57',
+  '@ai-sdk/google': '4.0.82',
+  '@ai-sdk/mistral': '4.0.52',
+  '@ai-sdk/groq': '4.0.50',
   zod: '4.6.5',
 };
 
@@ -107,8 +110,14 @@ export async function startVercelProvider(c, k) {
       if (slow) { sseWrite(res, chunk({ content: k.result })); hold(); return; }
       if (wantsTool) sseWrite(res, chunk({ tool_calls: [{ index: 0, ...toolCall }] }));
       else sseWrite(res, chunk({ content: answer }));
-      sseWrite(res, chunk({}, wantsTool ? 'tool_calls' : 'stop'));
-      sseWrite(res, { id, object: 'chat.completion.chunk', created: 1, model, choices: [], usage });
+      if (body.stream_options?.include_usage) {
+        // OpenAI: usage arrives in a trailing chunk with no choices.
+        sseWrite(res, chunk({}, wantsTool ? 'tool_calls' : 'stop'));
+        sseWrite(res, { id, object: 'chat.completion.chunk', created: 1, model, choices: [], usage });
+      } else {
+        // Mistral and Groq: usage rides on the finishing chunk.
+        sseWrite(res, { ...chunk({}, wantsTool ? 'tool_calls' : 'stop'), usage, x_groq: { usage } });
+      }
       sseWrite(res, '[DONE]');
       res.end();
       return;
@@ -145,6 +154,23 @@ export async function startVercelProvider(c, k) {
         ev('response.output_item.done', { output_index: 0, item: msgItem });
       }
       ev('response.completed', { response: { ...base, status: 'completed', output: [wantsTool ? fnItem : msgItem], usage } });
+      res.end();
+      return;
+    }
+
+    const gm = req.method === 'POST' ? req.url.match(/\/models\/([^/:?]+):(generateContent|streamGenerateContent)/) : null;
+    if (gm) {
+      // Google's Generative Language API.
+      const usageMetadata = { promptTokenCount: USAGE.input, candidatesTokenCount: USAGE.output, totalTokenCount: USAGE.input + USAGE.output };
+      const candidate = (text, finish) => ({ content: { role: 'model', parts: [{ text }] }, index: 0, ...(finish ? { finishReason: 'STOP' } : {}) });
+      if (gm[2] === 'generateContent') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ candidates: [candidate(answer, true)], usageMetadata, modelVersion: gm[1] }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      sseWrite(res, { candidates: [candidate(answer, false)], modelVersion: gm[1] });
+      sseWrite(res, { candidates: [candidate('', true)], usageMetadata, modelVersion: gm[1] });
       res.end();
       return;
     }
@@ -472,6 +498,44 @@ export default function register(registry, env) {
     c.assert.equal(done.filter((e) => e.payload.streaming).length, 1, 'one streamed completion');
     c.assert.equal(tools.length, 1, `tool.selected events: ${JSON.stringify(tools.map((e) => e.payload))}`);
     c.assert.equal(tools[0].payload.tool, TOOL, 'tool name');
+    assertNoCanaries(sink.allText(), k);
+    assertCompletedOnce(c, sink);
+  });
+
+  vcase('google, mistral and groq providers: generateText and streamText recorded with model and tokens', async (c, nm) => {
+    const sink = await c.sink();
+    const k = canaries('VAIMORE');
+    const provider = await startVercelProvider(c, k);
+    const r = await vercelRun(c, nm, {
+      sink, provider, k,
+      workload: `
+        const { createGoogleGenerativeAI } = await import('@ai-sdk/google');
+        const { createMistral } = await import('@ai-sdk/mistral');
+        const { createGroq } = await import('@ai-sdk/groq');
+        const models = {
+          google: createGoogleGenerativeAI({ apiKey: 'g-' + k.secret, baseURL: process.env.PROVIDER + '/v1beta' })('mx-model'),
+          mistral: createMistral({ apiKey: 'm-' + k.secret, baseURL: process.env.PROVIDER + '/v1' })('mx-model'),
+          groq: createGroq({ apiKey: 'q-' + k.secret, baseURL: process.env.PROVIDER + '/v1' })('mx-model'),
+        };
+        out.got = {};
+        for (const [name, model] of Object.entries(models)) {
+          const a = await ai.generateText({ model, prompt: k.prompt });
+          const s = ai.streamText({ model, prompt: k.prompt });
+          let text = '';
+          for await (const part of s.textStream) text += part;
+          out.got[name] = a.text === k.result && text === k.result;
+        }
+      `,
+    });
+    c.assert.exit(r, 0, 'workload');
+    c.assert.equal(JSON.stringify(r.json?.got), JSON.stringify({ google: true, mistral: true, groq: true }), 'each provider returned the text unchanged');
+    for (const name of ['google', 'mistral', 'groq']) {
+      const { req, done } = llm(sink, name);
+      c.assert.equal(req.length, 2, `${name} llm.requested`);
+      c.assert.equal(done.length, 2, `${name} llm.completed: ${JSON.stringify(llm(sink).done.map((e) => e.payload))}`);
+      assertCall(c, done.find((e) => !e.payload.streaming), { provider: name, streaming: false }, `${name} generateText`);
+      assertCall(c, done.find((e) => e.payload.streaming), { provider: name, streaming: true }, `${name} streamText`);
+    }
     assertNoCanaries(sink.allText(), k);
     assertCompletedOnce(c, sink);
   });
