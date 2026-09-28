@@ -98,9 +98,9 @@ transparency-log evidence locally.
 ## Working in someone else's repository
 
 If you are a coding agent operating inside a repository that already has AER
-wired in through `aer-hooks` (Claude Code, Codex CLI, opencode), do not export
+wired in through `aer-hooks` (Claude Code, Codex CLI, Antigravity), do not export
 `AER_API_KEY` or the other `AER_*` identity variables in a shell you start:
-this harness passes its environment to every command it runs, so an exported
+the harness passes its environment to every command it runs, so an exported
 key would reach unrelated commands too, not only the hook. Credentials for
 hooks belong in an owner-only file (`aer-hooks install <harness> --env-file
 <path>`), never a shell profile.
