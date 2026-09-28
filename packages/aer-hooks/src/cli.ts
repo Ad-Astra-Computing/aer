@@ -133,6 +133,22 @@ export function parseCheckpointMs(env: NodeJS.ProcessEnv): { ageMs: number; quie
   };
 }
 
+/**
+ * The time the harness allows the entry that ends a session, from
+ * `--end-budget-ms`, which the installer writes on that entry. Undefined when
+ * absent or not a positive whole number.
+ */
+export function parseEndBudgetMs(argv: string[]): number | undefined {
+  let raw: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === '--end-budget-ms') raw = argv[i + 1];
+    else if (a.startsWith('--end-budget-ms=')) raw = a.slice('--end-budget-ms='.length);
+  }
+  if (raw === undefined || !/^[1-9][0-9]{0,6}$/.test(raw)) return undefined;
+  return Number(raw);
+}
+
 export function parseHarnessFlag(argv: string[]): Harness | undefined {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -1010,7 +1026,10 @@ async function orchestrateAndEmit(
     // The worker finishes whatever this hook cannot send in the time the
     // harness allows. Delivering here as well means a fast API completes the
     // record at once; the lease keeps the two from sending twice.
-    const left = (opts.deps.processStart ?? opts.invokedAt) + SESSION_END_INLINE_MS - Date.now();
+    // An entry that declares its budget gets it; otherwise the inline window
+    // is what Claude Code allows an entry with no timeout.
+    const budget = parseEndBudgetMs(opts.argv) ?? SESSION_END_INLINE_MS;
+    const left = (opts.deps.processStart ?? opts.invokedAt) + budget - Date.now();
     ctx.deadline = Math.min(ctx.deadline, ctx.clock() + left);
   }
   await deliver(ctx);

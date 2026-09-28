@@ -153,13 +153,28 @@ const LIFECYCLE_FLAG = '--lifecycle v2';
 // found empty against Claude Code 2.1.281, so cli.ts reads the harness's
 // own CLAUDE_CODE_SESSION_ID env var instead. --root-session still exists
 // as an explicit override for a caller that sets it itself.
-function harnessCommand(harness: Harness, event?: string, envFile?: string): string {
+function harnessCommand(harness: Harness, event?: string, envFile?: string, endBudgetMs?: number): string {
   let cmd = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
   // Antigravity omits the event name from the payload, so each registration
   // has to carry it.
   if (event !== undefined) cmd += ` --event ${event}`;
   if (envFile !== undefined) cmd += ` --env-file ${shellSingleQuote(envFile)}`;
+  if (endBudgetMs !== undefined) cmd += ` --end-budget-ms ${endBudgetMs}`;
   return cmd;
+}
+
+/**
+ * How long the harness lets the entry that ends a session run, in ms, with a
+ * margin, when that is known: the timeout this installer sets on Claude
+ * Code's SessionEnd, Codex's fixed 3 s cap, Antigravity's 30 s default on the
+ * Stop that ends its sessions. The hook delivers inline for that long, so a
+ * record completes even where its background worker dies with the harness.
+ */
+function endBudgetMs(harness: Harness, event: string): number | undefined {
+  if (harness === 'claude-code' && event === 'SessionEnd') return CLAUDE_HEADROOM_TIMEOUT_S * 1000 - 1500;
+  if (harness === 'codex' && event === 'SessionEnd') return 2500;
+  if (harness === 'antigravity' && event === 'Stop') return 25_000;
+  return undefined;
 }
 
 const ENV_FILE_IN_COMMAND = / --env-file '((?:[^']|'\\'')*)'/;
@@ -193,7 +208,7 @@ interface AntigravityEntry {
 function antigravityGroup(envFile?: string): Record<string, unknown> {
   const group: Record<string, unknown> = { enabled: true };
   for (const ev of ANTIGRAVITY_EVENTS) {
-    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev, envFile) };
+    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev, envFile, endBudgetMs('antigravity', ev)) };
     if (ANTIGRAVITY_MATCHED.has(ev)) entry.matcher = '*';
     group[ev] = [entry];
   }
@@ -351,7 +366,6 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
       ? ({ ...(config['hooks'] as Record<string, unknown>) } as HooksMap)
       : ({} as HooksMap);
 
-  const command = harnessCommand(harness, undefined, envFile);
   const events = harness === 'claude-code' ? CLAUDE_EVENTS : CODEX_EVENTS;
   const added: string[] = [];
   const alreadyPresent: string[] = [];
@@ -364,6 +378,7 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
     const timeout = harness === 'claude-code' && (ev === 'SessionEnd' || ev === 'SessionStart')
       ? CLAUDE_HEADROOM_TIMEOUT_S
       : undefined;
+    const command = harnessCommand(harness, undefined, envFile, endBudgetMs(harness, ev));
     const { groups, added: didAdd, upgraded: didUpgrade } = mergeEvent(existingHooks[ev], command, timeout);
     existingHooks[ev] = groups;
     if (didAdd) added.push(ev);
