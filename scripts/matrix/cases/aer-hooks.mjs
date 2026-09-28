@@ -726,6 +726,8 @@ export default function register(registry) {
     c.assert.equal(sink.requests.length, 0, 'an orphan subagent event reached the API');
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' });
+    // No declared budget: under load the worker may send the closing report.
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     const reports = byType(sink, 'collector.report');
     c.assert.equal(reports.map((r) => r.payload?.subagent_events_unattached).join(','), '1,1', 'subagent_events_unattached on every report');
     c.assert.equal(opens(sink).length, 1, 'opens');
