@@ -149,6 +149,16 @@ export function parseEndBudgetMs(argv: string[]): number | undefined {
   return Number(raw);
 }
 
+// A declared session end budget is never honoured past this, whatever the
+// entry says: a hand-edited config must not hold the harness for minutes.
+const MAX_END_BUDGET_MS = 30_000;
+
+/** How long a session end with a declared budget may run: the budget, at most 30 s. */
+export function endBudgetWindowMs(argv: string[]): number | undefined {
+  const b = parseEndBudgetMs(argv);
+  return b === undefined ? undefined : Math.min(b, MAX_END_BUDGET_MS);
+}
+
 export function parseHarnessFlag(argv: string[]): Harness | undefined {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -1029,18 +1039,26 @@ async function orchestrateAndEmit(
     savePidAlias(String(ctx.ownPpid), storeKey, env, now, { startTime: startTimeOf(ctx.ownPpid), agentId: base.agentId, baseUrl: base.baseUrl });
   }
 
-  if (ctx.final && handOffEnd(ctx, event, opts)) {
-    // The worker reports what it could not do; a line from this hook about a
-    // send the worker is about to finish would only mislead.
-    ctx.warn = () => undefined;
-    // The worker finishes whatever this hook cannot send in the time the
-    // harness allows. Delivering here as well means a fast API completes the
-    // record at once; the lease keeps the two from sending twice.
-    // An entry that declares its budget gets it; otherwise the inline window
-    // is what Claude Code allows an entry with no timeout.
-    const budget = parseEndBudgetMs(opts.argv) ?? SESSION_END_INLINE_MS;
-    const left = (opts.deps.processStart ?? opts.invokedAt) + budget - Date.now();
-    ctx.deadline = Math.min(ctx.deadline, ctx.clock() + left);
+  if (ctx.final) {
+    const handedOff = handOffEnd(ctx, event, opts);
+    const start = opts.deps.processStart ?? opts.invokedAt;
+    const window = endBudgetWindowMs(opts.argv);
+    if (handedOff) {
+      // The worker reports what it could not do; a line from this hook about a
+      // send the worker is about to finish would only mislead.
+      ctx.warn = () => undefined;
+    }
+    if (window !== undefined) {
+      // The entry declares how long the harness allows it, so the hook sends
+      // for that long, past its usual timeout, and a record completes even
+      // where the worker dies with the harness.
+      ctx.deadline = ctx.clock() + (start + window - Date.now());
+    } else if (handedOff) {
+      // No declared budget: keep to what Claude Code allows an entry with no
+      // timeout, and leave the rest to the worker. The lease keeps the two
+      // from sending twice.
+      ctx.deadline = Math.min(ctx.deadline, ctx.clock() + (start + SESSION_END_INLINE_MS - Date.now()));
+    }
   }
   await deliver(ctx);
 }
@@ -1313,12 +1331,16 @@ export async function main(
     }
   }) ?? DEFAULT_HARD_TIMEOUT_MS;
 
+  // The entry that ends a session may declare a longer budget; it is the only
+  // one allowed past the usual timeout.
+  const window = endBudgetWindowMs(argv);
+  const limitMs = window !== undefined ? Math.max(hardTimeoutMs, window) : hardTimeoutMs;
   let timedOut = false;
   const timeout = new Promise<void>((resolve) => {
     const t = setTimeout(() => {
       timedOut = true;
       resolve();
-    }, hardTimeoutMs);
+    }, limitMs);
     // Do not keep the event loop alive solely for the timeout.
     if (typeof t.unref === 'function') t.unref();
   });
@@ -1332,7 +1354,7 @@ export async function main(
   }
   if (timedOut) {
     try {
-      process.stderr.write(`aer-hook: timed out after ${hardTimeoutMs}ms; the AER record for this event may be incomplete\n`);
+      process.stderr.write(`aer-hook: timed out after ${limitMs}ms; the AER record for this event may be incomplete\n`);
     } catch {
       /* stderr may already be gone; never throw from a diagnostic */
     }

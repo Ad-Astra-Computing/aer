@@ -9,7 +9,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { install } from './install.js';
-import { runHook, parseEndBudgetMs } from './cli.js';
+import { runHook, main, parseEndBudgetMs, endBudgetWindowMs } from './cli.js';
 import { FakeApi } from './fake-api.test-support.js';
 
 let dir: string;
@@ -82,4 +82,35 @@ describe('a session end with a declared budget', () => {
     expect(api.completes()).toHaveLength(1);
     expect(Date.now() - started).toBeLessThan(8000);
   }, 20_000);
+});
+
+describe('the declared budget sets how long a session end may run', () => {
+  it('is honoured past the hook timeout, and clamped to 30 s', () => {
+    expect(endBudgetWindowMs(['--end-budget-ms', '13500'])).toBe(13500);
+    expect(endBudgetWindowMs(['--end-budget-ms', '9999999'])).toBe(30_000);
+    expect(endBudgetWindowMs([])).toBeUndefined();
+  });
+
+  it('keeps a 13.5 s session end sending after 10 s, the default hook timeout', async () => {
+    const api = new FakeApi();
+    const env = {
+      AER_API_KEY: 'k', AER_TENANT_ID: 't', AER_AGENT_ID: 'a', AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
+      AER_BASE_URL: 'http://aer.test', XDG_CACHE_HOME: path.join(dir, 'cache'), TMPDIR: dir, HOME: dir,
+    } as NodeJS.ProcessEnv;
+    const argv = ['--harness', 'claude-code', '--lifecycle', 'v2'];
+    const lead = { session_id: 'cc-long-end', cwd: dir };
+    await runHook(argv, env, { readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionStart' }), fetch: api.fetch });
+    // Sending the closing report and completing take 11 s together.
+    api.eventsDelayMs = 6000;
+    api.completeDelayMs = 5000;
+    const started = Date.now();
+    await main([...argv, '--end-budget-ms', '13500'], env, {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: () => true,
+      processStart: started,
+    });
+    expect(api.completes()).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(13_500);
+  }, 30_000);
 });
