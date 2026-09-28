@@ -19,7 +19,7 @@ npx @adastracomputing/aer init --yes --json
 On Nix, without npm:
 
 ```sh
-nix run github:Ad-Astra-Computing/aer -- init --yes --json
+nix run github:Ad-Astra-Computing/aer#aer -- init --yes --json
 ```
 
 It detects the package manager, the entrypoints and any known agent SDKs, wires

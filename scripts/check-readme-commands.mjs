@@ -31,7 +31,7 @@ const RUN = new Map([
   ['npm install @adastracomputing/aer-auto-node', null],
   ['npm install -g @adastracomputing/aer-hooks', null],
   ['npm install -g @adastracomputing/aer-mcp-recorder', null],
-  ['nix run github:Ad-Astra-Computing/aer -- init', null],
+  ['nix run github:Ad-Astra-Computing/aer#aer -- init', null],
   [
     'nix profile add github:Ad-Astra-Computing/aer#tools',
     'nix profile add github:Ad-Astra-Computing/aer#tools && aer-hooks install claude-code',

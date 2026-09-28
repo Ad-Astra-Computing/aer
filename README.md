@@ -87,7 +87,7 @@ npx @adastracomputing/aer init
 On Nix, run the CLI from the flake instead:
 
 ```sh
-nix run github:Ad-Astra-Computing/aer -- init
+nix run github:Ad-Astra-Computing/aer#aer -- init
 ```
 
 `init` wires the collector into the run scripts and writes `aer.config.json`,
