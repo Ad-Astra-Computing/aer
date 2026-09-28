@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createHttpTransport } from './transport.js';
+import { createHttpTransport, withRequestTimeout } from './transport.js';
 
 interface Call { url: string; method: string; headers: Record<string, string>; body: unknown }
 
@@ -204,5 +204,27 @@ describe('an AER API that accepts the request and never answers', () => {
       await expect(call()).rejects.toThrow();
       expect(Date.now() - started).toBeLessThan(1_000);
     }
+  });
+});
+
+describe('withRequestTimeout keeps a caller signal', () => {
+  const hangingUntilAbort = (async (_url: string, init?: RequestInit) => {
+    await new Promise<void>((_, reject) => { init?.signal?.addEventListener('abort', () => reject(init.signal?.reason)); });
+    return new Response('');
+  }) as unknown as typeof fetch;
+
+  it('aborts when the caller aborts, well before the timeout', async () => {
+    const f = withRequestTimeout(hangingUntilAbort, 10_000);
+    const caller = new AbortController();
+    const started = Date.now();
+    const p = f('https://x', { signal: caller.signal });
+    setTimeout(() => caller.abort(new Error('caller gave up')), 20);
+    await expect(p).rejects.toThrow('caller gave up');
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('still times out when the caller signal never fires', async () => {
+    const f = withRequestTimeout(hangingUntilAbort, 30);
+    await expect(f('https://x', { signal: new AbortController().signal })).rejects.toThrow('timed out');
   });
 });

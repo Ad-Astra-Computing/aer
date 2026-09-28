@@ -36,22 +36,30 @@ export interface HttpTransportOptions {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
-export function createHttpTransport(opts: HttpTransportOptions): SessionTransport {
-  const baseUrl = opts.baseUrl.replace(/\/$/, '');
-  const rawFetch = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-  // Every request is abandoned after `timeoutMs`, reading the body included.
-  const fetchImpl = (async (url: string, init: RequestInit = {}): Promise<Response> => {
+/**
+ * `fetch`, abandoned after `timeoutMs`, reading the body included. A signal
+ * the caller passes still applies: whichever fires first aborts the request.
+ */
+export function withRequestTimeout(rawFetch: typeof fetch, timeoutMs: number): (url: string, init?: RequestInit) => Promise<Response> {
+  return async (url, init = {}) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error(`AER request timed out after ${timeoutMs} ms`)), timeoutMs);
+    const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
     try {
-      const res = await rawFetch(url, { ...init, signal: controller.signal });
+      const res = await rawFetch(url, { ...init, signal });
       const body = await res.arrayBuffer();
       return new Response(body.byteLength > 0 ? body : null, { status: res.status, statusText: res.statusText, headers: res.headers });
     } finally {
       clearTimeout(timer);
     }
-  });
+  };
+}
+
+export function createHttpTransport(opts: HttpTransportOptions): SessionTransport {
+  const baseUrl = opts.baseUrl.replace(/\/$/, '');
+  const rawFetch = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const fetchImpl = withRequestTimeout(rawFetch, timeoutMs);
   const clock = opts.clock ?? (() => new Date());
   const newId = opts.newId ?? newUuidV7;
 
