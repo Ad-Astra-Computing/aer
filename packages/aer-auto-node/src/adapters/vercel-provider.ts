@@ -8,7 +8,7 @@
 import type { CollectorEvent } from '../session.js';
 import type { AdapterInstall, ProtoTarget } from './resolve.js';
 import { loadModuleCopies } from './resolve.js';
-import { patchMethod, resolvePolicy, gateBeforeCall, accountAfterCall, settleBy, type PolicyOption, type PolicyOptionSource } from './llm-core.js';
+import { patchMethod, toolNameToRecord, resolvePolicy, gateBeforeCall, accountAfterCall, settleBy, type PolicyOption, type PolicyOptionSource } from './llm-core.js';
 import type { AdapterStats } from './stats.js';
 
 type Capture = (event: CollectorEvent) => void;
@@ -361,7 +361,7 @@ function safeComplete(
     capture({ event_type: 'llm.completed', payload });
     stats?.record(provider, ok ? 'ok' : 'error');
     for (const tool of meta?.tool_names ?? []) {
-      capture({ event_type: 'tool.selected', payload: { provider, tool } });
+      capture({ event_type: 'tool.selected', payload: { provider, tool: toolNameToRecord(tool, provider, stats) } });
       stats?.record(provider, 'tool');
     }
   } catch { /* never break the call */ }

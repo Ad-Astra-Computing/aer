@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CollectorEvent } from '../session.js';
 import type { AdapterStats } from './stats.js';
+import { recordableToolName, TOOL_NAME_PLACEHOLDER } from './tool-name.js';
 import { isAsyncIterable, tapAsyncIterable, usageObserved, type StreamAccumulator } from './stream-tap.js';
 import { AerPolicyError, type PolicyEnforcer, type PolicyViolation } from '../policy.js';
 import { canonicalizeRequest, promptCanonTag, responseTag, wireBodyTag, toolArgsTag, toolResultTag, CANON_VERSION } from '../commitment.js';
@@ -261,6 +262,13 @@ function gateAtPrepare(self: unknown): boolean {
   }
 }
 
+/** The tool name to record, counting each one replaced by the placeholder. */
+export function toolNameToRecord(name: unknown, provider: string, stats?: AdapterStats): string {
+  const recorded = recordableToolName(name);
+  if (recorded === TOOL_NAME_PLACEHOLDER) stats?.record(provider, 'tool_name_replaced');
+  return recorded;
+}
+
 // Observations started but not yet emitted. A session close waits on these,
 // so a completion cannot be lost to the flush that was racing it.
 const inFlightObservations = new Set<Promise<void>>();
@@ -420,13 +428,13 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
             // request_ref rides alongside the tag (only when a tag exists) so the
             // generator can correlate this tool-argument commitment to the same
             // request's prompt commitment. Tag-less tool.selected stays unchanged.
-            payload: { provider: cfg.provider, tool: call.name, ...(argsTag ? { request_ref: requestRef, tool_args_tag: argsTag } : {}) },
+            payload: { provider: cfg.provider, tool: toolNameToRecord(call.name, cfg.provider, stats), ...(argsTag ? { request_ref: requestRef, tool_args_tag: argsTag } : {}) },
           });
         }
       } else {
         for (const name of res?.tool_names ?? []) {
           stats?.record(cfg.provider, 'tool');
-          safeCapture(capture, { event_type: 'tool.selected', payload: { provider: cfg.provider, tool: name } });
+          safeCapture(capture, { event_type: 'tool.selected', payload: { provider: cfg.provider, tool: toolNameToRecord(name, cfg.provider, stats) } });
         }
       }
       afterCallPolicy(res);
@@ -488,7 +496,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
       });
       for (const name of acc?.tool_names ?? []) {
         stats?.record(cfg.provider, 'tool');
-        safeCapture(capture, { event_type: 'tool.selected', payload: { provider: cfg.provider, tool: name } });
+        safeCapture(capture, { event_type: 'tool.selected', payload: { provider: cfg.provider, tool: toolNameToRecord(name, cfg.provider, stats) } });
       }
       afterCallPolicy({ tool_names: acc?.tool_names ?? [], ...(acc?.input_tokens != null ? { input_tokens: acc.input_tokens } : {}), ...(acc?.output_tokens != null ? { output_tokens: acc.output_tokens } : {}) });
     };
