@@ -683,7 +683,12 @@ export default function register(registry) {
     const lead = { session_id: sid, cwd: proj, permission_mode: 'default' };
     const sub = (id) => ({ ...lead, agent_id: id, agent_type: 'Explore' });
     const start = fire(c, env, { ...lead, hook_event_name: 'SessionStart', source: 'startup' });
-    await wait(300);
+    // Claude Code runs nothing else until SessionStart's hook has run, so no
+    // subagent event can come first. Wait until the start has queued, not a
+    // fixed time: under load a fixed wait let subagent events arrive with no
+    // lead yet, which the hook rightly counts as unattached and never sends.
+    const stateDir = join(home, '.cache', 'aer-hooks');
+    for (let i = 0; i < 500 && !(existsSync(stateDir) && readdirSync(stateDir).some((f) => /^[0-9a-f]{32}\.json$/.test(f))); i++) await wait(20);
     const rest = [
       { ...lead, hook_event_name: 'UserPromptSubmit' },
       { ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'l1' },

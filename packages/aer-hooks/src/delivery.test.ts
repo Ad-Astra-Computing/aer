@@ -118,7 +118,9 @@ describe('under production latency', () => {
     const lead = { session_id: 'cc-lat', cwd: dir, permission_mode: 'default' };
     const sub = (id: string) => ({ ...lead, agent_id: id, agent_type: 'Explore' });
     const start = fire({ ...lead, hook_event_name: 'SessionStart' });
-    await sleep(100);
+    // As in Claude Code, nothing else runs before the start has queued; its
+    // slow open still overlaps everything below.
+    for (let i = 0; i < 500 && !fs.existsSync(storeFile('cc-lat')); i++) await sleep(20);
     const rest = [
       { ...lead, hook_event_name: 'UserPromptSubmit' },
       { ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'l1' },
