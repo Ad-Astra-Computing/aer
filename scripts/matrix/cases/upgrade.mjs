@@ -24,6 +24,16 @@ function failingChecks(r) {
 
 function readJson(p) { return JSON.parse(readFileSync(p, 'utf8')); }
 
+// The version the old install actually resolved to. `latest` moves, so a case
+// that depends on old behaviour has to ask rather than assume.
+function installedVersion(p, name) {
+  return readJson(join(p.dir, 'node_modules', '@adastracomputing', name, 'package.json')).version;
+}
+const olderThan = (v, major, minor) => {
+  const [a, b] = v.split('.').map(Number);
+  return a < major || (a === major && b < minor);
+};
+
 /** A project with the old versions installed and an env that runs its bins. */
 async function oldProject(c, env) {
   const dir = c.tmp('project-');
@@ -200,7 +210,10 @@ export default function register(registry, env) {
     // The package manager upgrades underneath a running harness session.
     await upgradeInPlace(c, env, p);
     await fire('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: 'x' }, tool_use_id: 'toolu_a' });
-    await fire('Stop', {});
+    // An old v1 registration ends the record at Stop; a v2 one only at
+    // SessionEnd (or a checkpoint), so end it the way that registration does.
+    if (cmd.includes('--lifecycle v2')) await fire('SessionEnd', { reason: 'exit' });
+    else await fire('Stop', {});
 
     const opens = sink.find('POST', '/v1/sessions');
     const sessionIds = new Set(sink.find('POST', /^\/v1\/sessions\/[^/]+\/events$/).map((r) => r.path.split('/')[3]));
@@ -211,13 +224,17 @@ export default function register(registry, env) {
     c.assert.ok(sessionIds.has(completed), 'the completed session is the one the old hook opened');
   }, { timeoutMs: 600_000 });
 
-  t.case('aer-hooks: an install that recorded nothing starts recording after the upgrade', async (c) => {
+  t.case('aer-hooks: an install without AER_AGENT_VERSION records after the upgrade', async (c) => {
     const p = await oldProject(c, env);
+    // From 0.5.0 the hooks send a default agent_version, so an old install
+    // without AER_AGENT_VERSION already records; then the check is that the
+    // default survives the upgrade rather than that recording starts.
+    const oldAlreadyRecords = !olderThan(installedVersion(p, 'aer-hooks'), 0, 5);
     const r0 = await c.run(join(p.binDir, 'aer-hooks'), ['install', 'claude-code'], { env: p.mkEnv(), cwd: p.dir });
     c.assert.exit(r0, 0, 'old install');
     const sink = await c.sink();
-    // No AER_AGENT_VERSION: the old releases sent no agent_version, so the
-    // API refused every open and the install recorded nothing.
+    // No AER_AGENT_VERSION: releases before 0.5.0 sent no agent_version, so
+    // the API refused every open and the install recorded nothing.
     const { AER_AGENT_VERSION: _unset, ...ids } = identity(sink);
     const hookEnv = p.mkEnv(ids);
     const sid = randomUUID();
@@ -231,7 +248,13 @@ export default function register(registry, env) {
     };
     await fire('SessionStart', { source: 'startup' });
     const accepted = () => sink.find('POST', '/v1/sessions').filter((r) => r.status >= 200 && r.status < 300);
-    c.assert.equal(accepted().length, 0, 'the old install had a session accepted');
+    if (oldAlreadyRecords) {
+      c.assert.equal(accepted().length, 1, 'the old install opened a session');
+      c.assert.equal(accepted()[0].json?.agent_version, 'unspecified', 'agent_version on the old open');
+    } else {
+      c.assert.equal(accepted().length, 0, 'the old install had a session accepted');
+    }
+    const acceptedBefore = accepted().length;
 
     await upgradeInPlace(c, env, p);
     const r1 = await c.run(join(p.binDir, 'aer-hooks'), ['install', 'claude-code'], { env: p.mkEnv(), cwd: p.dir });
@@ -248,7 +271,7 @@ export default function register(registry, env) {
     await fire2('Stop', {});
     await fire2('SessionEnd', { reason: 'exit' });
 
-    const opens = accepted();
+    const opens = accepted().slice(acceptedBefore);
     c.assert.equal(opens.length, 1, 'accepted session opens after the upgrade');
     c.assert.equal(opens[0].json?.agent_version, 'unspecified', 'agent_version on the open');
     c.assert.equal(sink.find('POST', /\/complete$/).length, 1, '/complete calls');
