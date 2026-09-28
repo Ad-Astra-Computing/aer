@@ -577,6 +577,12 @@ export interface StatusEntry {
   commands: string[];
   /** The AER commands on the entry that ends a session (SessionEnd, or Antigravity's Stop). */
   endCommands?: string[];
+  /**
+   * Antigravity tool events whose AER entry has the command on the entry
+   * itself, as 0.5.1 wrote them. agy loads that form for a tool event and
+   * never runs it, so those events record nothing.
+   */
+  flatToolEvents?: string[];
 }
 
 /** The event whose entry ends a session in each harness. */
@@ -632,6 +638,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
     }
     let commands: string[] = [];
     const endCommands: string[] = [];
+    const flatToolEvents: string[] = [];
     try {
       const config = await readJsonOrAbort(file);
       // Antigravity's groups sit at the root under our own key, with no wrapper.
@@ -640,6 +647,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
         for (const [ev, groups] of Object.entries(hooks as HooksMap)) {
           if (!Array.isArray(groups) || !groups.some(groupHasAer)) continue;
           wiredEvents.push(ev);
+          if (harness === 'antigravity' && ANTIGRAVITY_MATCHED.has(ev) && groups.some((g) => isAerEntry(g))) flatToolEvents.push(ev);
           for (const g of groups) {
             // Antigravity puts the command on the entry itself, the others nest it.
             const entries = [...(g.hooks ?? []), ...(harness === 'antigravity' ? [g] : [])];
@@ -658,7 +666,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
       // Malformed config: the file exists but yields no readable AER wiring.
       wiredEvents = [];
     }
-    out.push({ harness, path: file, exists, wiredEvents, resolves, commands, endCommands });
+    out.push({ harness, path: file, exists, wiredEvents, resolves, commands, endCommands, ...(flatToolEvents.length > 0 ? { flatToolEvents } : {}) });
   }
   return out;
 }

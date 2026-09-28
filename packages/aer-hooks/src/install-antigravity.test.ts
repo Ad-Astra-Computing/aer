@@ -18,6 +18,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { install, uninstall, status, configPathFor } from './install.js';
+import { diagnoseRegistrations } from './doctor.js';
 
 let dir: string;
 
@@ -161,6 +162,42 @@ describe('uninstall for antigravity', () => {
     const r = await uninstall('antigravity', { dir });
     expect(r.removed).toEqual([]);
     expect(r.backupPath).toBeNull();
+  });
+});
+
+describe('a flat tool-event registration from 0.5.1', () => {
+  async function writeFlat(): Promise<void> {
+    const flat = (ev: string) => ({ command: `aer-hook --harness antigravity --lifecycle v2 --event ${ev}` });
+    await fs.mkdir(path.dirname(CONFIG()), { recursive: true });
+    await fs.writeFile(CONFIG(), JSON.stringify({
+      aer: {
+        enabled: true,
+        PreToolUse: [{ matcher: '*', ...flat('PreToolUse') }],
+        PostToolUse: [{ matcher: '*', ...flat('PostToolUse') }],
+        PreInvocation: [flat('PreInvocation')],
+        PostInvocation: [flat('PostInvocation')],
+        Stop: [flat('Stop')],
+      },
+    }));
+  }
+
+  it('is reported by status as not recording tool calls', async () => {
+    await writeFlat();
+    const st = (await status({ dir })).find((e) => e.harness === 'antigravity')!;
+    expect(st.flatToolEvents).toEqual(['PreToolUse', 'PostToolUse']);
+    const findings = diagnoseRegistrations([st]);
+    const f = findings.find((x) => x.reason === 'antigravity_flat_tool_entry');
+    expect(f?.harness).toBe('antigravity');
+    expect(f?.detail).toMatch(/never runs/);
+    expect(f?.fix).toBe('aer-hooks install antigravity');
+  });
+
+  it('is no longer reported once install has run again', async () => {
+    await writeFlat();
+    await install('antigravity', { dir });
+    const st = (await status({ dir })).find((e) => e.harness === 'antigravity')!;
+    expect(st.flatToolEvents ?? []).toEqual([]);
+    expect(diagnoseRegistrations([st]).some((x) => x.reason === 'antigravity_flat_tool_entry')).toBe(false);
   });
 });
 

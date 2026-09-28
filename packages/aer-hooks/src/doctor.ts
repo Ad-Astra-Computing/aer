@@ -8,7 +8,7 @@
 import type { Harness } from './install.js';
 import type { StatusEntry } from './install.js';
 
-export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env' | 'no_end_budget' | 'relative_codex_home';
+export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env' | 'no_end_budget' | 'relative_codex_home' | 'antigravity_flat_tool_entry';
 
 export interface StaleRegistration {
   harness: Harness | 'any';
@@ -62,6 +62,14 @@ export function diagnoseRegistrations(entries: StatusEntry[]): StaleRegistration
   const seen = new Set<string>();
   for (const entry of entries) {
     if (entry.wiredEvents.length === 0) continue;
+    if ((entry.flatToolEvents ?? []).length > 0) {
+      out.push({
+        harness: entry.harness,
+        reason: 'antigravity_flat_tool_entry',
+        detail: `the antigravity entries for ${entry.flatToolEvents!.join(' and ')} are in the flat form an earlier aer-hooks wrote, which Antigravity loads and never runs, so no tool call is recorded`,
+        fix: 'aer-hooks install antigravity',
+      });
+    }
     for (const finding of diagnoseEndCommands(entry.harness, entry.endCommands ?? [])) out.push(finding);
     for (const command of entry.commands) {
       for (const finding of diagnoseCommand(entry.harness, command)) {
