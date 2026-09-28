@@ -34,6 +34,15 @@ completed. It succeeds only when one did; a workload that ran but recorded
 nothing exits 1. The collector, `doctor` and `smoke` all read the key from
 `AER_API_KEY`, then `AER_TENANT_API_KEY`.
 
+`doctor --json` adds `warnings` (each with a `name` and a `detail`) and
+`hooks.stale_registrations` alongside `ok` and `checks`. One warning fires
+inside a Claude Code tool shell (`CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT`
+set) in a project that also uses the Node collector, since that collector
+stays off there; see the note on `AER_RECORD_IN_AGENT_SHELL` in
+`aer-auto-node`'s README. `hooks.stale_registrations` lists each wired hook
+that has fallen behind the current lifecycle, or is shadowed on `PATH`, with
+the command that fixes it.
+
 `--help` (or `-h`) after any command prints usage and exits immediately,
 before anything is written or any request is sent.
 
@@ -115,9 +124,21 @@ print `verified`. To check records signed by your own test keys, use
   `--bundle <file.json>` plus `--key` is fully offline; `--aer <id>` always
   fetches the bundle itself, so it always needs `AER_BASE_URL`. With neither a
   local key nor `AER_BASE_URL`, the command refuses to run rather than report
-  an unverified match.
+  an unverified match. The result's `bundle_signature.anchored` is always
+  `false`, since this command has no transparency-log evidence to verify an
+  anchor against. The `anchor_status` field alongside it carries `claimed`
+  when the bundle asserts anchoring or `none` otherwise, so a script can
+  still tell those two cases apart. Use `aer verify` for the full anchor
+  check.
 - `aer import claude-code <session.jsonl>`: turn a Claude Code transcript into
   bodies-off AER events on the client; names and hosts only, never content.
+  `-` in place of a file reads the transcript from stdin. Run with no file to
+  see where Claude Code keeps transcripts for the current directory and the
+  newest three found there, and exit 64 (a usage error, the same code
+  `doctor` exits on a base-URL mismatch); a CI step gating on exit codes
+  should match that number. Tenant, agent and environment ids fall back to
+  `aer.config.json` when not set in the environment. Refuses a transcript
+  with no session activity rather than open a session for an empty run.
 - `aer download <aer-id>`, `aer badge <aer-id>`: fetch the public bundle, print
   an embeddable badge.
 - `aer agents | sessions | findings | aers | webhooks | audit`: tenant

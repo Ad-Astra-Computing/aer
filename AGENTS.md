@@ -19,7 +19,7 @@ npx @adastracomputing/aer init --yes --json
 On Nix, without npm:
 
 ```sh
-nix run github:Ad-Astra-Computing/aer -- init --yes --json
+nix run github:Ad-Astra-Computing/aer#aer -- init --yes --json
 ```
 
 It detects the package manager, the entrypoints and any known agent SDKs, wires
@@ -87,13 +87,28 @@ Every `aer` subcommand resolves that key in a fixed order: `AER_API_KEY`
 (or `AER_TENANT_API_KEY`) first, then `aer.config.json` for a base URL, then
 the credentials `aer login` stored on disk. No command takes the key as a
 flag. An environment key always wins over a stored login. The collector
-(`aer-auto-node`) and the harness hooks (`aer-hooks`) read the environment
-directly and never consult a stored login, so a running agent still needs
-`AER_API_KEY` set in its own process.
+(`aer-auto-node`) and the harness hooks (`aer-hooks`) never consult a stored
+login. The collector reads `AER_API_KEY` from its own process; the hooks
+read it from the harness environment or, preferably, from the file named by
+`--env-file` (next section).
 
 Verifying a record needs no account and no network:
 `@adastracomputing/aer-verify` checks the hash, the signature and the
 transparency-log evidence locally.
+
+## Working in someone else's repository
+
+If you are a coding agent operating inside a repository that already has AER
+wired in through `aer-hooks` (Claude Code, Codex CLI, Antigravity), do not export
+`AER_API_KEY` or the other `AER_*` identity variables in a shell you start:
+the harness passes its environment to every command it runs, so an exported
+key would reach unrelated commands too, not only the hook. Credentials for
+hooks belong in an owner-only file (`aer-hooks install <harness> --env-file
+<path>`), never a shell profile.
+
+To check that an existing integration still works, run `npx
+@adastracomputing/aer doctor`; it exits non-zero and names each problem, so
+do not report an integration healthy without a zero exit.
 
 ## Choosing a package
 

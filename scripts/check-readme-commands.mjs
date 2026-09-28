@@ -31,7 +31,7 @@ const RUN = new Map([
   ['npm install @adastracomputing/aer-auto-node', null],
   ['npm install -g @adastracomputing/aer-hooks', null],
   ['npm install -g @adastracomputing/aer-mcp-recorder', null],
-  ['nix run github:Ad-Astra-Computing/aer -- init', null],
+  ['nix run github:Ad-Astra-Computing/aer#aer -- init', null],
   [
     'nix profile add github:Ad-Astra-Computing/aer#tools',
     'nix profile add github:Ad-Astra-Computing/aer#tools && aer-hooks install claude-code',
@@ -72,6 +72,15 @@ const SKIP = new Map([
   ['aer-hooks install codex', 'illustrative; identical shape to the claude-code install already run'],
   ['npx @adastracomputing/aer-hooks status', 'needs a wired harness to report on'],
   ['npx @adastracomputing/aer-hooks uninstall claude-code', 'would remove the install just run'],
+  [
+    'install -m 600 /dev/null ~/.config/aer/hooks.env',
+    'part of the env-file example; the editor step after it needs a person',
+  ],
+  ['$EDITOR ~/.config/aer/hooks.env', 'needs an interactive editor and real credentials'],
+  [
+    'npx @adastracomputing/aer-hooks install claude-code --env-file ~/.config/aer/hooks.env',
+    'needs the env file populated by the editor step above',
+  ],
   [
     'export AER_BASE_URL=https://api.aer.run',
     'part of the ingest example below; the session id, token and file are placeholders',
