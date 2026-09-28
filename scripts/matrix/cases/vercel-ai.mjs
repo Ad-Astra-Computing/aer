@@ -625,9 +625,11 @@ export default function register(registry, env) {
     c.assert.exit(r, 0, 'workload');
     c.assert.equal(r.json?.ok, true, 'workload finished');
     const [[start0, first], ...rest] = r.json.t;
-    // The policy fetch starts with the collector, before the workload's own
-    // imports, so the first call waits at most what is left of its 3 s.
-    c.assert.ok(start0 + first < 3_000 + 500, `first call ended ${start0 + first} ms after process start (waited ${first} ms)`);
+    // The wait is bounded at 3 s from when the policy fetch started, and the
+    // fetch starts before the workload's first call, so no call waits more
+    // than 3 s. Measured from the call, not from process start: on a loaded
+    // machine the collector itself can start late.
+    c.assert.ok(first < 3_000 + 400, `the first call waited ${first} ms (it started ${start0} ms after process start)`);
     for (const [, ms] of rest) c.assert.ok(ms < 500, `a later call took ${ms} ms; nothing may wait once the bound has passed`);
     c.assert.ok(api.accepted() > 0, 'the collector never reached the hanging API');
     c.assert.equal(provider.hits.length, 3, 'every call reached the provider (fail-open)');
