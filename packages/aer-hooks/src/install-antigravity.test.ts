@@ -164,6 +164,16 @@ describe('uninstall for antigravity', () => {
   });
 });
 
+describe('status sees every antigravity command', () => {
+  it('reports the flat invocation commands as well as the grouped tool ones', async () => {
+    await install('antigravity', { dir });
+    const st = (await status({ dir })).find((e) => e.harness === 'antigravity')!;
+    for (const ev of ['PreToolUse', 'PreInvocation', 'Stop']) {
+      expect(st.commands.some((c) => c.includes(`--event ${ev}`)), ev).toBe(true);
+    }
+  });
+});
+
 describe('status reports antigravity alongside the other harnesses', () => {
   it('lists it as unconfigured before install and wired after', async () => {
     const before = (await status({ dir })).find((e) => e.harness === 'antigravity');

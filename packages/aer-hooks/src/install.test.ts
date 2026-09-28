@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import { writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { install, uninstall, status, configPathFor, AER_HOOK_MARKER, hookCommandResolves } from './install.js';
+import { install, uninstall, status, configPathFor, AER_HOOK_MARKER, hookCommandResolves, strandedCodexRegistration } from './install.js';
 
 let dir: string;
 
@@ -368,6 +368,17 @@ describe('CODEX_HOME', () => {
     const r = await install('codex', { dir: other });
     expect(r.path).toBe(path.join(other, '.codex', 'hooks.json'));
     expect(configPathFor('claude-code', home)).toBe(path.join(home, '.claude', 'settings.json'));
+  });
+
+  it('names a registration left in ~/.codex that Codex no longer reads', async () => {
+    delete process.env['CODEX_HOME'];
+    await install('codex');
+    process.env['CODEX_HOME'] = codexHome;
+    expect(await strandedCodexRegistration()).toBe(path.join(home, '.codex', 'hooks.json'));
+    await install('codex');
+    expect(await strandedCodexRegistration()).toBe(path.join(home, '.codex', 'hooks.json'));
+    delete process.env['CODEX_HOME'];
+    expect(await strandedCodexRegistration()).toBeUndefined();
   });
 
   it('ignores a relative CODEX_HOME, which Codex would resolve against a cwd the hook does not share', async () => {

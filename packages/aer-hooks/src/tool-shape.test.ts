@@ -134,6 +134,13 @@ describe('what a tool call reduces to', () => {
     expect(shapesOfToolCall('apply_patch', { command: 42 })).toEqual([]);
   });
 
+  it('reads headers only inside the patch envelope', () => {
+    const text = '*** Add File: before.txt\n*** Begin Patch\n*** Add File: inside.txt\n+x\n*** End Patch\n*** Add File: after.txt\n';
+    expect(shapesOfToolCall('apply_patch', { command: text }, { cwd: '/w' }))
+      .toEqual([{ eventType: 'file.written', payload: { path: '/w/inside.txt' } }]);
+    expect(shapesOfToolCall('apply_patch', { command: '*** Add File: loose.txt\n+x\n' })).toEqual([]);
+  });
+
   it('records at most sixteen files from one patch and never the same one twice', () => {
     const lines = ['*** Begin Patch'];
     for (let i = 0; i < 40; i++) lines.push(`*** Add File: f${i % 20}.txt`, '+x');

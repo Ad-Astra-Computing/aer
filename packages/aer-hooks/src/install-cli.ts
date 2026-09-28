@@ -8,7 +8,7 @@
 // Unlike the per-event `aer-hook` binary, this is an interactive operator command:
 // it prints to stdout and exits non-zero on a usage error or an aborted write.
 
-import { install, uninstall, status, duplicateLayerWarning, type Harness } from './install.js';
+import { install, uninstall, status, duplicateLayerWarning, strandedCodexRegistration, type Harness } from './install.js';
 import { staleRegistrations } from './hooks-doctor.js';
 import { HOOKS_VERSION } from './evidence.js';
 import { homedir } from 'node:os';
@@ -63,6 +63,16 @@ const CODEX_TRUST_NOTE = [
   '  approve the AER entry. Trust is recorded against the command, so an AER',
   '  upgrade that changes it needs approving again.',
 ].join('\n');
+
+/** Name AER entries left in ~/.codex/hooks.json while CODEX_HOME points elsewhere. */
+async function warnStranded(out: (s: string) => void, opts: { dir?: string }): Promise<void> {
+  if (opts.dir !== undefined) return;
+  const legacy = await strandedCodexRegistration();
+  if (legacy === undefined) return;
+  out(`WARN: ${legacy} still has AER hooks, but CODEX_HOME is set, so Codex reads its hooks from there instead.`);
+  out('  They would fire again, twice over, if CODEX_HOME were unset. Remove them with:');
+  out('  CODEX_HOME= aer-hooks uninstall codex');
+}
 
 const HELP_FLAGS = new Set(['--help', '-h', 'help']);
 // The first question asked when a recording looks wrong is which version wrote
@@ -120,7 +130,10 @@ export async function run(
       } else {
         out(`AER hooks already present for ${harness} in ${r.path}; nothing to do.`);
       }
-      if (harness === 'codex') out(CODEX_TRUST_NOTE);
+      if (harness === 'codex') {
+        out(CODEX_TRUST_NOTE);
+        await warnStranded(out, opts);
+      }
       const duplicate = await duplicateLayerWarning(harness, dir ?? homedir(), process.cwd());
       if (duplicate !== undefined) out(duplicate);
       return 0;
@@ -162,6 +175,7 @@ export async function run(
         out(`${e.harness.padEnd(12)} ${e.path}  (${state})`);
         if (e.harness === 'codex' && e.wiredEvents.length > 0) out(CODEX_TRUST_NOTE);
       }
+      await warnStranded(out, opts);
       for (const finding of stale) {
         out(`WARN: ${finding.detail} - fix: ${finding.fix}`);
       }

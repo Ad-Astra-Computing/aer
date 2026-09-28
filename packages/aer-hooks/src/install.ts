@@ -565,6 +565,26 @@ export function endEventOf(harness: Harness): string {
   return harness === 'antigravity' ? 'Stop' : 'SessionEnd';
 }
 
+/**
+ * The ~/.codex/hooks.json that still carries AER entries while CODEX_HOME
+ * points Codex elsewhere, or undefined. Codex does not read it now, so the
+ * entries are invisible to status and uninstall; and should CODEX_HOME be
+ * unset they fire again, alongside the registration under CODEX_HOME.
+ */
+export async function strandedCodexRegistration(): Promise<string | undefined> {
+  const active = configFile('codex', {});
+  const legacy = configPathFor('codex', os.homedir());
+  if (path.resolve(active) === path.resolve(legacy)) return undefined;
+  try {
+    const hooks = (await readJsonOrAbort(legacy))['hooks'];
+    if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return undefined;
+    const wired = Object.values(hooks as HooksMap).some((groups) => Array.isArray(groups) && groups.some(groupHasAer));
+    return wired ? legacy : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Report which events currently carry an AER hook entry, per harness. */
 export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> {
   const out: StatusEntry[] = [];

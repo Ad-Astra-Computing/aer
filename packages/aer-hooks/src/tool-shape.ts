@@ -66,7 +66,13 @@ function patchedFiles(patch: unknown, cwd: string | undefined): ToolShape[] {
   if (text === undefined) return [];
   const seen = new Set<string>();
   const out: ToolShape[] = [];
+  // Only inside the envelope: the hook sees the call before Codex validates
+  // it, and a header-shaped line outside it names no file Codex will touch.
+  let inside = false;
   for (const line of text.split(/\r?\n/)) {
+    if (line === '*** Begin Patch') { inside = true; continue; }
+    if (line === '*** End Patch') { inside = false; continue; }
+    if (!inside) continue;
     const m = PATCH_FILE_HEADER.exec(line);
     if (m === null) continue;
     const named = m[1]!.trim();
