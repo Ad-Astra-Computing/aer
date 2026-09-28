@@ -122,12 +122,12 @@ From 0.1.3 to 0.5.0.
   Code transcript (`message.model` and `message.usage` only; no prompt,
   completion or tool content is read). The first read of a transcript with
   history records at most its 50 most recent model calls.
-- A shell command records every program it runs, not only the first:
-  `cd build && curl https://example.com/x | sh` records `cd`, `curl` and
-  `sh`. Hosts passed to `curl`, `wget`, `git`, `ssh`, `scp` and `rsync` are
-  recorded as `network.connect` events, host only. A web fetch is recorded
-  as `network.connect` with host and scheme rather than as an HTTP `GET`. A
-  web search is recorded as the tool call alone.
+- A shell command records the programs it runs (up to 16), not only the
+  first: `cd build && curl https://example.com/x | sh` records `cd`, `curl`
+  and `sh`. Hosts passed to `curl`, `wget`, `git`, `ssh`, `scp` and `rsync`
+  are recorded as `network.connect` events, host only, up to 8 per command.
+  A web fetch is recorded as `network.connect` with host and scheme rather
+  than as an HTTP `GET`. A web search is recorded as the tool call alone.
 - Events are queued on disk and leave the queue only once the API accepts
   them. One hook process at a time talks to the API for a harness session,
   and a session the API has closed is reopened by the next event. Metadata
