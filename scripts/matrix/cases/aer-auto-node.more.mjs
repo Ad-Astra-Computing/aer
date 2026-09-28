@@ -231,12 +231,7 @@ export default function register(registry, env) {
     c.note(`@anthropic-ai/sdk ${sdkVersion(nm, '@anthropic-ai/sdk')}`);
   });
 
-  t.known(
-    'usage policy block: the first openai SDK call of a session is refused',
-    'a session fetches its usage policy when its first LLM call arrives, and the OpenAI and Anthropic client wrappers cannot wait for it without changing the SDK promise type, so block mode lets that first call through',
-    async (c) => {
-      const nm = await sdkProject(env);
-      if (nm.skip) return nm;
+  llmCase('usage policy block: the first openai SDK call of the process is refused', async (c, nm) => {
       const sink = await c.sink();
       const k = canaries('LLMPOL');
       const provider = await startProvider(c, k);
@@ -260,9 +255,8 @@ export default function register(registry, env) {
       c.assert.exit(r, 0, 'workload');
       c.assert.equal(provider.hits.length, 0, 'requests to a denied model that reached the provider');
       c.assert.equal(r.json?.first, 'blocked', 'the first call, to a denied model');
-    },
-    { timeoutMs: 600_000 },
-  );
+      c.assert.equal(sink.find('GET', /\/usage-policy$/).length, 1, 'policy fetches');
+  });
 
   llmCase('llm: vercel ai generateText and streamText through an openai provider, bodies-off', async (c, nm) => {
     const sink = await c.sink();

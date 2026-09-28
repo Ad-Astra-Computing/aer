@@ -15,6 +15,7 @@
  * from disk, and the capture sink stays local.
  */
 import { createServer } from 'node:http';
+import { createServer as createTcpServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -188,6 +189,25 @@ export async function startVercelProvider(c, k) {
   c.cleanup(() => new Promise((r) => { for (const s of sockets) s.destroy(); server.close(() => r()); }));
   return { hits, url: `http://127.0.0.1:${server.address().port}` };
 }
+
+
+/**
+ * An AER API that accepts every connection and never answers: the slow or
+ * blackholed case, as opposed to a refused port, which fails at once.
+ */
+export async function startHangingApi(c) {
+  const sockets = new Set();
+  const server = createTcpServer((s) => { sockets.add(s); s.on('error', () => undefined); s.on('close', () => sockets.delete(s)); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  c.cleanup(() => new Promise((r) => { for (const s of sockets) s.destroy(); server.close(() => r()); }));
+  return { url: `http://127.0.0.1:${server.address().port}`, connections: () => sockets.size };
+}
+
+/** Workload lines that time each call from process start, into out.t. */
+const TIMED = `
+  out.t = [];
+  const timed = async (fn) => { const s = performance.now(); await fn(); out.t.push([Math.round(s), Math.round(performance.now() - s)]); };
+`;
 
 // ---------------------------------------------------------------------------
 // The customer project: the candidate collector plus the pinned SDK, installed
@@ -520,6 +540,63 @@ export default function register(registry, env) {
     c.assert.equal(JSON.stringify(v.map((e) => e.payload.model)), JSON.stringify(['mx-denied-1', 'mx-denied-2']), 'violation models');
     assertNoCanaries(sink.allText(), k);
     assertCompletedOnce(c, sink);
+  });
+
+  vcase('hanging AER API: only a call racing the first policy fetch waits, never past 3 s from its start', async (c, nm) => {
+    const api = await startHangingApi(c);
+    const k = canaries('VAIHANG');
+    const provider = await startVercelProvider(c, k);
+    const r = await vercelRun(c, nm, {
+      sink: api, provider, k,
+      timeoutMs: 60_000,
+      workload: `${TIMED}
+        await timed(() => ai.generateText({ model: openai('mx-model'), prompt: k.prompt }));
+        await timed(() => ai.generateText({ model: anthropic('mx-model'), prompt: k.prompt }));
+        await timed(async () => { const s = ai.streamText({ model: openai('mx-model'), prompt: k.prompt }); for await (const _ of s.textStream) {} });
+        out.ok = true;
+      `,
+    });
+    c.assert.ok(!r.timedOut, 'the workload hung with the AER API not answering');
+    c.assert.exit(r, 0, 'workload');
+    c.assert.equal(r.json?.ok, true, 'workload finished');
+    const [[start0, first], ...rest] = r.json.t;
+    // The policy fetch starts with the collector, before the workload's own
+    // imports, so the first call waits at most what is left of its 3 s.
+    c.assert.ok(start0 + first < 3_000 + 500, `first call ended ${start0 + first} ms after process start (waited ${first} ms)`);
+    for (const [, ms] of rest) c.assert.ok(ms < 500, `a later call took ${ms} ms; nothing may wait once the bound has passed`);
+    c.assert.equal(provider.hits.length, 3, 'every call reached the provider (fail-open)');
+    // Each request to the AER API is abandoned after 10 s, so the host exits.
+    c.assert.ok(r.ms < 30_000, `the host took ${r.ms} ms to exit`);
+    c.note(`call times (start, duration) ms: ${JSON.stringify(r.json.t)}; exit after ${r.ms} ms`);
+  });
+
+  vcase('policy answered, the rest of the AER API hanging: no call waits at all', async (c, nm) => {
+    const sink = await c.sink();
+    const k = canaries('VAIHANG2');
+    const provider = await startVercelProvider(c, k);
+    const ids = IDS();
+    sink.policies.set(ids.agent_id, { policy_id: randomUUID(), agent_id: ids.agent_id, version: 1, mode: 'report', on_unavailable: 'fail_open', llm: { denied_models: ['nothing-*'] } });
+    // Session open never answers, so every recording path is stuck.
+    sink.route('POST', '/v1/sessions', () => new Promise(() => undefined));
+    const r = await vercelRun(c, nm, {
+      sink, provider, k,
+      config: ids,
+      timeoutMs: 60_000,
+      workload: `${TIMED}
+        // Let the collector's startup fetch land before the first call.
+        await new Promise((r) => setTimeout(r, 300));
+        await timed(() => ai.generateText({ model: openai('mx-model'), prompt: k.prompt }));
+        await timed(() => ai.generateText({ model: anthropic('mx-model'), prompt: k.prompt }));
+        await timed(async () => { const s = ai.streamText({ model: openai('mx-model'), prompt: k.prompt }); for await (const _ of s.textStream) {} });
+        out.ok = true;
+      `,
+    });
+    c.assert.ok(!r.timedOut, 'the workload hung with session open not answering');
+    c.assert.exit(r, 0, 'workload');
+    c.assert.equal(sink.find('GET', /\/usage-policy$/).length, 1, 'one policy fetch for the whole process');
+    for (const [, ms] of r.json.t) c.assert.ok(ms < 300, `a call took ${ms} ms with the policy already known`);
+    c.assert.ok(r.ms < 30_000, `the host took ${r.ms} ms to exit`);
+    c.note(`call times (start, duration) ms: ${JSON.stringify(r.json.t)}; exit after ${r.ms} ms`);
   });
 
   vcase('sink down: every Vercel path still returns on time with its own result intact', async (c, nm) => {
