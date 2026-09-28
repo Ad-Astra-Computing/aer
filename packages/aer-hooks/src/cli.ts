@@ -1082,7 +1082,9 @@ function drainArgvFor(argv: string[], env: NodeJS.ProcessEnv, storeKey: string, 
   // which a temporary checkout may remove as soon as the harness exits.
   const envFile = parseEnvFileFlag(argv) ?? (env['AER_ENV_FILE'] || undefined);
   if (envFile !== undefined) out.push('--env-file', nodePath.resolve(envFile));
-  return [...out, '--drain', storeKey, '--drain-harness', harness, '--harness-pid', String(ownPpid)];
+  // Each value is joined to its flag, so a session id that itself looks like a
+  // flag (the harness chooses it) can never be read as one.
+  return [...out, `--drain=${storeKey}`, `--drain-harness=${harness}`, `--harness-pid=${ownPpid}`];
 }
 
 function handOffEnd(ctx: Ctx, event: HookEvent, opts: { deps: RunHookDeps; argv: string[] }): boolean {
@@ -1146,9 +1148,10 @@ function spawnDrainWorker(drainArgv: string[]): boolean {
   }
 }
 
+/** The value of a `--name=value` flag. Only this form: the worker's values are never separate words. */
 function flagValue(argv: string[], name: string): string | undefined {
-  const i = argv.indexOf(name);
-  return i === -1 ? undefined : argv[i + 1];
+  const a = argv.find((x) => x.startsWith(`${name}=`));
+  return a === undefined ? undefined : a.slice(name.length + 1);
 }
 
 /** Append one line to the worker's diagnostics file in the state dir, keeping it small. */
@@ -1323,7 +1326,7 @@ export async function main(
 
   // The worker a session end started: no stdin, its own budget, and a hard
   // stop so a worker can never linger.
-  if (argv.includes('--drain')) {
+  if (argv.some((a) => a.startsWith('--drain='))) {
     const stop = setTimeout(() => process.exit(0), DRAIN_HARD_STOP_MS);
     try {
       await runDrain(argv, env, deps);

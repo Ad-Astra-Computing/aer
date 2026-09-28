@@ -459,7 +459,7 @@ describe('the end of a session the harness will not wait for', () => {
     expect(Date.now() - t).toBeLessThan(1500);
     expect(api.completes()).toHaveLength(0);
     expect(handed).toHaveLength(1);
-    expect(handed[0]).toContain('--drain');
+    expect(handed[0]).toContain('--drain=cc-headless');
     expect(JSON.stringify(handed[0])).not.toMatch(/tok-|AER_API_KEY|"k"/);
 
     api.eventsDelayMs = 0;
@@ -577,7 +577,26 @@ describe('what the worker is told', () => {
 
   it('gets only the flags it reads: the credential file and which session to finish, for which harness', async () => {
     const argv = await handedFor(['--root-session', 'root-x', '--event', 'Stop']);
-    expect(argv.filter((a) => a.startsWith('--'))).toEqual(['--drain', '--drain-harness', '--harness-pid']);
+    expect(argv.filter((a) => a.startsWith('--')).map((a) => a.split('=')[0])).toEqual(['--drain', '--drain-harness', '--harness-pid']);
+  });
+
+  it('gets a session id that looks like a flag as data, never as a flag', async () => {
+    const sid = '--env-file=/tmp/not-a-credential-file';
+    const lead = { session_id: sid, cwd: dir };
+    await runHook(V2, env(), { readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionStart' }), fetch: api.fetch });
+    const handed: string[][] = [];
+    api.eventsDelayMs = 60_000;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+    });
+    api.eventsDelayMs = 0;
+    const argv = handed[0]!;
+    expect(argv.filter((a) => a.startsWith('--env-file'))).toEqual([]);
+    expect(argv).toContain(`--drain=${sid}`);
+    await runDrain(argv, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
   });
 
   it('gets the credential file as an absolute path, so it does not depend on a directory that may be gone', async () => {
@@ -646,7 +665,7 @@ describe('a batch that never gets an answer', () => {
         logError: () => undefined,
       });
     }
-    const drain = ['--drain', sid, '--drain-harness', 'claude-code', '--harness-pid', '1'];
+    const drain = [`--drain=${sid}`, '--drain-harness=claude-code', '--harness-pid=1'];
     for (let i = 0; i < 4 && (loadState(sid, env())?.outbox.length ?? 0) > 0; i++) {
       await runDrain(drain, env(), { fetch: onlySingles, drainBudgetMs: 3000, logError: () => undefined });
     }
