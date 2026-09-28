@@ -25,7 +25,7 @@
 // old AER_HOOK_RECORD_ARGS flag put raw arguments on the wire and recorded
 // nothing; see shared/ingest-allowlist.ts.
 
-import { shapesOfToolCall, type ToolShape } from './tool-shape.js';
+import { shapesOfToolCall, patchFileCount, PATCH_FILE_CAP, type ToolShape } from './tool-shape.js';
 
 export type HookKind =
   | 'session_start'
@@ -64,6 +64,11 @@ export interface HookEvent {
    * shell line runs several programs and can name several hosts.
    */
   shapes?: ToolShape[] | undefined;
+  /**
+   * How many distinct files a patch named, set only when that is more than
+   * were recorded as file.written, so the record says it is incomplete.
+   */
+  filesNamed?: number | undefined;
   /**
    * The harness's working directory. Used to locate the repository and the
    * project's own config layer, and never emitted: ingest drops it, and it
@@ -222,6 +227,10 @@ function putToolFields(event: HookEvent, tool: unknown, args: unknown): void {
     if (shapes.length > 0) {
       event.shape = shapes[0];
       event.shapes = shapes;
+    }
+    if (name === 'apply_patch' && shapes.length >= PATCH_FILE_CAP) {
+      const named = patchFileCount(args);
+      if (named > shapes.length) event.filesNamed = named;
     }
   }
 }

@@ -78,7 +78,8 @@ export function emitHookEvent(event: HookEvent, sink: EventSink): number {
         if (event.tool === undefined) return unnamedTool(send);
         const fields: Record<string, unknown> = { tool: event.tool };
         if (event.argKeys !== undefined) fields['arg_keys'] = event.argKeys;
-        send('tool.started', fields);
+        // A patch naming more files than are recorded says how many it named.
+        send('tool.started', event.filesNamed !== undefined ? { ...fields, count: event.filesNamed } : fields);
         // What the call actually did, alongside the fact that it happened.
         // Both go through the same sink, so it is one request either way.
         for (const shape of shapesOf(event)) send(shape.eventType, { ...fields, ...shape.payload });

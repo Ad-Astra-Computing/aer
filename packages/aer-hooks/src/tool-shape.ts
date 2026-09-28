@@ -60,12 +60,15 @@ const COMMAND_KEYS = ['command', 'CommandLine'] as const;
 const PATH_KEYS = ['file_path', 'notebook_path', 'path', 'absolute_path', 'AbsolutePath', 'TargetFile'] as const;
 const URL_KEYS = ['url', 'Url'] as const;
 
-/** The files a patch adds, updates, deletes or moves to, never its content. */
-function patchedFiles(patch: unknown, cwd: string | undefined): ToolShape[] {
+/**
+ * Every distinct file a patch adds, updates, deletes or moves to, in order,
+ * never its content. Headers are read only inside the patch envelope, and a
+ * header that names no file is skipped.
+ */
+function patchPaths(patch: unknown, cwd: string | undefined): string[] {
   const text = asString(patch);
   if (text === undefined) return [];
   const seen = new Set<string>();
-  const out: ToolShape[] = [];
   // Only inside the envelope: the hook sees the call before Codex validates
   // it, and a header-shaped line outside it names no file Codex will touch.
   let inside = false;
@@ -80,13 +83,24 @@ function patchedFiles(patch: unknown, cwd: string | undefined): ToolShape[] {
     // record the working directory itself as written.
     if (named.length === 0) continue;
     const path = bounded(cwd !== undefined && !isAbsolute(named) ? join(cwd, named) : named);
-    if (path === undefined || seen.has(path)) continue;
+    if (path === undefined) continue;
     seen.add(path);
-    out.push({ eventType: 'file.written', payload: { path } });
-    if (out.length >= MAX_PATCH_FILES) break;
   }
-  return out;
+  return [...seen];
 }
+
+/** The file.written events a patch reduces to, at most MAX_PATCH_FILES of them. */
+function patchedFiles(patch: unknown, cwd: string | undefined): ToolShape[] {
+  return patchPaths(patch, cwd).slice(0, MAX_PATCH_FILES).map((path) => ({ eventType: 'file.written', payload: { path } }));
+}
+
+/** How many distinct files a Codex patch names, recorded or not. */
+export function patchFileCount(input: unknown): number {
+  return patchPaths(asRecord(input)?.['command'], undefined).length;
+}
+
+/** The most files one patch contributes to a record. */
+export const PATCH_FILE_CAP = MAX_PATCH_FILES;
 
 /** The host and scheme of a fetched URL, never its user, path or query. */
 function urlOf(url: unknown): { host: string; scheme: string } | undefined {

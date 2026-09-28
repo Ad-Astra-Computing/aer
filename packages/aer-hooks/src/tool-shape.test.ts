@@ -5,7 +5,7 @@
 // same way.
 
 import { describe, it, expect } from 'vitest';
-import { shapeOfToolCall, shapesOfToolCall } from './tool-shape.js';
+import { shapeOfToolCall, shapesOfToolCall, patchFileCount } from './tool-shape.js';
 import { INGEST_PAYLOAD_KEYS } from './shared/ingest-allowlist.js';
 
 describe('what a tool call reduces to', () => {
@@ -144,6 +144,15 @@ describe('what a tool call reduces to', () => {
   it('records nothing for a header that names no file', () => {
     const text = '*** Begin Patch\n*** Update File:    \n*** Add File: \n+x\n*** End Patch\n';
     expect(shapesOfToolCall('apply_patch', { command: text }, { cwd: '/w' })).toEqual([]);
+  });
+
+  it('counts every distinct file a patch names, including those past the cap', () => {
+    const lines = ['*** Begin Patch'];
+    for (let i = 0; i < 40; i++) lines.push(`*** Add File: f${i % 20}.txt`, '+x');
+    lines.push('*** End Patch');
+    expect(patchFileCount({ command: lines.join('\n') })).toBe(20);
+    expect(patchFileCount({ command: '*** Begin Patch\n*** Add File: a\n+x\n*** End Patch' })).toBe(1);
+    expect(patchFileCount({ command: 42 })).toBe(0);
   });
 
   it('records at most sixteen files from one patch and never the same one twice', () => {

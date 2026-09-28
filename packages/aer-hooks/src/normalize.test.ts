@@ -176,6 +176,17 @@ describe('normalizeCodex', () => {
     expect(JSON.stringify(e)).not.toContain('SECRET');
   });
 
+  it('says how many files a patch named when it names more than are recorded', () => {
+    const lines = ['*** Begin Patch'];
+    for (let i = 0; i < 20; i++) lines.push(`*** Add File: f${i}.txt`, '+SECRET');
+    lines.push('*** End Patch');
+    const big = normalizeCodex({ hook_event_name: 'PreToolUse', cwd: '/w', turn_id: 't', tool_name: 'apply_patch', tool_input: { command: lines.join('\n') } }, 2);
+    expect(big.shapes?.length).toBe(16);
+    expect(big.filesNamed).toBe(20);
+    const small = normalizeCodex({ hook_event_name: 'PreToolUse', cwd: '/w', turn_id: 't', tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Add File: a\n+x\n*** End Patch' } }, 2);
+    expect(small.filesNamed).toBeUndefined();
+  });
+
   it('falls back to `arguments` when tool_input is absent', () => {
     const e = normalizeCodex(
       { hook_event_name: 'PreToolUse', tool_name: 'x', arguments: { a: 1, b: 2 } },
