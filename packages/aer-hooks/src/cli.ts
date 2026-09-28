@@ -49,7 +49,7 @@ import {
   type TranscriptUsageState,
 } from './claude-code-transcript.js';
 import { isInvokedDirectly } from './invoked-directly.js';
-import { envWithFile } from './env-file.js';
+import { envWithFile, parseEnvFileFlag } from './env-file.js';
 import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 import { openSession, postEvents, completeSession, isRetryable, type ApiBase, type CallResult } from './transport.js';
@@ -1036,17 +1036,21 @@ async function orchestrateAndEmit(
 }
 
 /** The flags the worker needs to rebuild this invocation's view, and nothing secret. */
-function drainArgvFor(argv: string[], storeKey: string, harness: string, ownPpid: number): string[] {
+function drainArgvFor(argv: string[], env: NodeJS.ProcessEnv, storeKey: string, harness: string, ownPpid: number): string[] {
   const keep: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === '--harness' || a === '--lifecycle' || a === '--env-file' || a === '--root-session' || a === '--event') {
+    if (a === '--harness' || a === '--lifecycle' || a === '--root-session' || a === '--event') {
       if (argv[i + 1] !== undefined) keep.push(a, argv[i + 1]!);
       i++;
-    } else if (/^--(harness|lifecycle|env-file|root-session|event)=/.test(a)) {
+    } else if (/^--(harness|lifecycle|root-session|event)=/.test(a)) {
       keep.push(a);
     }
   }
+  // Absolute, so the worker never depends on the hook's working directory,
+  // which a temporary checkout may remove as soon as the harness exits.
+  const envFile = parseEnvFileFlag(argv) ?? (env['AER_ENV_FILE'] || undefined);
+  if (envFile !== undefined) keep.push('--env-file', nodePath.resolve(envFile));
   return [...keep, '--drain', storeKey, '--drain-harness', harness, '--harness-pid', String(ownPpid)];
 }
 
@@ -1054,7 +1058,7 @@ function handOffEnd(ctx: Ctx, event: HookEvent, opts: { deps: RunHookDeps; argv:
   const handOff = opts.deps.handOff ?? (opts.deps.fetch !== undefined ? undefined : spawnDrainWorker);
   if (handOff === undefined) return false;
   try {
-    return handOff(drainArgvFor(opts.argv, ctx.storeKey, harnessOf(event), ctx.ownPpid));
+    return handOff(drainArgvFor(opts.argv, ctx.env, ctx.storeKey, harnessOf(event), ctx.ownPpid));
   } catch {
     return false;
   }
@@ -1095,6 +1099,8 @@ function spawnDrainWorker(drainArgv: string[]): boolean {
       detached: true,
       stdio: 'ignore',
       env: workerEnv(process.env),
+      // Not the hook's working directory: the worker must not pin it.
+      cwd: '/',
     });
     child.on('error', () => undefined);
     child.unref();

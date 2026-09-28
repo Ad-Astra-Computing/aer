@@ -560,3 +560,26 @@ describe('the worker when the API never answers', () => {
     expect(api.completes()).toHaveLength(1);
   }, 60_000);
 });
+
+describe('what the worker is told', () => {
+  async function handedFor(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<string[]> {
+    const lead = { session_id: `cc-args-${args.length}`, cwd: dir };
+    const e = env(extraEnv);
+    await runHook([...V2, ...args], e, { readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionStart' }), fetch: api.fetch });
+    const handed: string[][] = [];
+    await runHook([...V2, ...args], e, {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+    });
+    return handed[0]!;
+  }
+
+  it('gets the credential file as an absolute path, so it does not depend on a directory that may be gone', async () => {
+    const file = path.join(dir, 'hooks.env');
+    fs.writeFileSync(file, 'AER_TENANT_ID=t\n', { mode: 0o600 });
+    const rel = path.relative(process.cwd(), file);
+    const argv = await handedFor(['--env-file', rel]);
+    expect(argv[argv.indexOf('--env-file') + 1]).toBe(file);
+  });
+});
