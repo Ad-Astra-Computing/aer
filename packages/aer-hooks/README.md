@@ -211,13 +211,40 @@ import { aerOpencodePlugin } from '@adastracomputing/aer-hooks';
 export const AerPlugin = aerOpencodePlugin;
 ```
 
-Then set the same env the shell hooks use (`AER_BASE_URL`, `AER_API_KEY` or
-`AER_TENANT_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required
-but the base URL). One AER
-session is opened per opencode session and completed on `session.deleted` or plugin
-dispose. Redaction and fail-open are identical to the shell-hook path: tool names
-and argument KEY names only, never values. If emit is unconfigured the plugin is a
-total no-op.
+The import resolves from the project's own `node_modules`, so install
+`@adastracomputing/aer-hooks` in the project. Then set the same env the shell
+hooks use (`AER_BASE_URL`, `AER_API_KEY` or `AER_TENANT_API_KEY`,
+`AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required but the base URL).
+
+One AER session is opened per opencode session, declared as the `aer-hooks`
+collector recording a harness, with every event marked `harness: opencode`. It
+is completed on `session.deleted` or when opencode disposes its plugins, which
+is how `opencode run` ends; dispose writes a `session_end` marker first and
+waits at most 3 seconds for the AER API, so an API that never answers cannot
+hold opencode's exit.
+
+Tool calls are reduced the way the shell hooks reduce them: tool names and
+argument KEY names, never values, with the same narrow exceptions. A `bash` call
+is reduced to the programs it runs and the hosts its network clients were
+pointed at, a `read`, `write` or `edit` records the file path and a `webfetch`
+the target's host. A tool name is recorded only when it is a string of at
+most 200 UTF-16 code units with no control characters; any other name, such as
+an oversized MCP tool name, is recorded as `(unrecordable tool name)`, and each
+such call adds one `collector.report` marker with phase `tool_name_replaced`.
+If emit is unconfigured the plugin is a total no-op.
+
+The plugin sends events straight from opencode's process as they happen. It
+does not have the shell hooks' on-disk queue and retry, so events it cannot
+deliver while the API is unreachable are lost rather than sent later. It also
+does not open idempotently with `client_ref`, number events with `seq`, write
+checkpoint or `events_registered` evidence, or attach subagent sessions to their
+lead.
+
+opencode installs `@opencode-ai/plugin` into `.opencode` when it starts and
+finds a plugin there. On a machine that has never reached the npm registry, or
+sits behind a proxy that blocks it, that install retries for about a minute
+before opencode goes on, so an offline first run is slow once. Later runs reuse
+the installed package.
 
 Beyond tools, the opencode plugin also records LLM usage. Each assistant
 `message.updated` carries the model, provider and token counts, so the plugin emits

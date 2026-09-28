@@ -24,13 +24,42 @@ export interface HttpTransportOptions {
   /** Collector identity + event-schema capability, sent at session create. */
   collector?: CollectorInfo;
   fetchImpl?: typeof fetch;
+  /**
+   * How long one request to the AER API may take before it is abandoned.
+   * Without a bound, an API that accepts the connection and never answers
+   * would hold the host process open forever. Default 10 s.
+   */
+  requestTimeoutMs?: number;
   clock?: () => Date;
   newId?: () => string;
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * `fetch`, abandoned after `timeoutMs`, reading the body included. A signal
+ * the caller passes still applies: whichever fires first aborts the request.
+ */
+export function withRequestTimeout(rawFetch: typeof fetch, timeoutMs: number): (url: string, init?: RequestInit) => Promise<Response> {
+  return async (url, init = {}) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`AER request timed out after ${timeoutMs} ms`)), timeoutMs);
+    const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+    try {
+      const res = await rawFetch(url, { ...init, signal });
+      const body = await res.arrayBuffer();
+      return new Response(body.byteLength > 0 ? body : null, { status: res.status, statusText: res.statusText, headers: res.headers });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 export function createHttpTransport(opts: HttpTransportOptions): SessionTransport {
   const baseUrl = opts.baseUrl.replace(/\/$/, '');
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const rawFetch = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const fetchImpl = withRequestTimeout(rawFetch, timeoutMs);
   const clock = opts.clock ?? (() => new Date());
   const newId = opts.newId ?? newUuidV7;
 

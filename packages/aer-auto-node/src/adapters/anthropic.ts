@@ -9,6 +9,7 @@ import type { CollectorEvent } from '../session.js';
 
 export const anthropicConfig: ProviderConfig = {
   provider: 'anthropic',
+  stainlessClient: true,
   extractRequest(args) {
     const p = args[0] as { model?: unknown; stream?: unknown; tools?: unknown } | undefined;
     if (!p || typeof p !== 'object' || typeof p.model !== 'string') return null;

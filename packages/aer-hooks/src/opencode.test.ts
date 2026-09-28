@@ -56,6 +56,49 @@ describe('normalizeOpencodeToolBefore', () => {
   });
 });
 
+describe('opencode built-in tools reduce the way the shell hooks do', () => {
+  const before = (tool: string, args: Record<string, unknown>) =>
+    normalizeOpencodeToolBefore({ tool, sessionID: 's', callID: 'c' }, { args });
+
+  it('reduces bash to its programs and hosts, never the command line', () => {
+    const ev = before('bash', { command: 'cat notes.txt && curl -s https://example.com/p?token=SECRET_VALUE', description: 'SECRET_VALUE' });
+    expect(ev.shapes).toEqual([
+      { eventType: 'process.exec', payload: { command: 'cat', command_known: true } },
+      { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
+      { eventType: 'network.connect', payload: { host: 'example.com', source: 'shell' } },
+    ]);
+    expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
+  });
+
+  it('records the path a file tool touched, never the content', () => {
+    expect(before('read', { filePath: '/w/a.txt', offset: 1 }).shapes).toEqual([{ eventType: 'file.opened', payload: { path: '/w/a.txt' } }]);
+    for (const tool of ['write', 'edit']) {
+      const ev = before(tool, { filePath: '/w/b.txt', content: 'SECRET_VALUE', oldString: 'SECRET_VALUE', newString: 'SECRET_VALUE' });
+      expect(ev.shapes).toEqual([{ eventType: 'file.written', payload: { path: '/w/b.txt' } }]);
+      expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
+    }
+  });
+
+  it('records the host a fetch reached, never its path or query', () => {
+    const ev = before('webfetch', { url: 'https://docs.example.org/private/SECRET_VALUE?q=SECRET_VALUE', format: 'text' });
+    expect(ev.shapes).toEqual([{ eventType: 'network.connect', payload: { host: 'docs.example.org', scheme: 'https' } }]);
+    expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
+  });
+
+  it('adds nothing for a tool it does not know, or arguments it cannot read', () => {
+    expect(before('todowrite', { todos: [] }).shapes).toBeUndefined();
+    expect(before('read', { path: 42 } as Record<string, unknown>).shapes).toBeUndefined();
+    expect(normalizeOpencodeToolBefore({ tool: 'bash' }, { args: 'not an object' }).shapes).toBeUndefined();
+  });
+
+  it('marks every mapped event with the opencode harness', () => {
+    expect(before('bash', { command: 'ls' }).meta).toEqual({ harness: 'opencode' });
+    expect(normalizeOpencodeToolAfter({ tool: 'bash' }, {}).meta).toEqual({ harness: 'opencode' });
+    expect(normalizeOpencodeEvent({ type: 'session.created', properties: { info: { id: 's' } } }).meta).toEqual({ harness: 'opencode' });
+    expect(normalizeOpencodeEvent({ type: 'session.idle', properties: { sessionID: 's' } }).meta).toBeUndefined();
+  });
+});
+
 describe('normalizeOpencodeToolAfter', () => {
   it('maps tool.execute.after to a successful tool_end by default', () => {
     const ev = normalizeOpencodeToolAfter(

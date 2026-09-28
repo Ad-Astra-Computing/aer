@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fetchUsagePolicy } from './policy-fetch.js';
+import { fetchUsagePolicy, fetchUsagePolicyOutcome } from './policy-fetch.js';
 
 const OK_POLICY = {
   policy_id: '01950000-0000-7000-8000-000000000001',
@@ -92,5 +92,31 @@ describe('fetchUsagePolicy', () => {
     });
     expect(policy).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('fetchUsagePolicyOutcome tells no policy from a fetch that failed', () => {
+  const run = (fetchImpl: () => Promise<Response>) =>
+    fetchUsagePolicyOutcome({ baseUrl: 'https://x', agentId: 'a', apiKey: 'k', fetchImpl: fetchImpl as unknown as typeof fetch });
+
+  it('404 is an answer: no policy', async () => {
+    expect(await run(async () => jsonResponse(404, { error: 'not_found' }))).toEqual({ status: 'none' });
+  });
+
+  it('a policy is an answer', async () => {
+    const out = await run(async () => jsonResponse(200, { policy_id: 'p', version: 1, mode: 'block', on_unavailable: 'fail_closed' }));
+    expect(out).toMatchObject({ status: 'policy', policy: { policy_id: 'p', mode: 'block', on_unavailable: 'fail_closed' } });
+  });
+
+  it('a network error, a 5xx, a 401 and a body it cannot read are not answers', async () => {
+    expect(await run(async () => { throw new Error('ECONNREFUSED'); })).toEqual({ status: 'unavailable' });
+    expect(await run(async () => jsonResponse(503, {}))).toEqual({ status: 'unavailable' });
+    expect(await run(async () => jsonResponse(401, {}))).toEqual({ status: 'unavailable' });
+    expect(await run(async () => new Response('not json', { status: 200 }))).toEqual({ status: 'unavailable' });
+    expect(await run(async () => jsonResponse(200, { version: 'x' }))).toEqual({ status: 'unavailable' });
+  });
+
+  it('no agent is an answer: there is nothing to govern', async () => {
+    expect(await fetchUsagePolicyOutcome({ baseUrl: 'https://x', apiKey: 'k' })).toEqual({ status: 'none' });
   });
 });
