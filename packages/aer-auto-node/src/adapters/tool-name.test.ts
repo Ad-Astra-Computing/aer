@@ -18,11 +18,15 @@ describe('a tool name from the model', () => {
     }
   });
 
-  it('matches the ingest field bound of 512 UTF-16 code units', () => {
-    expect(MAX_TOOL_NAME_LEN).toBe(512);
-    // 256 astral characters are 512 code units: accepted, as ingest accepts them.
-    expect(recordableToolName('\u{1F600}'.repeat(256))).toBe('\u{1F600}'.repeat(256));
-    expect(recordableToolName('\u{1F600}'.repeat(257))).toBe(TOOL_NAME_PLACEHOLDER);
+  it('matches the 200 UTF-16 code unit bound a tool name must meet to carry a commitment', () => {
+    // Ingest takes 512, but the record's commitment pass refuses a tagged name
+    // over 200, so 200 is the bound that keeps every recorded name usable.
+    expect(MAX_TOOL_NAME_LEN).toBe(200);
+    expect(recordableToolName('x'.repeat(200))).toBe('x'.repeat(200));
+    expect(recordableToolName('x'.repeat(201))).toBe(TOOL_NAME_PLACEHOLDER);
+    // 100 astral characters are 200 code units.
+    expect(recordableToolName('\u{1F600}'.repeat(100))).toBe('\u{1F600}'.repeat(100));
+    expect(recordableToolName('\u{1F600}'.repeat(101))).toBe(TOOL_NAME_PLACEHOLDER);
   });
 });
 

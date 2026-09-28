@@ -177,11 +177,13 @@ keyed by provider and only lists adapters that actually ran:
 and `tool_selections` counts tool calls observed in responses. Counts are
 metadata only.
 
-A tool name comes from the model, so it is recorded only when the AER API would
-accept it: a string of at most 512 UTF-16 code units with no control
-characters. Any other name is recorded as `(unrecordable tool name)` and counted
-in that provider's `tool_names_replaced`, which appears only when it is not
-zero. The call itself is still recorded.
+A tool name comes from the model, so it is recorded only when the record can
+keep it: a string of at most 200 UTF-16 code units with no control characters.
+The AER API accepts names up to 512, but a longer name would break the
+commitment the record keeps for that call's tool arguments. Any other name is
+recorded as `(unrecordable tool name)` and counted in that provider's
+`tool_names_replaced`, which appears only when it is not zero. The call itself
+is still recorded.
 
 ## Known limitation
 
