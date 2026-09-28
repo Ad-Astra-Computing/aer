@@ -7,6 +7,7 @@
 
 import { UNKNOWN_COMMAND } from './shared/shell-reduce.js';
 import { reduceShellLine } from './shell-line.js';
+import { isAbsolute, join } from 'node:path';
 
 /** Local copies: importing them from the normalizer would be a cycle. */
 function asRecord(v: unknown): Record<string, unknown> | undefined {
@@ -38,8 +39,45 @@ function bounded(v: unknown): string | undefined {
 // The same call has a different tool name in each harness.
 const SHELL_TOOLS = new Set(['Bash', 'BashOutput', 'shell', 'run_command', 'run_terminal_command']);
 const READ_TOOLS = new Set(['Read', 'NotebookRead', 'read_file', 'view_file']);
-const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'write_file', 'edit_file', 'replace_file_content']);
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'write_file', 'edit_file', 'write_to_file', 'replace_file_content']);
 const FETCH_TOOLS = new Set(['WebFetch', 'web_fetch', 'read_url_content']);
+// Codex writes every file through this one tool, whose only argument is the
+// patch text.
+const PATCH_TOOL = 'apply_patch';
+// The most files one patch contributes, as with the programs of a shell line.
+const MAX_PATCH_FILES = 16;
+// The headers a patch names a file with. Nothing after the header line is read.
+const PATCH_FILE_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/;
+
+// The same argument has a different name in each harness: Claude Code and
+// Codex use snake_case, Antigravity sends PascalCase (CommandLine,
+// AbsolutePath, TargetFile, Url), captured from agy 1.2.6.
+function firstOf(args: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const k of keys) if (args[k] !== undefined && args[k] !== null) return args[k];
+  return undefined;
+}
+const COMMAND_KEYS = ['command', 'CommandLine'] as const;
+const PATH_KEYS = ['file_path', 'notebook_path', 'path', 'absolute_path', 'AbsolutePath', 'TargetFile'] as const;
+const URL_KEYS = ['url', 'Url'] as const;
+
+/** The files a patch adds, updates, deletes or moves to, never its content. */
+function patchedFiles(patch: unknown, cwd: string | undefined): ToolShape[] {
+  const text = asString(patch);
+  if (text === undefined) return [];
+  const seen = new Set<string>();
+  const out: ToolShape[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = PATCH_FILE_HEADER.exec(line);
+    if (m === null) continue;
+    const named = m[1]!.trim();
+    const path = bounded(cwd !== undefined && !isAbsolute(named) ? join(cwd, named) : named);
+    if (path === undefined || seen.has(path)) continue;
+    seen.add(path);
+    out.push({ eventType: 'file.written', payload: { path } });
+    if (out.length >= MAX_PATCH_FILES) break;
+  }
+  return out;
+}
 
 /** The host and scheme of a fetched URL, never its user, path or query. */
 function urlOf(url: unknown): { host: string; scheme: string } | undefined {
@@ -88,15 +126,18 @@ function exec(command: string): ToolShape {
  * network.connect per host a network client was pointed at. A fetch yields
  * network.connect for its host: the hook sees the tool asked for, never the
  * request itself, so no method is claimed. A web search yields nothing: the
- * provider it queries is not known here, so none is invented.
+ * provider it queries is not known here, so none is invented. A Codex patch
+ * yields file.written for each file its headers name, resolved against `cwd`
+ * when one is given and the header is relative.
  */
-export function shapesOfToolCall(tool: string, input: unknown): ToolShape[] {
+export function shapesOfToolCall(tool: string, input: unknown, opts: { cwd?: string | undefined } = {}): ToolShape[] {
   if (tool.length === 0) return [];
   const args = asRecord(input) ?? {};
 
   if (SHELL_TOOLS.has(tool)) {
-    if (asString(args['command']) === undefined) return [];
-    const line = reduceShellLine(args['command']);
+    const command = firstOf(args, COMMAND_KEYS);
+    if (asString(command) === undefined) return [];
+    const line = reduceShellLine(command);
     const shapes = line.programs.map(exec);
     if (line.unknown) shapes.push(exec(UNKNOWN_COMMAND));
     for (const host of line.hosts) {
@@ -107,11 +148,13 @@ export function shapesOfToolCall(tool: string, input: unknown): ToolShape[] {
   }
 
   if (FETCH_TOOLS.has(tool)) {
-    const target = urlOf(args['url']);
+    const target = urlOf(firstOf(args, URL_KEYS));
     return target === undefined ? [] : [{ eventType: 'network.connect', payload: target }];
   }
 
-  const path = bounded(args['file_path'] ?? args['notebook_path'] ?? args['path'] ?? args['absolute_path']);
+  if (tool === PATCH_TOOL) return patchedFiles(args['command'], opts.cwd !== undefined && isAbsolute(opts.cwd) ? opts.cwd : undefined);
+
+  const path = bounded(firstOf(args, PATH_KEYS));
   if (path !== undefined && READ_TOOLS.has(tool)) return [{ eventType: 'file.opened', payload: { path } }];
   if (path !== undefined && WRITE_TOOLS.has(tool)) return [{ eventType: 'file.written', payload: { path } }];
 

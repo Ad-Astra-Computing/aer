@@ -83,6 +83,66 @@ describe('what a tool call reduces to', () => {
     expect(shapeOfToolCall('read_file', { file_path: '/app/x.ts' })?.eventType).toBe('file.opened');
   });
 
+  it('reads the argument names Antigravity actually sends', () => {
+    // Captured from agy 1.2.6: the tool arguments are PascalCase, so a reader
+    // keyed on command, path or url saw nothing and every shape was lost.
+    expect(shapesOfToolCall('run_command', { CommandLine: 'cat a.txt && curl -s https://agy.example/SECRET', Cwd: '/w' })).toEqual([
+      { eventType: 'process.exec', payload: { command: 'cat', command_known: true } },
+      { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
+      { eventType: 'network.connect', payload: { host: 'agy.example', source: 'shell' } },
+    ]);
+    expect(shapeOfToolCall('view_file', { AbsolutePath: '/w/a.txt', StartLine: 1 }))
+      .toEqual({ eventType: 'file.opened', payload: { path: '/w/a.txt' } });
+    expect(shapeOfToolCall('write_to_file', { TargetFile: '/w/b.txt', CodeContent: 'SECRET', Overwrite: true }))
+      .toEqual({ eventType: 'file.written', payload: { path: '/w/b.txt' } });
+    expect(shapeOfToolCall('replace_file_content', { TargetFile: '/w/b.txt', ReplacementContent: 'SECRET' }))
+      .toEqual({ eventType: 'file.written', payload: { path: '/w/b.txt' } });
+    expect(shapeOfToolCall('read_url_content', { Url: 'https://docs.example.com/SECRET?q=SECRET' }))
+      .toEqual({ eventType: 'network.connect', payload: { host: 'docs.example.com', scheme: 'https' } });
+  });
+
+  it('records each file a Codex patch touches, never the patch', () => {
+    // Codex writes files through apply_patch, whose one argument is the
+    // whole patch. Only the file headers are read.
+    const patch = [
+      '*** Begin Patch',
+      '*** Add File: notes.txt',
+      '+SECRET line',
+      '*** Update File: src/app.ts',
+      '*** Move to: src/main.ts',
+      '@@ SECRET context',
+      '-old SECRET',
+      '+new SECRET',
+      '*** Delete File: /abs/old.txt',
+      '*** End Patch',
+      '',
+    ].join('\n');
+    const shapes = shapesOfToolCall('apply_patch', { command: patch }, { cwd: '/w' });
+    expect(shapes).toEqual([
+      { eventType: 'file.written', payload: { path: '/w/notes.txt' } },
+      { eventType: 'file.written', payload: { path: '/w/src/app.ts' } },
+      { eventType: 'file.written', payload: { path: '/w/src/main.ts' } },
+      { eventType: 'file.written', payload: { path: '/abs/old.txt' } },
+    ]);
+    expect(JSON.stringify(shapes)).not.toContain('SECRET');
+  });
+
+  it('keeps a patch path relative when the working directory is unknown, and ignores a header-less input', () => {
+    expect(shapesOfToolCall('apply_patch', { command: '*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch\n' }))
+      .toEqual([{ eventType: 'file.written', payload: { path: 'a.txt' } }]);
+    expect(shapesOfToolCall('apply_patch', { command: 'SECRET text with no headers' })).toEqual([]);
+    expect(shapesOfToolCall('apply_patch', { command: 42 })).toEqual([]);
+  });
+
+  it('records at most sixteen files from one patch and never the same one twice', () => {
+    const lines = ['*** Begin Patch'];
+    for (let i = 0; i < 40; i++) lines.push(`*** Add File: f${i % 20}.txt`, '+x');
+    lines.push('*** End Patch');
+    const shapes = shapesOfToolCall('apply_patch', { command: lines.join('\n') });
+    expect(shapes.length).toBe(16);
+    expect(new Set(shapes.map((s) => s.payload['path'])).size).toBe(16);
+  });
+
   it('says nothing about a tool whose shape it does not know', () => {
     expect(shapeOfToolCall('Grep', { pattern: 'SECRET' })).toBeUndefined();
     expect(shapeOfToolCall('TodoWrite', { todos: [] })).toBeUndefined();

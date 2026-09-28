@@ -217,7 +217,8 @@ function putToolFields(event: HookEvent, tool: unknown, args: unknown): void {
   const argKeys = keysOf(args);
   if (argKeys !== undefined) event.argKeys = argKeys;
   if (name !== undefined) {
-    const shapes = shapesOfToolCall(name, args);
+    // The working directory resolves a relative path a patch names.
+    const shapes = shapesOfToolCall(name, args, { cwd: event.cwd });
     if (shapes.length > 0) {
       event.shape = shapes[0];
       event.shapes = shapes;
