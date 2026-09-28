@@ -215,16 +215,24 @@ The import resolves from the project's own `node_modules`, so install
 `@adastracomputing/aer-hooks` in the project. Then set the same env the shell
 hooks use (`AER_BASE_URL`, `AER_API_KEY` or `AER_TENANT_API_KEY`,
 `AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required but the base URL).
+
 One AER session is opened per opencode session, declared as the `aer-hooks`
 collector recording a harness, with every event marked `harness: opencode`. It
 is completed on `session.deleted` or when opencode disposes its plugins, which
-is how `opencode run` ends. Redaction and fail-open are identical to the
-shell-hook path: tool names and argument KEY names, never values, with the same
-narrow exceptions. A `bash` call is reduced to the programs it runs and the
-hosts its network clients were pointed at, a `read`, `write` or `edit` records
-the file path and a `webfetch` the target's host. If emit is unconfigured the
-plugin is a total no-op, and when the AER API is unreachable opencode runs and
-exits as it would without the plugin.
+is how `opencode run` ends; dispose writes a `session_end` marker first.
+
+Tool calls are reduced the way the shell hooks reduce them: tool names and
+argument KEY names, never values, with the same narrow exceptions. A `bash` call
+is reduced to the programs it runs and the hosts its network clients were
+pointed at, a `read`, `write` or `edit` records the file path and a `webfetch`
+the target's host. If emit is unconfigured the plugin is a total no-op.
+
+The plugin sends events straight from opencode's process as they happen. It
+does not have the shell hooks' on-disk queue and retry, so events it cannot
+deliver while the API is unreachable are lost rather than sent later. It also
+does not open idempotently with `client_ref`, number events with `seq`, write
+checkpoint or `events_registered` evidence, or attach subagent sessions to their
+lead.
 
 Beyond tools, the opencode plugin also records LLM usage. Each assistant
 `message.updated` carries the model, provider and token counts, so the plugin emits

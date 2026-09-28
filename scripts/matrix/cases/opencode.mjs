@@ -131,7 +131,8 @@ function opencodeInstall(env) {
  */
 function findBinary(dir) {
   const nm = join(dir, 'node_modules');
-  const candidates = [join(nm, 'opencode-ai', 'bin', process.platform === 'win32' ? 'opencode.exe' : 'opencode.exe')];
+  // opencode-ai names its bin entry opencode.exe on every platform.
+  const candidates = [join(nm, 'opencode-ai', 'bin', 'opencode.exe')];
   const plat = process.platform === 'win32' ? 'windows' : process.platform;
   for (const variant of ['', '-baseline', '-musl', '-baseline-musl']) {
     candidates.push(join(nm, `opencode-${plat}-${process.arch}${variant}`, 'bin', process.platform === 'win32' ? 'opencode.exe' : 'opencode'));
@@ -245,8 +246,10 @@ export default function register(registry, env) {
     c.assert.equal(open.collector?.version, c.install.version(HOOKS), 'collector version');
     const ev = sink.events();
     c.assert.ok(ev.every((e) => e.source_type === 'harness'), `source_type: ${[...new Set(ev.map((e) => e.source_type))].join(', ')}`);
-    const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
-    c.assert.equal(start?.payload?.harness, 'opencode', 'harness on the session_start marker');
+    const unmarked = ev.filter((e) => e.payload?.harness !== 'opencode');
+    c.assert.equal(unmarked.length, 0, `events without harness opencode: ${[...new Set(unmarked.map((e) => e.event_type))].join(', ')}`);
+    const phases = byType(sink, 'collector.report').map((e) => e.payload?.phase);
+    c.assert.equal(JSON.stringify(phases), JSON.stringify(['session_start', 'session_end']), 'session markers, the end one written on dispose');
 
     const started = byType(sink, 'tool.started');
     c.assert.equal(started.map((e) => e.payload.tool).join(','), 'bash,read', 'tool.started');

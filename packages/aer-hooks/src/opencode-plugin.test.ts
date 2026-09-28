@@ -150,6 +150,15 @@ describe('what an opencode record carries', () => {
     expect(JSON.stringify(emitted)).not.toContain('SECRET_VALUE');
   });
 
+  it('marks the LLM events with the opencode harness too', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: { type: 'message.updated', properties: { info: { id: 'm1', role: 'assistant', sessionID: 's1', modelID: 'm', providerID: 'p', tokens: { input: 1, output: 2 }, time: { created: 1, completed: 2 } } } } });
+    const llm = sinks[0]!.emitted.filter((e) => e.type.startsWith('llm.'));
+    expect(llm.map((e) => e.type)).toEqual(['llm.requested', 'llm.completed']);
+    for (const e of llm) expect(e.payload['harness']).toBe('opencode');
+  });
+
   it('marks the end of each session on dispose, then completes it', async () => {
     const { opener, sinks } = fakeSinkFactory();
     const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });

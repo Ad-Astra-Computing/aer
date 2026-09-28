@@ -92,14 +92,14 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
     const sink = ensure(llm.sessionRef);
     if (!st.req.has(llm.messageId)) {
       st.req.add(llm.messageId);
-      const payload: Record<string, unknown> = { model: llm.model };
+      const payload: Record<string, unknown> = { ...HARNESS_META, model: llm.model };
       if (llm.provider !== undefined) payload['provider'] = llm.provider;
       void sink.emit('llm.requested', payload);
     }
     if (llm.complete && !st.done.has(llm.messageId)) {
       st.done.add(llm.messageId);
       // opencode streams responses, so streaming:true. Token COUNTS only (bodies-off).
-      const payload: Record<string, unknown> = { model: llm.model, ok: llm.ok, streaming: true };
+      const payload: Record<string, unknown> = { ...HARNESS_META, model: llm.model, ok: llm.ok, streaming: true };
       if (llm.provider !== undefined) payload['provider'] = llm.provider;
       if (llm.inputTokens !== undefined) payload['input_tokens'] = llm.inputTokens;
       if (llm.outputTokens !== undefined) payload['output_tokens'] = llm.outputTokens;
