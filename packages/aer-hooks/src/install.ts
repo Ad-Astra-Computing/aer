@@ -586,7 +586,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
             for (const h of entries) {
               if (!isAerEntry(h)) continue;
               const command = (h as HookCommandEntry).command.trim();
-              if (harness !== 'antigravity') commands.push(command);
+              commands.push(command);
               if (ev === endEventOf(harness)) endCommands.push(command);
             }
           }

@@ -160,3 +160,17 @@ describe('an install from the last release', () => {
     expect((await staleRegistrations({ dir })).filter((f) => f.reason === 'no_end_budget')).toEqual([]);
   });
 });
+
+describe('status for Antigravity', () => {
+  it('runs the per-command checks on its entries too', async () => {
+    const agy: Record<string, unknown> = { enabled: true };
+    for (const ev of ['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop']) {
+      // As written before lifecycle v2 existed.
+      agy[ev] = [{ command: `aer-hook --harness antigravity --event ${ev}` }];
+    }
+    fs.mkdirSync(path.join(dir, '.gemini', 'config'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.gemini', 'config', 'hooks.json'), JSON.stringify({ aer: agy }));
+    const findings = await staleRegistrations({ dir });
+    expect(findings.some((f) => f.harness === 'antigravity' && f.reason === 'missing_lifecycle_v2')).toBe(true);
+  });
+});
