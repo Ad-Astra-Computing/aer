@@ -231,6 +231,39 @@ export default function register(registry, env) {
     c.note(`@anthropic-ai/sdk ${sdkVersion(nm, '@anthropic-ai/sdk')}`);
   });
 
+  t.known(
+    'usage policy block: the first openai SDK call of a session is refused',
+    'a session fetches its usage policy when its first LLM call arrives, and the OpenAI and Anthropic client wrappers cannot wait for it without changing the SDK promise type, so block mode lets that first call through',
+    async (c) => {
+      const nm = await sdkProject(env);
+      if (nm.skip) return nm;
+      const sink = await c.sink();
+      const k = canaries('LLMPOL');
+      const provider = await startProvider(c, k);
+      const ids = IDS();
+      sink.policies.set(ids.agent_id, { policy_id: randomUUID(), version: 1, mode: 'block', on_unavailable: 'fail_open', llm: { denied_models: ['mx-denied-*'] } });
+      const r = await runWorkload(c, {
+        nodeModules: nm,
+        config: { ...ids, base_url: sink.url },
+        env: { MX: JSON.stringify(k), PROVIDER: `${provider.url}/v1` },
+        workload: `
+          import OpenAI from 'openai';
+          import { AerPolicyError } from '${PKG}';
+          const k = JSON.parse(process.env.MX);
+          const client = new OpenAI({ apiKey: 'sk-' + k.secret, baseURL: process.env.PROVIDER, maxRetries: 0 });
+          let first;
+          try { await client.chat.completions.create({ model: 'mx-denied-1', messages: [{ role: 'user', content: k.prompt }] }); first = 'sent'; }
+          catch (err) { first = err instanceof AerPolicyError ? 'blocked' : 'error'; }
+          console.log(JSON.stringify({ first }));
+        `,
+      });
+      c.assert.exit(r, 0, 'workload');
+      c.assert.equal(provider.hits.length, 0, 'requests to a denied model that reached the provider');
+      c.assert.equal(r.json?.first, 'blocked', 'the first call, to a denied model');
+    },
+    { timeoutMs: 600_000 },
+  );
+
   llmCase('llm: vercel ai generateText and streamText through an openai provider, bodies-off', async (c, nm) => {
     const sink = await c.sink();
     const k = canaries('LLMVAI');
