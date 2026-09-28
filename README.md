@@ -173,14 +173,16 @@ npx @adastracomputing/aer smoke
 
 ## Record a coding harness
 
-Claude Code, Codex CLI and opencode are recorded through hooks rather than the
-Node collector, since the agent is the harness rather than a script you launch:
+Claude Code, Codex CLI, Antigravity and opencode are recorded through hooks
+rather than the Node collector, since the agent is the harness rather than a
+script you launch:
 
 ```sh
 npx @adastracomputing/aer-hooks install claude-code
 ```
 
-`codex` and `opencode` work the same way. `status` shows what is wired, and
+`codex` and `antigravity` work the same way; opencode loads an in-process
+plugin instead (see the `aer-hooks` README). `status` shows what is wired, and
 lists any registration that has fallen behind: missing the current hook
 lifecycle, running an older `aer-hooks` release or shadowed by a nix-profile copy of
 `aer-hook` that sits ahead of the project's own on `PATH`. `uninstall` removes AER's entries and only those.
