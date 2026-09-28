@@ -108,7 +108,11 @@ hooks belong in an owner-only file (`aer-hooks install <harness> --env-file
 
 To check that an existing integration still works, run `npx
 @adastracomputing/aer doctor`; it exits non-zero and names each problem, so
-do not report an integration healthy without a zero exit.
+do not report an integration healthy without a zero exit. A zero exit does
+not mean every hook registration is current: a stale one (an end-of-session
+entry with no time budget, a relative `CODEX_HOME`, an Antigravity
+registration recording no tool calls, an outdated `aer-hooks` release) is a
+warning, not a failing check, so read the warnings too.
 
 ## Choosing a package
 
@@ -117,7 +121,7 @@ do not report an integration healthy without a zero exit.
 | Instrument a Node agent with no code changes | `aer-auto-node`, through `aer init` |
 | Emit events from your own code | `aer-sdk-ts`, or `aer_sdk` for Python |
 | Record MCP tool activity without touching the harness | `aer-mcp-recorder` |
-| Record Claude Code, Codex CLI or opencode | `aer-hooks` |
+| Record Claude Code, Codex CLI, opencode or Antigravity | `aer-hooks` |
 | Let only attested agents reach your MCP server | `aer-mcp-guard` |
 | Check attestation tokens at your own API | `aer-resource-node` |
 | Verify a signed record | `aer-verify` |
