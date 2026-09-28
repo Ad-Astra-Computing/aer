@@ -23,7 +23,8 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
   and completes the session on close. Batches at `opts.batchSize` events (default
   64); a buffer over `opts.maxPending` events (default 10000) drops its oldest
   events to make room, reported once on stderr, a second, silent-after-the-first
-  drop path distinct from the ingest failures above. `opts.requestTimeoutMs`
+  drop path distinct from the ingest failures described under Non-negotiable
+  properties below. `opts.requestTimeoutMs`
   (default 10000) bounds each request. `opts.session` attaches to an
   already-open session (`{ id, ingestToken }`) instead of opening a new one, for
   a sink that shares one AER session with another process; `opts.completeOnClose`
@@ -32,8 +33,8 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
   the session identity, the moment a session is opened lazily (never in attach
   mode). `opts.clientRef` (paired with `deriveClientRef`) makes a repeated
   session open reuse the running session instead of minting a duplicate; a
-  server that predates `clientRef` and rejects the open outright is retried
-  once without it. `opts.onComplete(ok)` fires once close() has a session to
+  400 that names `client_ref` is retried once without it. `opts.onComplete(ok)`
+  fires once close() has a session to
   complete, whether opened lazily or attached, and `completeOnClose` is not
   `false`; it does not fire for a disabled sink or one whose session never
   opened. `opts.collector` (`{ name, version?, schema_capability? }`) names
