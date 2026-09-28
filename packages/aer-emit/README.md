@@ -49,7 +49,9 @@ resolves and `onComplete` still reports `true` once `/complete` succeeds.
 `AER_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID` are required for a live sink;
 `AER_ENV_ID`, `AER_BASE_URL`, `AER_AGENT_VERSION`, `AER_PRINCIPAL_ID`,
 `AER_PRINCIPAL_KIND` and `AER_PRINCIPAL_DISPLAY` are optional. Miss any of the three
-required values and `sinkFromEnv` returns a `NullSink`.
+required values and `sinkFromEnv` returns a `NullSink`. `AER_ENV_ID` is not checked
+there, but the API refuses to open a session without it, so a live sink built
+without it records nothing and says so once on stderr.
 
 ## License
 
