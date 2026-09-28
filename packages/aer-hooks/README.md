@@ -85,7 +85,7 @@ point the hooks at it instead:
 
 ```
 install -m 600 /dev/null ~/.config/aer/hooks.env
-$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_AGENT_ID=...
+$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_AGENT_ID=..., AER_ENV_ID=...
 aer-hooks install claude-code --env-file ~/.config/aer/hooks.env
 ```
 
@@ -93,10 +93,13 @@ Every command the installer writes then carries `--env-file <path>`. The hook re
 only the file's `AER_*` lines and never puts the values into its own environment,
 so nothing it starts inherits them. It refuses a file that is a link,
 belongs to another user or can be read or written by anyone else, and says so on
-stderr without showing the contents. Installing again without `--env-file` keeps the
-file already configured. `AER_ENV_FILE=<path>` works in place of the flag.
-`aer-hooks status` and `aer doctor` warn when an AER key is exported in the shell
-they run in while hooks are wired.
+stderr without showing the contents. Refused at hook run time rather than install
+time (the file changed, or the flag was added by hand), the hook warns on stderr
+and falls back to the process's own environment rather than recording nothing, so
+a reader should not assume a refusal means silence. Installing again without
+`--env-file` keeps the file already configured. `AER_ENV_FILE=<path>` works in
+place of the flag. `aer-hooks status` and `aer doctor` warn when an AER key is
+exported in the shell they run in while hooks are wired.
 
 ## One AER session per harness session
 
