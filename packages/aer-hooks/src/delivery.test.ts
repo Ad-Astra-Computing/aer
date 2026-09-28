@@ -9,6 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { runHook, main, runDrain } from './cli.js';
 import { FakeApi } from './fake-api.test-support.js';
+import { loadState } from './session-store.js';
 
 const V2 = ['--harness', 'claude-code', '--lifecycle', 'v2'];
 
@@ -496,4 +497,48 @@ describe('the end of a session the harness will not wait for', () => {
     });
     expect(api.completes()).toHaveLength(1);
   });
+});
+
+describe('the worker when the API never answers', () => {
+  const neverAnswers = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    await new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+    throw new Error('unreachable');
+  }) as typeof fetch;
+
+  async function endedWithQueue(sid: string): Promise<string[]> {
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    const handed: string[][] = [];
+    api.eventsDelayMs = 60_000;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+      logError: () => undefined,
+    });
+    api.eventsDelayMs = 0;
+    return handed[0]!;
+  }
+
+  it('keeps the closing report queued however many times no answer comes', async () => {
+    const argv = await endedWithQueue('cc-never');
+    // The probe: several workers in turn, each spending its whole budget on an API that never answers.
+    for (let i = 0; i < 6; i++) await runDrain(argv, env(), { fetch: neverAnswers, drainBudgetMs: 2500, logError: () => undefined });
+    const st = loadState('cc-never', env())!;
+    expect(st.complete).toBe('end');
+    expect(st.outbox.map((e) => e.payload['phase'])).toEqual(['session_end']);
+    expect(st.droppedBudget).toBe(0);
+    // When the API comes back, the next worker completes the record.
+    await runDrain(argv, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+  }, 60_000);
+
+  it('never drops the closing report to the send-attempt cap, even on repeated refusals', async () => {
+    const argv = await endedWithQueue('cc-refused');
+    const refuses = (async () => new Response('{}', { status: 503 })) as typeof fetch;
+    for (let i = 0; i < 8; i++) await runDrain(argv, env(), { fetch: refuses, drainBudgetMs: 2500, logError: () => undefined });
+    const st = loadState('cc-refused', env())!;
+    expect(st.outbox.map((e) => e.payload['phase'])).toEqual(['session_end']);
+    await runDrain(argv, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+  }, 60_000);
 });

@@ -260,6 +260,8 @@ export interface RunHookDeps {
    * no worker unless this is given too.
    */
   handOff?: (drainArgv: string[]) => boolean;
+  /** The worker's budget, for tests. Never more than DRAIN_BUDGET_MS. */
+  drainBudgetMs?: number;
 }
 
 /** The transcript-tracking fields a state carries, or none for a fresh one. */
@@ -643,6 +645,11 @@ function replacementSegment(state: SessionState, now: number, ctx: Ctx): void {
   }
 }
 
+/** The report that ends a harness session: it is what completes the record. */
+function isClosingReport(e: OutboxEvent): boolean {
+  return e.type === 'collector.report' && e.payload['phase'] === 'session_end';
+}
+
 /** The session this batch went to is closed or no longer takes this token. */
 function sessionGone(r: CallResult): boolean {
   return !r.ok && (r.status === 401 || r.status === 403 || r.status === 404 || r.status === 409);
@@ -761,10 +768,15 @@ async function deliver(ctx: Ctx): Promise<void> {
       await withState(ctx, (st) => {
         if (st === null) return { result: undefined };
         let dropped = 0;
+        // No answer at all (refused, reset, timed out, or this invocation
+        // ran out of time) says nothing about the events, so only a status
+        // the API actually returned counts toward the cap. The closing report
+        // is what completes the record, so the cap never takes it.
+        const counts = r.status !== 0;
         st.outbox = st.outbox.filter((e) => {
           if (!ids.has(e.id)) return true;
-          e.attempts = (e.attempts ?? 0) + 1;
-          if (e.attempts < MAX_SEND_ATTEMPTS) return true;
+          if (counts) e.attempts = (e.attempts ?? 0) + 1;
+          if ((e.attempts ?? 0) < MAX_SEND_ATTEMPTS || isClosingReport(e)) return true;
           dropped += 1;
           return false;
         });
@@ -1093,7 +1105,7 @@ export async function runDrain(argv: string[], env: NodeJS.ProcessEnv = process.
       api: { base, fetch: base.fetch ?? globalThis.fetch },
       clientRef: deriveClientRef(harness, storeKey, base.agentId ?? ''),
       clock: () => now + (Date.now() - realStart),
-      deadline: now + DRAIN_BUDGET_MS,
+      deadline: now + Math.min(DRAIN_BUDGET_MS, deps.drainBudgetMs ?? DRAIN_BUDGET_MS),
       owner: `${process.pid}.${randomBytes(8).toString('hex')}`,
       final: true,
       isSubagent: false,
