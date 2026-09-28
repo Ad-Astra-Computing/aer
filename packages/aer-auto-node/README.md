@@ -295,7 +295,9 @@ aborts it if the body throws.
 ## Usage policies
 
 When an operator has set a usage policy for the agent (via the control plane), the
-collector fetches it once at session open and enforces it against every LLM call.
+collector enforces it against every LLM call. It fetches the policy once per agent
+per process when the collector starts. Every session in the process reads that
+answer; each session still counts its own calls and tokens.
 A policy can allow or deny models by glob (`gpt-*`, `*-vision`) and cap the calls
 and tokens per session. It runs in one of three modes:
 
@@ -313,17 +315,28 @@ signed record shows which policy governed the run, and a `policy.violation` even
 per breach. Policy events carry the model name and counts only, never prompts or
 content, consistent with the metadata-only rule.
 
-The fetch is best-effort and time-bound. It never blocks or breaks session open.
-If the policy endpoint is unreachable or returns nothing, enforcement is simply
-off for that session (fail-open): this is a cost control, not a security boundary,
-and a fetch you could not complete has no mode to honor.
+The fetch is best-effort and time-bound (3 seconds). If the policy endpoint is
+unreachable or returns nothing, enforcement is off (fail-open). This is a cost
+control rather than a security boundary, and a fetch you could not complete has
+no mode to honor. The answer, including "no policy", is kept for 5 minutes and then
+refreshed in the background; calls go on using the previous answer meanwhile and
+never wait for a refresh.
 
-The fetch starts when the session sees its first activity. A Vercel AI SDK
-call that arrives while it is still in flight waits for it (at most three
-seconds), so even a session's first call is governed. The OpenAI and Anthropic
-client wrappers cannot wait without changing the SDK's own promise type: when
-one of their calls is the first thing a session does, it runs before the
-policy arrives and is not governed. Calls after the policy arrives are.
+**Latency.** The only call that can wait is one made while the process's first
+fetch for its agent is still in flight, which in practice is a call made in the
+first moments after the process starts. It waits until that fetch answers, and
+never later than 3 seconds after the fetch started; after that it goes ahead
+ungoverned. Until the answer arrives its mode is not known, so this applies
+whatever the policy turns out to be, or when there is none. Once any answer
+has arrived, no call waits, in any mode. On the Vercel AI SDK the call waits
+before it reaches the provider package. On OpenAI and Anthropic it waits inside
+the SDK's own request preparation, so the promise you get back is still the
+SDK's own; an SDK build without that hook is not held, and such a racing call
+is not governed.
+
+Requests the collector itself makes to the AER API are abandoned after
+10 seconds, so an API that accepts connections and never answers delays your
+process's exit by about that much and never blocks it.
 
 ```ts
 import { AerPolicyError } from '@adastracomputing/aer-auto-node';

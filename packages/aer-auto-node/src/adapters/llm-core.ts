@@ -5,6 +5,7 @@
 // returned promise without altering its type or consuming streams.
 
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CollectorEvent } from '../session.js';
 import type { AdapterStats } from './stats.js';
 import { isAsyncIterable, tapAsyncIterable, usageObserved, type StreamAccumulator } from './stream-tap.js';
@@ -41,13 +42,17 @@ export interface PolicyOption {
   enforcer: PolicyEnforcer;
   emit: (eventType: string, payload: Record<string, unknown>) => void;
   /**
-   * Present while the session's policy fetch is still in flight. A wrapper
-   * whose call is already asynchronous (the Vercel provider layer) awaits it
-   * and resolves the option again, so the first call of a session is governed
-   * too. Never rejects. The OpenAI and Anthropic client wrappers cannot wait
+   * Present only while the first fetch of this agent's policy in this process
+   * is still in flight and inside its bound (`waitUntil`, epoch ms, at most
+   * 3 s after that fetch started). A wrapper whose call is already
+   * asynchronous (the Vercel provider layer) may wait on it until then and
+   * resolve the option again, so a call racing process start is governed.
+   * Never rejects. Once any answer has arrived, cached or not, it is absent
+   * and nothing waits. The OpenAI and Anthropic client wrappers cannot wait
    * without changing the SDK's own promise type, so they ignore it.
    */
   ready?: Promise<void>;
+  waitUntil?: number;
 }
 
 /**
@@ -84,6 +89,14 @@ export interface LlmResponseMeta {
 
 export interface ProviderConfig {
   provider: string;
+  /**
+   * The SDK is a Stainless-generated client (openai, @anthropic-ai/sdk): the
+   * resource keeps its client on `_client`, and the client awaits its own
+   * `prepareOptions` before it builds a request. A call that races the first
+   * policy fetch is then gated there, inside the SDK's own promise, instead
+   * of going out ungoverned.
+   */
+  stainlessClient?: true;
   extractRequest: (args: unknown[]) => LlmRequestMeta | null;
   extractResponse: (response: unknown) => LlmResponseMeta | null;
   /**
@@ -203,6 +216,51 @@ export function accountAfterCall(policy: PolicyOption | undefined, inputTokens?:
   } catch { /* never break the host over token accounting */ }
 }
 
+/**
+ * Wait for `p` until `until` (epoch ms) at the latest. The timer is a normal,
+ * referenced one: a host call is waiting on it, so it must keep the process
+ * alive, and it is cleared as soon as `p` settles.
+ */
+export function settleBy(p: Promise<void>, until: number): Promise<void> {
+  const ms = Math.max(0, until - Date.now());
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    p.then(() => { clearTimeout(timer); resolve(); }, () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+// The gate a call racing the first policy fetch must pass. It rides the
+// async context of that one call, so the client's prepareOptions finds it
+// however the SDK copies the request body on the way.
+const REQUEST_GATE = new AsyncLocalStorage<Promise<void>>();
+const PREPARE_PATCHED = Symbol.for('adastra.aer.adapter.prepareOptions');
+
+/**
+ * Make `self`'s client await the current call's gate in prepareOptions,
+ * before it builds the request, so a rejection refuses the call without a
+ * byte sent and the caller's promise stays the SDK's own. Returns false when
+ * the client does not have that shape; the caller then goes ahead ungated.
+ */
+function gateAtPrepare(self: unknown): boolean {
+  const client = (self as { _client?: unknown } | null)?._client as Record<string | symbol, unknown> | undefined;
+  if (!client || typeof client !== 'object' || typeof client['prepareOptions'] !== 'function') return false;
+  if (client[PREPARE_PATCHED]) return true;
+  const original = client['prepareOptions'] as (this: unknown, options: unknown) => unknown;
+  const wrapped = async function (this: unknown, options: unknown): Promise<unknown> {
+    const gate = REQUEST_GATE.getStore();
+    if (gate) await gate;
+    return original.call(this, options);
+  };
+  try {
+    client['prepareOptions'] = wrapped;
+    if (client['prepareOptions'] !== wrapped) return false;
+    client[PREPARE_PATCHED] = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Observations started but not yet emitted. A session close waits on these,
 // so a completion cannot be lost to the flush that was racing it.
 const inFlightObservations = new Set<Promise<void>>();
@@ -229,7 +287,7 @@ export async function pendingObservations(): Promise<void> {
 export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Capture, stats?: AdapterStats, policySource?: PolicyOptionSource, commit?: CommitOption): AnyFn {
   return function wrapped(this: unknown, ...args: unknown[]): unknown {
     const req = safe(() => cfg.extractRequest(args));
-    const policy = resolvePolicy(policySource);
+    let policy = resolvePolicy(policySource);
     // Content commitment (ADR-011): mint a client-side correlation id per attempt
     // so the prompt commitment and the completion can be joined in the bundle.
     // A retry re-enters wrapped() and mints a fresh request_ref (a retry is a real
@@ -239,9 +297,8 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
     // Usage-policy pre-call gate (P3). The ONLY case enforcement throws into the
     // host is a block-mode blocking violation, thrown BEFORE the SDK call so the
     // call never happens. Everything else (evaluation, emission) is fail-open.
-    gateBeforeCall(policy, req?.model);
-
-    if (req) {
+    const emitRequested = (): void => {
+      if (!req) return;
       stats?.record(cfg.provider, 'call');
       safeCapture(capture, {
         event_type: 'llm.requested',
@@ -252,6 +309,24 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
           ...(req.tools_available != null ? { tools_available: req.tools_available } : {}),
         },
       });
+    };
+
+    // A call racing the process's first policy fetch: the SDK's request is
+    // held in its own prepareOptions until the fetch answers (never past its
+    // bound), then gated like any other call. Otherwise gate now.
+    let gate: Promise<void> | undefined;
+    if (cfg.stainlessClient && policy?.ready && policy.waitUntil !== undefined && !policy.enforcer.active && gateAtPrepare(this)) {
+      gate = settleBy(policy.ready, policy.waitUntil).then(() => {
+        policy = resolvePolicy(policySource);
+        gateBeforeCall(policy, req?.model);
+        emitRequested();
+      });
+      gate.catch(() => undefined);
+    }
+    const deferred = gate !== undefined;
+    if (!deferred) {
+      gateBeforeCall(policy, req?.model);
+      emitRequested();
     }
 
     // Content commitment (ADR-011): HMAC the request we are about to submit under
@@ -424,7 +499,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
 
     let result: unknown;
     try {
-      result = original.apply(this, args);
+      result = gate ? REQUEST_GATE.run(gate, () => original.apply(this, args)) : original.apply(this, args);
     } catch (err) {
       emitError();
       throw err;
@@ -512,7 +587,10 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
         trackObservation(new Promise<void>((resolve) => {
           Promise.resolve(result).then(
             (r) => { try { handleResolved(r); } finally { resolve(); } },
-            () => { try { emitError(); } finally { resolve(); } },
+            (err: unknown) => {
+              // A call the policy refused never happened: nothing to record.
+              try { if (!(err instanceof AerPolicyError)) emitError(); } finally { resolve(); }
+            },
           );
         }));
       } catch { /* observation must not affect the host */ }

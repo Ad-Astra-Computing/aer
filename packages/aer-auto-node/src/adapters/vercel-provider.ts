@@ -8,7 +8,7 @@
 import type { CollectorEvent } from '../session.js';
 import type { AdapterInstall, ProtoTarget } from './resolve.js';
 import { loadModuleCopies } from './resolve.js';
-import { patchMethod, resolvePolicy, gateBeforeCall, accountAfterCall, type PolicyOption, type PolicyOptionSource } from './llm-core.js';
+import { patchMethod, resolvePolicy, gateBeforeCall, accountAfterCall, settleBy, type PolicyOption, type PolicyOptionSource } from './llm-core.js';
 import type { AdapterStats } from './stats.js';
 
 type Capture = (event: CollectorEvent) => void;
@@ -131,20 +131,6 @@ export async function installVercelProviderAdapter(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyFn = (...args: any[]) => any;
-
-/**
- * How long a first model call waits for its session's usage policy to arrive.
- * The fetch bounds itself at 3 s; this bounds an injected fetcher too.
- */
-const POLICY_WAIT_MS = 3_000;
-
-function settleWithin(p: Promise<void>, ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    (timer as { unref?: () => void }).unref?.();
-    p.then(() => { clearTimeout(timer); resolve(); }, () => { clearTimeout(timer); resolve(); });
-  });
-}
 
 /** What a finished call carries: usage, finish reason and tool NAMES only. */
 interface CallMeta {
@@ -299,11 +285,12 @@ export function wrapModelCall(
     const self = this;
     const model = str((self as Record<string, unknown> | null)?.['modelId']);
     const first = resolvePolicy(policySource);
-    // The session's usage policy may still be on its way. Both methods return
-    // a promise by spec, so waiting for it costs the host nothing it relies
-    // on, and the first call of a session is governed like every other.
-    if (first?.ready) {
-      return settleWithin(first.ready, POLICY_WAIT_MS)
+    // Only a call that races the process's first policy fetch can see
+    // `ready`; it waits for that fetch, never past its fixed bound. Both
+    // methods return a promise by spec, so the wait changes nothing the host
+    // relies on. Once any answer is known nothing waits.
+    if (first?.ready && first.waitUntil !== undefined) {
+      return settleBy(first.ready, first.waitUntil)
         .then(() => call(self, args, model, resolvePolicy(policySource)));
     }
     return call(self, args, model, first);

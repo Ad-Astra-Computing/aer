@@ -166,4 +166,62 @@ describe('collector usage-policy enforcement', () => {
     const budget = emitted().find((e) => e.event_type === 'policy.violation');
     expect(budget?.payload).toMatchObject({ rule: 'token_budget', observed: 8, action: 'block' });
   });
+
+  it('fetches the policy when the collector starts, so the first SDK call is governed', async () => {
+    const { transport } = recordingTransport();
+    const original = vi.fn(async () => ({ model: 'gpt-4-vision' }));
+    const proto = fakeProto(original);
+    const fetcher = vi.fn(async () => policy({ mode: 'block', llm: { denied_models: ['*-vision'] } }));
+    createCollector(config(), { transport, patchInstaller: false, adapterInstaller: adapterInstaller(proto), policyFetcher: fetcher });
+    // Nothing has been captured and no session is open, yet the fetch has begun.
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 0));
+    // The very first call of the process, with no activity before it.
+    expect(() => proto.create({ model: 'gpt-4-vision' })).toThrow(AerPolicyError);
+    expect(original).not.toHaveBeenCalled();
+  });
+
+  it('every session in the process reads one fetch', async () => {
+    const def = recordingTransport();
+    const fetcher = vi.fn(async () => policy({ mode: 'report' }));
+    const collector = createCollector(resolveConfig({ env: { AER_API_KEY: 'k', AER_AGENT_ID: 'agent-1' }, configFile: { session: { strategy: 'task' } } }), {
+      transport: def.transport,
+      patchInstaller: false,
+      adapterInstaller: false,
+      policyFetcher: fetcher,
+      sessionTransportFactory: () => recordingTransport().transport,
+    });
+    for (let i = 0; i < 3; i++) {
+      await collector.withSession({}, async () => { collector.capture({ event_type: 'noop', payload: {} }); });
+    }
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers a wait only while the first fetch is in flight, and none once it has answered', async () => {
+    let answer!: (p: UsagePolicy | null) => void;
+    const pending = new Promise<UsagePolicy | null>((r) => { answer = r; });
+    const seen: Array<PolicyOption | undefined> = [];
+    const installer = (_c: (e: CollectorEvent) => void, _a: string[], p?: PolicyOption | (() => PolicyOption | undefined)) => {
+      seen.push(undefined);
+      probe = typeof p === 'function' ? p : () => p;
+      return { enabled: [], uninstall: () => undefined };
+    };
+    let probe: () => PolicyOption | undefined = () => undefined;
+    const collector = createCollector(config(), { transport: recordingTransport().transport, patchInstaller: false, adapterInstaller: installer, policyFetcher: () => pending });
+    collector.capture({ event_type: 'noop', payload: {} });
+    expect(probe()?.ready).toBeInstanceOf(Promise);
+    answer(policy({ mode: 'report' }));
+    await probe()?.ready;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(probe()?.ready).toBeUndefined();
+    expect(probe()?.enforcer.mode).toBe('report');
+    expect(seen).toHaveLength(1);
+  });
+
+  it('no agent or no key: nothing is fetched', async () => {
+    const fetcher = vi.fn(async () => null);
+    createCollector(resolveConfig({ env: { AER_AGENT_ID: 'agent-1' }, configFile: {} }), { transport: recordingTransport().transport, patchInstaller: false, adapterInstaller: false, policyFetcher: fetcher });
+    createCollector(resolveConfig({ env: { AER_API_KEY: 'k' }, configFile: {} }), { transport: recordingTransport().transport, patchInstaller: false, adapterInstaller: false, policyFetcher: fetcher });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });

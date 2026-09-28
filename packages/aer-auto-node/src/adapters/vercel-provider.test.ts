@@ -193,13 +193,35 @@ describe('usage policy at the provider layer', () => {
     let arrive!: () => void;
     const ready = new Promise<void>((r) => { arrive = r; });
     let pending = true;
-    const source = () => ({ enforcer, emit: () => undefined, ...(pending ? { ready } : {}) });
+    const source = () => ({ enforcer, emit: () => undefined, ...(pending ? { ready, waitUntil: Date.now() + 3_000 } : {}) });
     const call = wrap(model, 'doStream', capture, source)({});
     enforcer = policyOf('block', { denied_models: ['mx-model'] });
     pending = false;
     arrive();
     await expect(call).rejects.toBeInstanceOf(AerPolicyError);
     expect(model.calls).toBe(0);
+  });
+
+  it('never waits past the bound for a fetch that does not answer', async () => {
+    const { capture } = recorder();
+    const model = new FakeModel();
+    const never = new Promise<void>(() => undefined);
+    const source = () => ({ enforcer: new PolicyEnforcer(null), emit: () => undefined, ready: never, waitUntil: Date.now() + 80 });
+    const started = Date.now();
+    await wrap(model, 'doGenerate', capture, source)({});
+    const took = Date.now() - started;
+    expect(model.calls).toBe(1);
+    expect(took).toBeGreaterThanOrEqual(70);
+    expect(took).toBeLessThan(1_000);
+  });
+
+  it('does not wait at all when nothing is in flight', async () => {
+    const { capture } = recorder();
+    const model = new FakeModel();
+    const option = { enforcer: policyOf('report', {}), emit: () => undefined };
+    const started = Date.now();
+    await wrap(model, 'doGenerate', capture, option)({});
+    expect(Date.now() - started).toBeLessThan(50);
   });
 
   it('counts tokens after a streamed call', async () => {
