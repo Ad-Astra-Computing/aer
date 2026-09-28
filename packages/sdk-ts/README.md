@@ -64,7 +64,7 @@ await client.close();
 | `sessionId` | (required) | `agent_session_id` returned by `POST /v1/sessions`. |
 | `ingestToken` | (required) | Bearer returned by the same call. Keep this secret. |
 | `batchSize` | 50 | |
-| `flushIntervalMs` | 500 | |
+| `flushIntervalMs` | 500 | Must be greater than 0. There is no off value: `0` polls every millisecond. |
 | `maxRetries` | 3 | Applies only to 5xx/network errors. |
 | `retryBaseMs` | 100 | Exponential backoff base. |
 | `requestTimeoutMs` | 10000 | Per-request timeout, enforced via `AbortController`. |
