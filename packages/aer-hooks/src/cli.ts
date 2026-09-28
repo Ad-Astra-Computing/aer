@@ -1064,16 +1064,37 @@ function handOffEnd(ctx: Ctx, event: HookEvent, opts: { deps: RunHookDeps; argv:
  * Start the worker as a grandchild the harness cannot reach: a new session,
  * and a shell that backgrounds it and exits at once, so it is no longer a
  * descendant of the hook when the harness kills the hook's process tree or
- * group. It inherits the hook's own environment, never the credential file's
- * values, which it reads itself.
+ * group. It gets only the variables workerEnv keeps, never the credential
+ * file's values, which it reads itself.
  */
+const WORKER_ENV_EXACT = new Set([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TZ', 'TMPDIR', 'TMP', 'TEMP',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
+  'NODE_EXTRA_CA_CERTS', 'NODE_USE_ENV_PROXY', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+]);
+
+/**
+ * The environment the worker gets: what it needs to find its state, its
+ * settings and its network. Not the rest of the harness's environment, which
+ * can hold model API keys and cloud credentials, and not NODE_OPTIONS, which
+ * could load code into it.
+ */
+export function workerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) continue;
+    if (WORKER_ENV_EXACT.has(k) || k.startsWith('AER_') || k.startsWith('XDG_') || k.startsWith('LC_')) out[k] = v;
+  }
+  return out;
+}
+
 function spawnDrainWorker(drainArgv: string[]): boolean {
   try {
     const cli = fileURLToPath(import.meta.url);
     const child = spawn('/bin/sh', ['-c', '"$0" "$@" </dev/null >/dev/null 2>&1 &', process.execPath, cli, ...drainArgv], {
       detached: true,
       stdio: 'ignore',
-      env: process.env,
+      env: workerEnv(process.env),
     });
     child.on('error', () => undefined);
     child.unref();
