@@ -72,6 +72,17 @@ async function completed(sink, n, ms = 20_000) {
 const stored = (sink) => [...new Map(sink.events().map((e) => [e.event_id, e])).values()];
 const byType = (sink, t) => stored(sink).filter((e) => e.event_type === t);
 
+/** With nothing slowing the sink down, no event is ever sent twice. */
+function assertNoResends(c, sink) {
+  c.assert.equal(sink.events().length, stored(sink).length, 'an event was sent more than once with nothing slowing the sink');
+}
+
+/** Under latency a request abandoned in time can be resent, but not over and over. */
+function assertFewResends(c, sink) {
+  const posted = sink.events().length;
+  const kept = stored(sink).length;
+  c.assert.ok(posted <= 2 * kept, `${posted} events posted for ${kept} stored`);
+}
 const phases = (sink) => byType(sink, 'collector.report').map((e) => e.payload?.phase);
 
 /** A Claude Code transcript with one assistant message carrying model and usage. */
@@ -227,6 +238,7 @@ export default function register(registry) {
       c.assert.equal(opens(sink).length, 1, 'sessions opened by the wired command');
       // Before the hook exited, which is what a container that ends with the harness depends on.
       c.assert.equal(completes(sink).length, 1, 'the wired SessionEnd did not complete the record before it exited');
+      assertNoResends(c, sink);
       const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
       c.assert.ok(start, 'no session_start marker');
       c.assert.equal(start.payload.harness, harness, 'harness on the marker');
@@ -411,6 +423,7 @@ export default function register(registry) {
     c.assert.equal(end.payload.version, c.install.version(PKG), 'version on the closing marker');
 
     assertNoCanaries(sink.allText(), cn);
+    assertNoResends(c, sink);
     // The store entry, which holds the ingest token, is gone after completion.
     const left = readdirSync(join(home, '.cache', 'aer-hooks')).filter((f) => f.endsWith('.json') && readFileSync(join(home, '.cache', 'aer-hooks', f), 'utf8').includes('ingest_'));
     c.assert.equal(left.length, 0, `ingest token still on disk after completion: ${left}`);
@@ -475,6 +488,7 @@ export default function register(registry) {
     c.assert.ok(tools.every((e) => typeof e.payload.harness_agent_id === 'string'), 'harness_agent_id missing on a subagent event');
     const ids = new Set(sink.find('POST', /\/events$/).map((r) => r.path.split('/')[3]));
     c.assert.equal(ids.size, 1, 'subagent events landed on another session');
+    assertNoResends(c, sink);
   });
 
   t.case('aer-hook claude-code: an orphan subagent event never opens a session', async (c) => {
@@ -514,6 +528,7 @@ export default function register(registry) {
     c.assert.equal(byType(sink, 'network.connect')[0]?.payload?.host, 'example.org', 'the host curl was pointed at');
     c.assert.equal(byType(sink, 'tool.completed').length, 1, 'tool.completed');
     assertNoCanaries(sink.allText(), cn);
+    assertNoResends(c, sink);
   });
 
   // ── fail-open ─────────────────────────────────────────────────────────────
@@ -579,6 +594,7 @@ export default function register(registry) {
     const drains = () => table().filter((r) => r.args.includes('--drain') && r.args.includes(sid));
     for (let i = 0; i < 50 && drains().length > 0; i++) await wait(100);
     c.assert.equal(drains().length, 0, 'a worker was left running after the record completed');
+    assertFewResends(c, sink);
   });
 
   t.case('aer-hook: 5xx on open, exit 0, and the next event still records', async (c) => {
@@ -697,6 +713,7 @@ export default function register(registry) {
     c.assert.equal(end?.payload?.events_emitted, end?.payload?.seq, 'events_emitted on the closing report');
     c.assert.equal(end?.payload?.subagent_events_unattached, undefined, 'subagent events went unattached');
     c.assert.equal(end?.payload?.events_dropped_budget, undefined, 'events were dropped');
+    assertFewResends(c, sink);
   });
 
   t.case('aer-hook: a subagent event with no lead is counted on the record, never opens one', async (c) => {
@@ -728,6 +745,7 @@ export default function register(registry) {
     c.assert.equal(o[0].json.client_ref, o[1].json.client_ref, 'client_ref changed on reopen');
     const second = [...sink.sessions.values()].find((s) => s.status === 'running');
     c.assert.ok(second && second.events.some((e) => e.event_type === 'tool.started'), 'the tool event did not reach the new session');
+    assertNoResends(c, sink);
   });
 
   // ── credentials from a file ───────────────────────────────────────────────
@@ -803,6 +821,7 @@ export default function register(registry) {
     const done = byType(sink, 'tool.completed');
     c.assert.equal(done.map((e) => e.payload.is_error).join(','), 'false,true', 'tool outcome');
     assertNoCanaries(sink.allText(), cn);
+    assertNoResends(c, sink);
   });
 
   t.case('opencode plugin: the installed package records one session per opencode session, bodies-off', async (c) => {
@@ -835,6 +854,7 @@ export default function register(registry) {
     c.assert.equal(llm[0]?.payload?.model, 'model-matrix-oc', 'model');
     c.assert.equal(llm[0]?.payload?.input_tokens, 321, 'input tokens');
     assertNoCanaries(sink.allText(), cn);
+    assertNoResends(c, sink);
   });
 }
 
