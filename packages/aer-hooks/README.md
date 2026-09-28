@@ -66,11 +66,21 @@ npx @adastracomputing/aer-hooks uninstall claude-code
 ### Codex will not run the hook until you trust it
 
 Codex skips any hook it has not been told to trust, and skips it silently, so
-a Codex install that looks finished records nothing. After installing, run
-`/hooks` inside Codex and approve the AER entry. Trust is recorded against the
-command itself, so upgrading AER can change the command and need approving
-again. A project-local `.codex` layer also has to be a trusted project before
-its hooks load at all.
+a Codex install that looks finished records nothing. After installing, start
+Codex: its startup review lists the new hooks, and "Trust all and continue"
+approves them (or run `/hooks` inside Codex and approve the AER entries).
+Trust is recorded against the command itself, so upgrading AER can change the
+command and need approving again. A project-local `.codex` layer also has to
+be a trusted project before its hooks load at all. For automation that has
+already vetted its hooks, `codex exec --dangerously-bypass-hook-trust` runs
+them without a recorded approval, for that invocation only.
+
+The Codex TUI runs its sessions in a background app-server by default, so
+leaving the TUI with `/exit` disconnects from the session rather than ending
+it. Codex ends it, and fires the SessionEnd that completes the record, when
+the app-server unloads the idle session about a minute later. With
+`codex --no-daemon`, and with `codex exec`, the record completes as Codex
+exits.
 
 ### Keep the key out of the agent's shell
 
@@ -229,6 +239,15 @@ process. On a platform without `/bin/sh` (Windows) no background process starts
 and the hook delivers within its own time as before. Either way the closing report
 stays queued however long the API is unreachable, so a resumed session completes
 the record.
+
+### Antigravity records each turn
+
+Antigravity has no event for the end of a conversation: it fires `Stop` at
+the end of every turn and starts the next turn afresh. The hook completes the
+record at that `Stop`, since a record left open would never be sealed, so an
+interactive conversation of several turns is recorded as one record per turn.
+The parts share the conversation's `client_ref` and can be read back as one
+run.
 
 ## Install safety
 
