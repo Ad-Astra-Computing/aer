@@ -908,7 +908,8 @@ async function orchestrateAndEmit(
   const harness = harnessOf(event);
   if ((event.kind === 'session_start' || probe === null || probe.eventsRegistered === undefined)
       && (harness === 'claude-code' || harness === 'codex' || harness === 'antigravity')) {
-    evidence.registered = await registeredEvents(harness, undefined, event.cwd);
+    // The harness's own HOME, which is where its user-level config lives.
+    evidence.registered = await registeredEvents(harness, env['HOME'] || undefined, event.cwd);
   }
   if (event.kind === 'session_start') {
     const head = repoHead(event.cwd);

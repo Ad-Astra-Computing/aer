@@ -25,6 +25,8 @@ function env(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     AER_BASE_URL: 'http://aer.test',
     XDG_CACHE_HOME: cache,
     TMPDIR: path.join(dir, 'tmp'),
+    // Never the developer's own: its harness config would count as registered.
+    HOME: path.join(dir, 'home'),
     ...extra,
   } as NodeJS.ProcessEnv;
 }
