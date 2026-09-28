@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.1
+
+### Patch Changes
+
+- [`2868e47`](https://github.com/Ad-Astra-Computing/aer/commit/2868e474f718c709f47cb43314012fe3621a9473) - The README now describes what the hooks actually capture: a shell
+  command's programs and hosts, a file read or write's path, a web fetch's
+  host and scheme and a Claude Code transcript's model, token counts and a
+  few identifying fields, alongside the tool-name-and-argument-key rule that
+  still covers everything else. It also documents that a refused
+  `--env-file` falls back to the process environment with a warning rather
+  than recording nothing, and fixes the env-file example to name all four
+  required variables.
+- Updated dependencies
+  - @adastracomputing/aer-emit@0.4.1
+
 ## 0.5.0
 
 ### Minor Changes

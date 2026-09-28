@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- [`2868e47`](https://github.com/Ad-Astra-Computing/aer/commit/2868e474f718c709f47cb43314012fe3621a9473) - The README now documents two client options that were missing from the
+  table: `requestTimeoutMs` (the per-request timeout) and `onIngestResult`
+  (a callback for the result of every events POST, including ones the
+  client sends on its own from a batch or the flush timer), and notes that
+  `flushIntervalMs` has no off value.
+
 ## 0.2.1
 
 ### Patch Changes
