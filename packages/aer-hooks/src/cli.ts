@@ -558,7 +558,14 @@ interface Ctx {
   final: boolean;
   isSubagent: boolean;
   ownPpid: number;
+  /** The worker a session end left behind: no event follows it. */
+  worker?: boolean;
   warn: (kind: string, message: string) => void;
+}
+
+/** What happens to what could not be sent: a later event retries it, but after the worker nothing comes. */
+function afterFailure(ctx: Ctx, later: string): string {
+  return ctx.worker ? 'the worker gave up for now and the record stays open; a resumed session sends it' : later;
 }
 
 function remaining(ctx: Ctx): number {
@@ -731,7 +738,7 @@ async function deliver(ctx: Ctx): Promise<void> {
         releaseLease(st, ctx);
         return { result: undefined, save: st };
       });
-      ctx.warn('open', `aer-hook: could not open the AER session (${outcome(r.failed)}); events are queued and will be sent with a later event`);
+      ctx.warn('open', `aer-hook: could not open the AER session (${outcome(r.failed)}); ${afterFailure(ctx, 'events are queued and will be sent with a later event')}`);
       return;
     }
 
@@ -805,7 +812,7 @@ async function deliver(ctx: Ctx): Promise<void> {
         releaseLease(st, ctx);
         return { result: undefined, save: st };
       });
-      ctx.warn('send', `aer-hook: could not send events to AER (${outcome(r)}); they stay queued and will be sent with a later event`);
+      ctx.warn('send', `aer-hook: could not send events to AER (${outcome(r)}); ${afterFailure(ctx, 'they stay queued and will be sent with a later event')}`);
       return;
     }
 
@@ -836,7 +843,7 @@ async function deliver(ctx: Ctx): Promise<void> {
       releaseLease(st, ctx);
       return { result: undefined, save: st };
     });
-    ctx.warn('complete', `aer-hook: could not complete the AER record (${outcome(r)}); a later event will try again`);
+    ctx.warn('complete', `aer-hook: could not complete the AER record (${outcome(r)}); ${afterFailure(ctx, 'a later event will try again')}`);
     return;
   }
   // Out of time: hand the network role back now rather than when it lapses.
@@ -1168,6 +1175,7 @@ export async function runDrain(argv: string[], env: NodeJS.ProcessEnv = process.
       deadline: now + drainBudget(env, deps),
       owner: `${process.pid}.${randomBytes(8).toString('hex')}`,
       final: true,
+      worker: true,
       isSubagent: false,
       ownPpid: Number.isInteger(ppid) && ppid > 0 ? ppid : process.ppid,
       warn: (kind, message) => {

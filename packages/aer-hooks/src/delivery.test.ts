@@ -588,3 +588,26 @@ describe('what the worker is told', () => {
     expect(argv[argv.indexOf('--env-file') + 1]).toBe(file);
   });
 });
+
+describe('what the worker writes down', () => {
+  it('says the record stays open, never that a later event will send it', async () => {
+    const sid = 'cc-worker-words';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    const handed: string[][] = [];
+    api.eventsDelayMs = 60_000;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+      logError: () => undefined,
+    });
+    const lines: string[] = [];
+    const refuses = (async () => new Response('{}', { status: 503 })) as typeof fetch;
+    await runDrain(handed[0]!, env(), { fetch: refuses, drainBudgetMs: 2500, logError: (m) => lines.push(m) });
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) {
+      expect(l).not.toMatch(/later event/);
+      expect(l).toMatch(/the record stays open/);
+    }
+  });
+});
