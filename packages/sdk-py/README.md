@@ -69,13 +69,13 @@ backoff; client errors fail fast. Used as a context manager, a clean exit
 flushes and closes the client (call `complete()` yourself to seal the record);
 an exception aborts the remote session so nothing is left running. A 207
 response is transport success with per-event rejections inside; inspect
-explicit `flush()` results to observe them.
+explicit `flush()` results, or `on_ingest_result`, to observe them.
 
 ### `AerClient` options
 
 | Option | Default | Notes |
 |---|---|---|
-| `base_url` | (required) | Gateway URL. |
+| `base_url` | (required) | Gateway URL. Must be `https://`; `http://` is accepted only for `localhost` or `127.0.0.1`, and anything else raises `ValueError`. |
 | `session_id` | (required) | `agent_session_id` returned by `create_session`. |
 | `ingest_token` | (required) | Bearer returned by the same call. Keep this secret. |
 | `batch_size` | 50 | |
