@@ -217,7 +217,10 @@ function parseState(p: Record<string, unknown>): SessionState | null {
     if (sess['closeFirst'] === true) s.session.closeFirst = true;
   }
   const lease = p['lease'] as Record<string, unknown> | undefined;
-  if (lease && isStr(lease['owner']) && isInt(lease['until'])) s.lease = { owner: lease['owner'], until: lease['until'] };
+  const until = lease?.['until'];
+  if (lease && isStr(lease['owner']) && typeof until === 'number' && Number.isFinite(until) && until >= 0) {
+    s.lease = { owner: lease['owner'], until: Math.ceil(until) };
+  }
   if (isInt(p['openFailures'])) s.openFailures = p['openFailures'];
   if (isInt(p['retryOpenAt'])) s.retryOpenAt = p['retryOpenAt'];
   if (p['complete'] === 'checkpoint' || p['complete'] === 'end') s.complete = p['complete'];

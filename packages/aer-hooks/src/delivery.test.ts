@@ -674,3 +674,26 @@ describe('a batch that never gets an answer', () => {
     expect(api.eventsOf('file.opened')).toHaveLength(5);
   }, 60_000);
 });
+
+describe('the hook and its worker never send the same events at once', () => {
+  it('holds the network role while it sends, with a process start that is not a whole millisecond', async () => {
+    const sid = 'cc-lease';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    api.eventsDelayMs = 800;
+    let handed: string[] = [];
+    const hook = runHook([...V2, '--end-budget-ms', '8000'], env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed = argv; return true; },
+      // performance.timeOrigin is fractional.
+      processStart: Date.now() + 0.25,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    // The worker starts while the hook's send is in flight.
+    const worker = runDrain(handed, env(), { fetch: api.fetch });
+    await Promise.all([hook, worker]);
+    const posted = api.eventPosts().flatMap((r) => (r.body as Array<{ event_id: string }>).map((e) => e.event_id));
+    expect(posted.length).toBe(new Set(posted).size);
+    expect(api.completes()).toHaveLength(1);
+  });
+});

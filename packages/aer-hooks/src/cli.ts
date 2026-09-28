@@ -666,7 +666,9 @@ function decide(state: SessionState | null, now: number, ctx: Ctx): { result: St
     releaseLease(state, ctx);
     return { result: { kind: 'done' }, save: state };
   }
-  state.lease = { owner: ctx.owner, until: ctx.deadline + LEASE_GRACE_MS };
+  // Whole milliseconds: the deadline can come from performance.timeOrigin,
+  // and a lease the store cannot read back is no lease at all.
+  state.lease = { owner: ctx.owner, until: Math.ceil(ctx.deadline + LEASE_GRACE_MS) };
   return { result: step, save: state };
 }
 
