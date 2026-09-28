@@ -119,7 +119,14 @@ so the matrix refuses to start on an older Node. The `harness` suite checks the
 guard first on every run, and if any of its cases fails no other suite runs.
 The `claude-code` suite, whose harness must reach its model provider, gets an
 allowlisting proxy in place of that one: it opens a tunnel to
-`api.anthropic.com` and refuses everything else, the AER API included.
+`api.anthropic.com` and refuses everything else, the AER API included. Both
+proxies are environment-based, not a network-level block: they hold for a
+client that honours the proxy variables, and a client that ignored them would
+connect directly. Two suites check that their harness honours them: the
+`claude-code` cases assert that the tunnel to `api.anthropic.com` was
+opened, and the `opencode` case that its catalogue fetch met the blackhole
+proxy. Independently of the proxy, `AER_BASE_URL`
+always names a local sink and no child may name `api.aer.run`.
 
 The one exception is `--live`, off by default. A positive `aer verify` verdict
 needs a record signed by a key in the CLI's pinned production trust root, and

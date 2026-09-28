@@ -163,6 +163,10 @@ function assertClaudeRun(c, sink, { proj, k, proxy }) {
   }
   assertNoCanaries(sink.allText(), k);
   c.assert.ok(!proxy.refused.some((r) => r.target.includes(PRODUCTION_HOST)), 'something tried to reach the AER API');
+  // The proxy is reached only through the proxy variables. A tunnel to the
+  // model provider proves claude honoured them, so its traffic went through
+  // the allowlist rather than straight out.
+  c.assert.ok(proxy.tunnels.includes('api.anthropic.com'), `claude opened no tunnel through the allowlist proxy (tunnels: ${[...new Set(proxy.tunnels)].join(', ') || 'none'})`);
 }
 
 // ---------------------------------------------------------------------------
