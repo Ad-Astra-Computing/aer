@@ -10,6 +10,8 @@
  * fetch and node:http(s); run.mjs refuses to start on anything older.
  */
 import { run, ProductionTargetError, PRODUCTION_HOST } from '../lib/proc.mjs';
+import { createSecureContext } from 'node:tls';
+import { mintTlsCert } from './aer-auto-node.mjs';
 
 export default function register(registry) {
   const t = registry.suite('harness', 'scripts/matrix');
@@ -60,5 +62,16 @@ export default function register(registry) {
     c.assert.equal((await open({ ...good, environment_id: 'prod' })).status, 400, 'an open with an environment_id that is not a UUID');
     const { environment_id: _e, ...noEnv } = good;
     c.assert.equal((await open(noEnv)).status, 400, 'an open without environment_id');
+  });
+
+  t.case('every certificate the harness mints is one Node accepts', (c) => {
+    // A serial whose first byte came out zero was DER Node refuses ("illegal
+    // padding"), about one mint in 500, so an HTTPS case failed at random.
+    for (let i = 0; i < 2_000; i++) {
+      const { cert, key } = mintTlsCert();
+      try { createSecureContext({ cert, key }); } catch (err) {
+        c.assert.ok(false, `mint ${i} produced a certificate Node refuses: ${err.message}`);
+      }
+    }
   });
 }
