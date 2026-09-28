@@ -258,6 +258,56 @@ export default function register(registry, env) {
       c.assert.equal(sink.find('GET', /\/usage-policy$/).length, 1, 'policy fetches');
   });
 
+  llmCase('usage policy block: openai and anthropic calls racing a slow policy fetch wait, keep the SDK promise and are governed', async (c, nm) => {
+    const sink = await c.sink();
+    const k = canaries('LLMRACE');
+    const provider = await startProvider(c, k);
+    const ids = IDS();
+    sink.policies.set(ids.agent_id, { policy_id: randomUUID(), version: 1, mode: 'block', on_unavailable: 'fail_open', llm: { denied_models: ['mx-denied-*'] } });
+    // The policy answers 1.5 s late, so the workload's first calls are made
+    // while it is in flight and must be held in the SDK's own request path.
+    sink.route('GET', /\/usage-policy$/, async () => { await new Promise((r) => setTimeout(r, 1_500)); return false; });
+    const r = await runWorkload(c, {
+      nodeModules: nm,
+      config: { ...ids, base_url: sink.url },
+      env: { MX: JSON.stringify(k), PROVIDER: provider.url },
+      workload: `
+        import OpenAI from 'openai';
+        import Anthropic from '@anthropic-ai/sdk';
+        import { AerPolicyError } from '${PKG}';
+        const k = JSON.parse(process.env.MX);
+        const openai = new OpenAI({ apiKey: 'sk-' + k.secret, baseURL: process.env.PROVIDER + '/v1', maxRetries: 0 });
+        const anthropic = new Anthropic({ apiKey: 'sk-ant-' + k.secret, baseURL: process.env.PROVIDER, maxRetries: 0 });
+        const t0 = performance.now();
+        const outcome = (p) => p.then(() => 'sent', (err) => err instanceof AerPolicyError ? 'blocked:' + err.rule : 'error:' + (err?.message ?? err));
+        const msgs = [{ role: 'user', content: k.prompt }];
+        const oaDenied = outcome(openai.chat.completions.create({ model: 'mx-denied-1', messages: msgs }));
+        const anDenied = outcome(anthropic.messages.create({ model: 'mx-denied-2', max_tokens: 16, messages: msgs }));
+        const oaAllowed = openai.chat.completions.create({ model: 'mx-model', messages: msgs }).withResponse();
+        const anAllowed = anthropic.messages.create({ model: 'mx-model', max_tokens: 16, messages: msgs }).withResponse();
+        const [a, b, c1, d] = await Promise.all([oaDenied, anDenied, oaAllowed, anAllowed]);
+        console.log(JSON.stringify({
+          oaDenied: a, anDenied: b,
+          oaAllowed: { status: c1.response.status, text: c1.data.choices[0].message.content === k.result },
+          anAllowed: { status: d.response.status, text: d.data.content[0].text === k.result },
+          ms: Math.round(performance.now() - t0),
+        }));
+      `,
+    });
+    c.assert.exit(r, 0, 'workload');
+    c.assert.equal(r.json?.oaDenied, 'blocked:model_denied', 'openai call to a denied model');
+    c.assert.equal(r.json?.anDenied, 'blocked:model_denied', 'anthropic call to a denied model');
+    c.assert.equal(JSON.stringify(r.json?.oaAllowed), JSON.stringify({ status: 200, text: true }), 'openai .withResponse() on an allowed call');
+    c.assert.equal(JSON.stringify(r.json?.anAllowed), JSON.stringify({ status: 200, text: true }), 'anthropic .withResponse() on an allowed call');
+    c.assert.equal(JSON.stringify(provider.hits.map((h) => JSON.parse(h.body).model).sort()), JSON.stringify(['mx-model', 'mx-model']), 'only the allowed calls reached the provider');
+    // The calls waited for the late policy, and no longer than its bound.
+    c.assert.ok(r.json.ms >= 500 && r.json.ms < 3_500, `the racing calls took ${r.json.ms} ms`);
+    const v = byType(sink.events(), 'policy.violation');
+    c.assert.equal(v.length, 2, 'policy.violation');
+    c.assert.equal(byType(sink.events(), 'llm.prompt_committed').length, 0, 'prompt commitments without a key');
+    c.note(`racing calls settled after ${r.json.ms} ms`);
+  });
+
   llmCase('llm: vercel ai generateText and streamText through an openai provider, bodies-off', async (c, nm) => {
     const sink = await c.sink();
     const k = canaries('LLMVAI');
