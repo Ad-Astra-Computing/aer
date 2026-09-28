@@ -645,7 +645,11 @@ function decide(state: SessionState | null, now: number, ctx: Ctx): { result: St
     } else {
       // A batch that already failed is retried one event at a time, so one
       // event the server keeps refusing cannot take its neighbours down too.
-      const size = (state.outbox[0]!.attempts ?? 0) >= 2 ? 1 : POST_BATCH;
+      // So does one sent in a batch that got no answer at all: a request too
+      // large to finish in the time an invocation has would otherwise stay
+      // at the head of the queue for good.
+      const head = state.outbox[0]!;
+      const size = (head.attempts ?? 0) >= 2 || head.stalled === true ? 1 : POST_BATCH;
       step = { kind: 'post', session: state.session, batch: state.outbox.slice(0, size) };
     }
   } else if (state.complete !== undefined) {
@@ -814,6 +818,7 @@ async function deliver(ctx: Ctx): Promise<void> {
         st.outbox = st.outbox.filter((e) => {
           if (!ids.has(e.id)) return true;
           if (counts) e.attempts = (e.attempts ?? 0) + 1;
+          else if (step.batch.length > 1) e.stalled = true;
           if ((e.attempts ?? 0) < MAX_SEND_ATTEMPTS || isClosingReport(e)) return true;
           dropped += 1;
           return false;

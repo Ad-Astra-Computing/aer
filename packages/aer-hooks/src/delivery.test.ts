@@ -626,3 +626,32 @@ describe('what the worker writes down', () => {
   });
 
 });
+
+describe('a batch that never gets an answer', () => {
+  it('is split, so a queue that only large requests fail on still drains', async () => {
+    const sid = 'cc-split';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    // An API that answers one event at once but never answers a batch.
+    const onlySingles = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/events') && (JSON.parse(String(init?.body)) as unknown[]).length > 1) {
+        await new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+      }
+      return api.fetch(input, init);
+    }) as typeof fetch;
+    for (let i = 0; i < 5; i++) {
+      await runHook(V2, env(), {
+        readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: `/f${i}` } }),
+        fetch: onlySingles,
+        hardTimeoutMs: 1500,
+        logError: () => undefined,
+      });
+    }
+    const drain = ['--drain', sid, '--drain-harness', 'claude-code', '--harness-pid', '1'];
+    for (let i = 0; i < 4 && (loadState(sid, env())?.outbox.length ?? 0) > 0; i++) {
+      await runDrain(drain, env(), { fetch: onlySingles, drainBudgetMs: 3000, logError: () => undefined });
+    }
+    expect(loadState(sid, env())?.outbox).toEqual([]);
+    expect(api.eventsOf('tool.started')).toHaveLength(5);
+    expect(api.eventsOf('file.opened')).toHaveLength(5);
+  }, 60_000);
+});

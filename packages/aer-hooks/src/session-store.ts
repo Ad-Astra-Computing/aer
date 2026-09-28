@@ -24,6 +24,8 @@ export interface OutboxEvent {
   payload: Record<string, unknown>;
   /** Failed sends so far; an event that keeps failing is eventually dropped and counted. */
   attempts?: number;
+  /** Sent in a batch that got no answer at all; sent on its own from then on. */
+  stalled?: boolean;
 }
 
 /** The AER session the current record is being written to. */
@@ -308,11 +310,23 @@ export function sweepStale(env: NodeJS.ProcessEnv = process.env, now: number = D
  */
 export function enqueue(state: SessionState, events: OutboxEvent[]): number {
   state.outbox.push(...events);
-  const overflow = state.outbox.length - MAX_OUTBOX_EVENTS;
+  let overflow = state.outbox.length - MAX_OUTBOX_EVENTS;
   if (overflow <= 0) return 0;
-  state.outbox.splice(0, overflow);
-  state.droppedBudget += overflow;
-  return overflow;
+  // The oldest go first, except the report that ends the session: it is what
+  // completes the record, and it carries the count of what was dropped here.
+  let dropped = 0;
+  state.outbox = state.outbox.filter((e) => {
+    if (overflow === 0 || isClosing(e)) return true;
+    overflow -= 1;
+    dropped += 1;
+    return false;
+  });
+  state.droppedBudget += dropped;
+  return dropped;
+}
+
+function isClosing(e: OutboxEvent): boolean {
+  return e.type === 'collector.report' && e.payload['phase'] === 'session_end';
 }
 
 // ── pid aliases (the subagent fallback) ─────────────────────────────────────
