@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- [`948d8f2`](https://github.com/Ad-Astra-Computing/aer/commit/948d8f29587619308bd46650b20bacc84f471da8) - The usage policy is now fetched when the collector starts, for the
+  configured agent, instead of by every session when its first call arrived.
+  A session for another agent fetches that agent's policy when its first
+  session starts. The answer is kept per agent for the process; each session
+  keeps the policy it started with, and a session started more than 5 minutes
+  after the last fetch starts a refresh and uses the previous answer until it
+  arrives. A block-mode policy therefore governs the first call of a process
+  too, on the OpenAI, Anthropic and Vercel AI SDK paths. The only call that
+  can wait is one made while the first fetch for its agent is still in flight:
+  it waits for the answer, never more than 3 seconds after the fetch started,
+  and then goes ahead ungoverned if none came. Once an answer has arrived no
+  call waits, whatever the mode.
+- [`948d8f2`](https://github.com/Ad-Astra-Computing/aer/commit/948d8f29587619308bd46650b20bacc84f471da8) - The collector now tells an agent with no usage policy (404) apart from a
+  policy it could not fetch. A failed fetch is retried after 30 seconds instead
+  of being treated as "no policy". When a refresh fails, the last policy fetched
+  keeps governing new sessions; once it is more than 5 minutes old and the
+  latest refresh has failed, a block-mode policy that says
+  `on_unavailable: fail_closed` refuses every LLM call in new sessions with
+  rule `policy_unavailable`. When the first fetch fails and no policy was ever
+  fetched, sessions run ungoverned until a fetch succeeds.
+- [`948d8f2`](https://github.com/Ad-Astra-Computing/aer/commit/948d8f29587619308bd46650b20bacc84f471da8) - Vercel AI SDK calls are now recorded completely. A streamed call
+  (`streamText`, `streamObject`) records its token counts and finish reason
+  when your code has read the stream, instead of completing without them the
+  moment the stream opened. A stream that fails or is aborted is recorded as a
+  failed call rather than a success. Tool calls the model makes are recorded as
+  `tool.selected` with the tool name, streamed or not. A usage policy in block
+  mode now applies on the Vercel path too, so a call to a denied model that
+  used to go through now throws `AerPolicyError` before the request is sent.
+
+### Patch Changes
+
+- [`948d8f2`](https://github.com/Ad-Astra-Computing/aer/commit/948d8f29587619308bd46650b20bacc84f471da8) - A tool name the model returns is now recorded only when the record can keep
+  it: a string of at most 200 UTF-16 code units with no control characters.
+  The AER API accepts names up to 512, but a longer name would break the
+  commitment the record keeps for that call's tool arguments. Any other name
+  is recorded as `(unrecordable tool name)` and counted in that provider's
+  `tool_names_replaced` in `adapter_activity`, so a model that returns an
+  oversized or malformed name no longer gets the whole `tool.selected` event
+  refused. This applies to the OpenAI, Anthropic and Vercel AI SDK paths,
+  streamed or not.
+- [`948d8f2`](https://github.com/Ad-Astra-Computing/aer/commit/948d8f29587619308bd46650b20bacc84f471da8) - When a batch of events cannot be delivered to the AER API (refused, failed
+  or timed out), the final `collector.report` now counts its events in
+  `events_dropped_budget`, so the record says it is short instead of looking
+  complete. A batch that timed out may still have arrived, so the count is an
+  upper bound. The field is absent when every batch arrived.
+- [`948d8f2`](https://github.com/Ad-Astra-Computing/aer/commit/948d8f29587619308bd46650b20bacc84f471da8) - Every request the collector makes to the AER API is now abandoned after 10
+  seconds. An API that accepted the connection and never answered used to keep
+  the host process from exiting at all; it now delays exit by up to about 30
+  seconds, since the last batch, the closing report and the completion are
+  sent one after another.
+
 ## 0.5.0
 
 ### Minor Changes
