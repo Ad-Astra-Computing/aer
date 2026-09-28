@@ -220,7 +220,7 @@ export default function register(registry) {
         c.assert.equal(r.stdout, '', `wired command stdout on ${ev}`);
       }
       c.assert.equal(opens(sink).length, 1, 'sessions opened by the wired command');
-      c.assert.equal(completes(sink).length, 1, 'sessions completed by the wired command');
+      c.assert.equal(await completed(sink, 1), 1, 'sessions completed by the wired command');
       const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
       c.assert.ok(start, 'no session_start marker');
       c.assert.equal(start.payload.harness, harness, 'harness on the marker');
@@ -366,7 +366,7 @@ export default function register(registry) {
       }
     }
     c.assert.equal(opens(sink).length, 1, 'sessions opened');
-    c.assert.equal(completes(sink).length, 1, 'sessions completed');
+    c.assert.equal(await completed(sink, 1), 1, 'sessions completed');
     const open = opens(sink)[0].json;
     c.assert.match(open.client_ref ?? '', /^v1:[0-9a-f]{48}$/, 'client_ref on open');
     c.assert.equal(open.collector?.name, 'aer-hooks', 'collector name');
@@ -441,7 +441,7 @@ export default function register(registry) {
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: '' }, tool_use_id: 't1' }, v1);
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'Stop' }, v1);
     c.assert.equal(opens(sink).length, 1, 'opens');
-    c.assert.equal(completes(sink).length, 1, 'Stop did not complete the v1 record');
+    c.assert.equal(await completed(sink, 1), 1, 'Stop did not complete the v1 record');
   });
 
   t.case('aer-hook claude-code: subagent events join the lead session', async (c) => {
@@ -463,7 +463,7 @@ export default function register(registry) {
     await fire(c, env, { session_id: lead, cwd: proj, hook_event_name: 'SubagentStop', agent_id: 'agent-1' });
     await fire(c, env, { session_id: lead, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' });
     c.assert.equal(opens(sink).length, 1, 'a subagent opened its own session');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     const tools = byType(sink, 'tool.started');
     c.assert.equal(tools.map((e) => e.payload.tool).join(','), 'Grep,Glob,LS', 'subagent tool events');
     c.assert.ok(tools.every((e) => typeof e.payload.harness_agent_id === 'string'), 'harness_agent_id missing on a subagent event');
@@ -500,7 +500,7 @@ export default function register(registry) {
     ];
     for (const p of run) await fire(c, env, p, CODEX_V2);
     c.assert.equal(opens(sink).length, 1, 'opens');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
     c.assert.equal(start?.payload?.harness, 'codex', 'harness');
     c.assert.equal(start?.payload?.model, 'model-matrix-c', 'model');
@@ -644,7 +644,7 @@ export default function register(registry) {
     await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' });
     c.assert.equal(sink.sessions.size, 1, 'sessions');
     c.assert.equal(byType(sink, 'tool.started').length, 1, 'tool.started');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
   });
 
   // ── delivery under the conditions production has ─────────────────────────
@@ -756,7 +756,7 @@ export default function register(registry) {
     }
     c.assert.equal(opens(sink).length, 1, 'opens');
     c.assert.equal(opens(sink)[0].json.agent_id, id.AER_AGENT_ID, 'agent from the file');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     // status warns when a key is exported in the shell as well, without showing it.
     const st = await c.bin('aer-hooks', ['status', '--json'], { env: { ...env, AER_API_KEY: 'exported-matrix-key', AER_BASE_URL: sink.url }, cwd: home });
     const f = JSON.parse(st.stdout).hooks.stale_registrations.find((s) => s.reason === 'key_in_shell_env');
@@ -787,7 +787,7 @@ export default function register(registry) {
     ];
     for (const [ev, payload] of steps) await fire(c, env, payload, [...agy, '--event', ev]);
     c.assert.equal(opens(sink).length, 1, 'opens');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
     c.assert.equal(start?.payload?.harness, 'antigravity', 'harness');
     c.assert.equal(start?.payload?.model, 'gemini-matrix-flash', 'model');
@@ -820,7 +820,7 @@ export default function register(registry) {
     `, { home });
     c.assert.exit(r, 0, 'opencode plugin script');
     c.assert.equal(opens(sink).length, 1, 'opens');
-    c.assert.equal(completes(sink).length, 1, 'completes');
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     c.assert.equal(byType(sink, 'tool.started')[0]?.payload?.tool, 'bash', 'tool.started');
     c.assert.equal(byType(sink, 'tool.completed').length, 1, 'tool.completed');
     const llm = byType(sink, 'llm.completed');
