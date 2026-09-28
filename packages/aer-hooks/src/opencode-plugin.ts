@@ -10,11 +10,13 @@
 
 import { createHttpSink, resolveSinkOptionsFromEnv, type EventSink, type HttpSinkOptions } from '@adastracomputing/aer-emit';
 import { emitHookEvent } from './core.js';
+import { HOOKS_VERSION } from './version.generated.js';
 import {
   normalizeOpencodeToolBefore,
   normalizeOpencodeToolAfter,
   normalizeOpencodeEvent,
   normalizeOpencodeMessage,
+  HARNESS_META,
   type OpencodeToolBeforeInput,
   type OpencodeToolBeforeOutput,
   type OpencodeToolAfterInput,
@@ -130,10 +132,17 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
       } catch { /* fail open */ }
     },
     dispose: async () => {
-      const live = [...sinks.values()];
+      const live = [...sinks.entries()];
       sinks.clear();
       msgState.clear();
-      await Promise.all(live.map((s) => s.close().catch(() => undefined)));
+      // `opencode run` ends by disposing its plugins, never by deleting the
+      // session, so the record gets its end marker here.
+      await Promise.all(live.map(([ref, s]) => {
+        try {
+          emitHookEvent({ kind: 'session_end', meta: { ...HARNESS_META }, ...(ref !== SINGLE ? { sessionRef: ref } : {}) }, s);
+        } catch { /* fail open */ }
+        return s.close().catch(() => undefined);
+      }));
     },
   };
 }
@@ -158,5 +167,15 @@ export async function aerOpencodePlugin(
   const base = resolveSinkOptionsFromEnv(env);
   // The API refuses an open without an environment; nothing could be recorded.
   if (!base || base.environmentId === undefined || base.environmentId.length === 0) return {};
-  return createAerOpencodeHooks({ base: { ...base, agentVersion: base.agentVersion ?? 'unspecified' }, env });
+  return createAerOpencodeHooks({
+    base: {
+      ...base,
+      agentVersion: base.agentVersion ?? 'unspecified',
+      // The same identity the shell hooks declare: a harness recording tool
+      // lifecycle, by aer-hooks, not a wrapped process whose wire was watched.
+      sourceType: 'harness',
+      collector: { name: 'aer-hooks', version: HOOKS_VERSION },
+    },
+    env,
+  });
 }

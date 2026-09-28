@@ -211,13 +211,20 @@ import { aerOpencodePlugin } from '@adastracomputing/aer-hooks';
 export const AerPlugin = aerOpencodePlugin;
 ```
 
-Then set the same env the shell hooks use (`AER_BASE_URL`, `AER_API_KEY` or
-`AER_TENANT_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required
-but the base URL). One AER
-session is opened per opencode session and completed on `session.deleted` or plugin
-dispose. Redaction and fail-open are identical to the shell-hook path: tool names
-and argument KEY names only, never values. If emit is unconfigured the plugin is a
-total no-op.
+The import resolves from the project's own `node_modules`, so install
+`@adastracomputing/aer-hooks` in the project. Then set the same env the shell
+hooks use (`AER_BASE_URL`, `AER_API_KEY` or `AER_TENANT_API_KEY`,
+`AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required but the base URL).
+One AER session is opened per opencode session, declared as the `aer-hooks`
+collector recording a harness, with every event marked `harness: opencode`. It
+is completed on `session.deleted` or when opencode disposes its plugins, which
+is how `opencode run` ends. Redaction and fail-open are identical to the
+shell-hook path: tool names and argument KEY names, never values, with the same
+narrow exceptions. A `bash` call is reduced to the programs it runs and the
+hosts its network clients were pointed at, a `read`, `write` or `edit` records
+the file path and a `webfetch` the target's host. If emit is unconfigured the
+plugin is a total no-op, and when the AER API is unreachable opencode runs and
+exits as it would without the plugin.
 
 Beyond tools, the opencode plugin also records LLM usage. Each assistant
 `message.updated` carries the model, provider and token counts, so the plugin emits
