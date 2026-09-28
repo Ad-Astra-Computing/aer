@@ -11,7 +11,7 @@
   session on a repeated open, `session`, `completeOnClose` and `onOpen` for
   attaching to a session another process owns, `onComplete` and `collector`
   on `createHttpSink` and what happens to a batch the API does not accept
-  (which codes are retried, which drop the batch or disable the sink, and
+  (which codes are retried, which drop the batch or disable the sink and
   that the stderr line prints only once). It also notes that a live sink
   built without `AER_ENV_ID` records nothing rather than working with a
   missing field.
