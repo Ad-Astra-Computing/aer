@@ -322,7 +322,8 @@ export function enqueue(state: SessionState, events: OutboxEvent[]): number {
   let overflow = state.outbox.length - MAX_OUTBOX_EVENTS;
   if (overflow <= 0) return 0;
   // The oldest go first, except the report that ends the session: it is what
-  // completes the record, and it carries the count of what was dropped here.
+  // completes the record. The caller brings the dropped count on the queued
+  // reports up to date afterwards.
   let dropped = 0;
   state.outbox = state.outbox.filter((e) => {
     if (overflow === 0 || isClosing(e)) return true;

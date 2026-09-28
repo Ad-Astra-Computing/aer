@@ -694,6 +694,20 @@ function replacementSegment(state: SessionState, now: number, ctx: Ctx): void {
   }
 }
 
+/**
+ * Bring the dropped count on every report still queued up to date. A report
+ * built before events were dropped (to make room for it, by the attempts cap,
+ * or by a refusal) would otherwise carry a count that is too low, and the
+ * closing report is the one the record keeps.
+ */
+function refreshDropCounts(state: SessionState, storeKey: string, env: NodeJS.ProcessEnv): void {
+  const total = readDropCounters(storeKey, env).eventsDroppedBudget + state.droppedBudget;
+  if (total <= 0) return;
+  for (const e of state.outbox) {
+    if (e.type === 'collector.report') e.payload['events_dropped_budget'] = total;
+  }
+}
+
 /** The report that ends a harness session: it is what completes the record. */
 function isClosingReport(e: OutboxEvent): boolean {
   return e.type === 'collector.report' && e.payload['phase'] === 'session_end';
@@ -810,6 +824,7 @@ async function deliver(ctx: Ctx): Promise<void> {
           const before = st.outbox.length;
           st.outbox = st.outbox.filter((e) => !ids.has(e.id));
           st.droppedBudget += before - st.outbox.length;
+          refreshDropCounts(st, ctx.storeKey, ctx.env);
           return { result: undefined, save: st };
         });
         ctx.warn('refused', `aer-hook: the AER API refused ${step.batch.length} event(s) (${outcome(r)}); they were dropped and counted`);
@@ -831,6 +846,7 @@ async function deliver(ctx: Ctx): Promise<void> {
           return false;
         });
         st.droppedBudget += dropped;
+        if (dropped > 0) refreshDropCounts(st, ctx.storeKey, ctx.env);
         // Only a request that had its whole time says anything about its
         // size; one cut short by this invocation's own deadline does not.
         if (!r.ok && r.timedOut === true && timeoutMs >= ctx.requestTimeoutMs && step.batch.length > 1) {
@@ -1026,7 +1042,7 @@ async function orchestrateAndEmit(
       state.lastActivityAt = at;
       return { result: 'ended' as const, save: state };
     }
-    enqueue(state, events);
+    if (enqueue(state, events) > 0) refreshDropCounts(state, ctx.storeKey, env);
     state.lastActivityAt = at;
 
     if (completes(event)) {

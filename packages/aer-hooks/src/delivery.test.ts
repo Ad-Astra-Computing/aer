@@ -717,6 +717,29 @@ describe('a batch that never gets an answer', () => {
   });
 });
 
+describe('the count of dropped events on the closing report', () => {
+  it('includes what the queue dropped to make room for the report itself', async () => {
+    const sid = 'cc-full-queue';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    const st = loadState(sid, env())!;
+    for (let i = 0; i < 1000; i++) {
+      st.seq += 1;
+      st.outbox.push({ id: `00000000-0000-4000-9000-${String(i).padStart(12, '0')}`, type: 'tool.started', ts: new Date().toISOString(), payload: { tool: 'Read', seq: st.seq } });
+    }
+    saveState(sid, st, env());
+    const down = (async () => { throw new TypeError('fetch failed'); }) as typeof fetch;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: down,
+      logError: () => undefined,
+    });
+    const after = loadState(sid, env())!;
+    expect(after.droppedBudget).toBeGreaterThan(0);
+    const closing = after.outbox.find((e) => e.payload['phase'] === 'session_end')!;
+    expect(closing.payload['events_dropped_budget']).toBe(after.droppedBudget);
+  });
+});
+
 describe('the hook and its worker never send the same events at once', () => {
   it('holds the network role while it sends, with a process start that is not a whole millisecond', async () => {
     const sid = 'cc-lease';
