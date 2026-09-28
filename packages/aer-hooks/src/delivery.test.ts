@@ -575,6 +575,11 @@ describe('what the worker is told', () => {
     return handed[0]!;
   }
 
+  it('gets only the flags it reads: the credential file and which session to finish, for which harness', async () => {
+    const argv = await handedFor(['--root-session', 'root-x', '--event', 'Stop']);
+    expect(argv.filter((a) => a.startsWith('--'))).toEqual(['--drain', '--drain-harness', '--harness-pid']);
+  });
+
   it('gets the credential file as an absolute path, so it does not depend on a directory that may be gone', async () => {
     const file = path.join(dir, 'hooks.env');
     fs.writeFileSync(file, 'AER_TENANT_ID=t\n', { mode: 0o600 });

@@ -1036,22 +1036,20 @@ async function orchestrateAndEmit(
 }
 
 /** The flags the worker needs to rebuild this invocation's view, and nothing secret. */
+/**
+ * What the worker is told: which harness session to finish, for which
+ * harness, and where the credential file is. It reads nothing else; the
+ * session is already resolved, so --root-session and --event are not needed.
+ * Under a lifecycle v1 registration Stop ends the record, so each turn starts
+ * a worker; each finishes in about a second when there is nothing left.
+ */
 function drainArgvFor(argv: string[], env: NodeJS.ProcessEnv, storeKey: string, harness: string, ownPpid: number): string[] {
-  const keep: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === '--harness' || a === '--lifecycle' || a === '--root-session' || a === '--event') {
-      if (argv[i + 1] !== undefined) keep.push(a, argv[i + 1]!);
-      i++;
-    } else if (/^--(harness|lifecycle|root-session|event)=/.test(a)) {
-      keep.push(a);
-    }
-  }
+  const out: string[] = [];
   // Absolute, so the worker never depends on the hook's working directory,
   // which a temporary checkout may remove as soon as the harness exits.
   const envFile = parseEnvFileFlag(argv) ?? (env['AER_ENV_FILE'] || undefined);
-  if (envFile !== undefined) keep.push('--env-file', nodePath.resolve(envFile));
-  return [...keep, '--drain', storeKey, '--drain-harness', harness, '--harness-pid', String(ownPpid)];
+  if (envFile !== undefined) out.push('--env-file', nodePath.resolve(envFile));
+  return [...out, '--drain', storeKey, '--drain-harness', harness, '--harness-pid', String(ownPpid)];
 }
 
 function handOffEnd(ctx: Ctx, event: HookEvent, opts: { deps: RunHookDeps; argv: string[] }): boolean {
