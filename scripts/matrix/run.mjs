@@ -128,6 +128,9 @@ async function main() {
     log,
     npmEnv: npmEnvFor(workRoot),
     publishable: publishable(repoRoot),
+    // Third-party packages a suite pinned and installed (the Vercel AI SDK,
+    // opencode), by name, so the report says what was tested against.
+    thirdParty: {},
   };
 
   if (opts.list) {
@@ -216,6 +219,7 @@ async function main() {
     exitCode = 2;
   }
   report.finishedAt = new Date().toISOString();
+  if (Object.keys(env.thirdParty).length) report.thirdParty = env.thirdParty;
   const failed = report.results.filter((r) => r.status === 'FAIL');
   const known = report.results.filter((r) => r.status === 'KNOWN');
   const xpass = report.results.filter((r) => r.status === 'XPASS');
@@ -241,6 +245,7 @@ async function main() {
     section('SKIPPED', skips);
   }
   if (report.aborted) out(`\nABORTED: ${report.aborted}`);
+  if (report.thirdParty) out(`\nthird-party pins: ${Object.entries(report.thirdParty).map(([n, v]) => `${n}@${v}`).join(', ')}`);
   out(`\nNode ${process.version} on ${report.platform}; source ${opts.source}${opts.source === 'registry' ? ` (${opts.tag})` : ''}${opts.upgradeFrom ? `; upgrade from ${opts.upgradeFrom}` : ''}`);
 
   if (opts.report) writeFileSync(opts.report, JSON.stringify(report, null, 2));

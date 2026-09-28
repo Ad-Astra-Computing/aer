@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createHttpTransport } from './transport.js';
+import { createHttpTransport, withRequestTimeout } from './transport.js';
 
 interface Call { url: string; method: string; headers: Record<string, string>; body: unknown }
 
@@ -170,5 +170,61 @@ describe('createHttpTransport', () => {
   it('open() throws on a non-2xx create-session response', async () => {
     const { fetchImpl } = fakeFetch([() => new Response('nope', { status: 401 })]);
     await expect(makeTransport(fetchImpl).open()).rejects.toThrow();
+  });
+});
+
+describe('an AER API that accepts the request and never answers', () => {
+  // Resolves only when the request's signal aborts, like a real fetch to a
+  // host that holds the connection open.
+  const hanging = (async (_url: string | URL | Request, init?: RequestInit) => {
+    await new Promise<void>((_, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new Error('aborted')));
+    });
+    return new Response('');
+  }) as unknown as typeof fetch;
+
+  it('gives up on every request after the timeout, so the host can exit', async () => {
+    const t = createHttpTransport({ baseUrl: 'https://api.test', apiKey: 'k', tenantId: 't', agentId: 'a', envId: 'e', agentVersion: '1', fetchImpl: hanging, requestTimeoutMs: 50 });
+    const started = Date.now();
+    await expect(t.open()).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('bounds requests after open too', async () => {
+    let n = 0;
+    const openThenHang = (async (url: string | URL | Request, init?: RequestInit) => {
+      n += 1;
+      if (n === 1) return opened();
+      return hanging(url, init);
+    }) as unknown as typeof fetch;
+    const t = createHttpTransport({ baseUrl: 'https://api.test', apiKey: 'k', tenantId: 't', agentId: 'a', envId: 'e', agentVersion: '1', fetchImpl: openThenHang, requestTimeoutMs: 50 });
+    await t.open();
+    for (const call of [() => t.emit([{ event_type: 'x', payload: {} }]), () => t.complete(), () => t.abort(), () => t.mintAttestation('aud')]) {
+      const started = Date.now();
+      await expect(call()).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(1_000);
+    }
+  });
+});
+
+describe('withRequestTimeout keeps a caller signal', () => {
+  const hangingUntilAbort = (async (_url: string, init?: RequestInit) => {
+    await new Promise<void>((_, reject) => { init?.signal?.addEventListener('abort', () => reject(init.signal?.reason)); });
+    return new Response('');
+  }) as unknown as typeof fetch;
+
+  it('aborts when the caller aborts, well before the timeout', async () => {
+    const f = withRequestTimeout(hangingUntilAbort, 10_000);
+    const caller = new AbortController();
+    const started = Date.now();
+    const p = f('https://x', { signal: caller.signal });
+    setTimeout(() => caller.abort(new Error('caller gave up')), 20);
+    await expect(p).rejects.toThrow('caller gave up');
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('still times out when the caller signal never fires', async () => {
+    const f = withRequestTimeout(hangingUntilAbort, 30);
+    await expect(f('https://x', { signal: new AbortController().signal })).rejects.toThrow('timed out');
   });
 });

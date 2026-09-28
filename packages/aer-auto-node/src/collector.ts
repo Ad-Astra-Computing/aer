@@ -23,7 +23,8 @@ import { buildDependencySnapshot } from './dependencies/snapshot.js';
 import { resolveRunId, threadIdentity } from './run-id.js';
 import { createAttestor, type Attestor } from './attestor.js';
 import { PolicyEnforcer } from './policy.js';
-import { fetchUsagePolicy } from './policy-fetch.js';
+import { fetchUsagePolicyOutcome } from './policy-fetch.js';
+import { createPolicyCache } from './policy-cache.js';
 import { startFrameworkObserver, type FrameworkObserver } from './frameworks/observe.js';
 
 export const COLLECTOR_NAME = '@adastracomputing/aer-auto-node';
@@ -95,10 +96,12 @@ export interface CreateCollectorDeps {
   /**
    * Fetch the governing usage policy for a session (P3 slice 2). Defaults to the
    * best-effort HTTP fetch over the pristine fetch. Tests inject a fake to
-   * exercise enforcement / fail-open without the network. Returns null =>
-   * enforcement disabled for that session.
+   * exercise enforcement / fail-open without the network. Resolves null when
+   * the agent has no policy; throws or rejects when it could not find out.
    */
   policyFetcher?: (opts: { baseUrl: string; agentId?: string | undefined; apiKey?: string | undefined }) => Promise<import('./policy.js').UsagePolicy | null>;
+  /** Clock for the usage-policy cache (tests). */
+  now?: () => number;
 }
 
 export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps = {}): Collector {
@@ -127,15 +130,33 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   const pristineFetch: typeof fetch | undefined =
     typeof rawFetch === 'function' ? (rawFetch.bind(globalThis) as typeof fetch) : undefined;
 
-  // Per-session usage-policy state (P3 slice 2). Each session gets its own
-  // enforcer with independent call/token counters, populated once its policy
-  // fetch resolves. Keyed by SessionManager so the adapter's PolicyOption
-  // resolver (below) can find the enforcer for the current async context.
-  interface PerSessionPolicy { enforcer: PolicyEnforcer }
+  // Usage policy (P3): one fetch per agent per process, shared by every
+  // session; each session keeps its own enforcer, so budgets count per session.
+  interface PerSessionPolicy {
+    enforcer: PolicyEnforcer;
+    /** The cache key whose answer this session is still waiting for. */
+    awaiting?: string;
+  }
   const sessionPolicy = new WeakMap<SessionManager, PerSessionPolicy>();
   const policyFetcher = deps.policyFetcher
-    ?? ((o: { baseUrl: string; agentId?: string | undefined; apiKey?: string | undefined }) =>
-      fetchUsagePolicy({ ...o, ...(pristineFetch ? { fetchImpl: pristineFetch } : {}) }));
+    ?? (async (o: { baseUrl: string; agentId?: string | undefined; apiKey?: string | undefined }) => {
+      const out = await fetchUsagePolicyOutcome({ ...o, ...(pristineFetch ? { fetchImpl: pristineFetch } : {}) });
+      if (out.status === 'unavailable') throw new Error('usage policy unavailable');
+      return out.status === 'policy' ? out.policy : null;
+    });
+  const policyKey = (baseUrl: string, agentId: string): string => JSON.stringify([baseUrl, agentId]);
+  const policyCache = createPolicyCache({
+    fetcher: async (key) => {
+      const [baseUrl, agentId] = JSON.parse(key) as [string, string];
+      try {
+        return await policyFetcher({ baseUrl, agentId, ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}) });
+      } catch (err) {
+        try { onError(err, 'policy-fetch'); } catch { /* reported, then treated as no answer */ }
+        throw err;
+      }
+    },
+    ...(deps.now ? { now: deps.now } : {}),
+  });
 
   // Build a SessionManager around a transport (used for both the default
   // process session and each per-task session). Each session emits its own
@@ -145,51 +166,71 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
       transport,
       eager,
       preamble: () => buildPreamble(config, enabledPatches, enabledAdapters, observer),
-      closingReport: () => buildCollectorReport(
-        config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
-        adapterEvidence(
-          config, enabledPatches, enabledAdapters, adapterStats, hostCounts, modelShapedCounts, uninstalled,
-          replacedAdapters(patchMark),
-        ),
-        observer,
-      ),
+      closingReport: (delivery) => {
+        const report = buildCollectorReport(
+          config, 'final', enabledPatches, enabledAdapters, attestor, adapterStats,
+          adapterEvidence(
+            config, enabledPatches, enabledAdapters, adapterStats, hostCounts, modelShapedCounts, uninstalled,
+            replacedAdapters(patchMark),
+          ),
+          observer,
+        );
+        // The same field the hooks use for events they gave up sending; the
+        // API reads it off the closing report into the session summary.
+        if (delivery.eventsDropped > 0) report.payload['events_dropped_budget'] = delivery.eventsDropped;
+        return report;
+      },
       onError,
     });
-    // Enforcer starts disabled (null) so any LLM call before the policy fetch
-    // resolves is simply ungated (best-effort, never blocks session open).
+    // Enforcer starts disabled (null) so a call made before the policy is
+    // known is ungated, except for the bounded wait the Vercel path takes.
     const state: PerSessionPolicy = { enforcer: new PolicyEnforcer(null) };
     sessionPolicy.set(session, state);
-    // Best-effort policy fetch. On any failure => enforcer stays disabled
-    // (fail-open). When an active policy lands, emit ONE policy.applied event so
-    // the bundle records which policy governed the run.
+    // When an active policy governs this session, emit ONE policy.applied
+    // event so the bundle records which policy governed the run.
+    const apply = (policy: import('./policy.js').UsagePolicy | null, unavailable = false): void => {
+      delete state.awaiting;
+      if (!policy) return;
+      const enforcer = new PolicyEnforcer(policy, { unavailable });
+      state.enforcer = enforcer;
+      if (enforcer.active) {
+        session.capture({
+          event_type: 'policy.applied',
+          payload: { policy_id: enforcer.policyId, version: enforcer.version, mode: enforcer.mode },
+        });
+      }
+    };
     const agentId = opts.agentId ?? config.agentId;
-    void policyFetcher({ baseUrl: opts.baseUrl ?? config.baseUrl, agentId, ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}) })
-      .then((policy) => {
-        if (!policy) return;
-        const enforcer = new PolicyEnforcer(policy);
-        state.enforcer = enforcer;
-        if (enforcer.active) {
-          session.capture({
-            event_type: 'policy.applied',
-            payload: { policy_id: enforcer.policyId, version: enforcer.version, mode: enforcer.mode },
-          });
-        }
-      })
-      .catch((err) => onError(err, 'policy-fetch'));
+    if (agentId) {
+      const key = policyKey(opts.baseUrl ?? config.baseUrl, agentId);
+      const now = policyCache.peek(key);
+      if (now.known) {
+        apply(now.policy, now.unavailable === true);
+      } else {
+        state.awaiting = key;
+        policyCache.onSettled(key, (p) => apply(p));
+      }
+    }
     return session;
   };
 
   // Resolve the PolicyOption for the current async context: the enforcer of the
   // session that owns this LLM call, plus an emit that routes policy events to
-  // that same session. Returns undefined when there is no active session.
+  // that same session. Returns undefined when there is no active session. While
+  // the first fetch is still in flight and inside its bound, `ready` and
+  // `waitUntil` say how long a caller may wait for it.
   const currentPolicyOption = (): PolicyOption | undefined => {
     const s = currentSession();
     if (!s) return undefined;
     const state = sessionPolicy.get(s);
     if (!state) return undefined;
+    const wait = state.awaiting !== undefined ? policyCache.peek(state.awaiting) : undefined;
     return {
       enforcer: state.enforcer,
       emit: (eventType, payload) => { s.capture({ event_type: eventType, payload }); },
+      ...(wait && !wait.known && wait.pending && wait.waitUntil !== undefined
+        ? { ready: wait.pending, waitUntil: wait.waitUntil }
+        : {}),
     };
   };
 
@@ -347,6 +388,12 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
         })
         .catch(() => undefined);
     }
+  }
+
+  // The usage policy is asked for now, not at the first model call, so by the
+  // time the agent makes one the answer is normally already here.
+  if (config.agentId && config.apiKey) {
+    policyCache.prefetch(policyKey(config.baseUrl, config.agentId));
   }
 
   // Eager prewarm: when protected resources are configured on

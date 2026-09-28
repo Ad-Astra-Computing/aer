@@ -47,7 +47,9 @@ export function mintTlsCert() {
   const name = seq(tlv(0x31, seq(oid(OID_CN), tlv(0x0c, Buffer.from('localhost')))));
   const sigAlg = seq(oid(OID_ECDSA_SHA256));
   const serial = randomBytes(8);
-  serial[0] &= 0x7f;
+  // Positive and without a leading zero byte: DER forbids the padding a
+  // zero first byte followed by one below 0x80 would be, and Node refuses it.
+  serial[0] = (serial[0] & 0x7f) | 0x40;
   const now = Date.now();
   const san = seq(tlv(0x82, Buffer.from('localhost')), tlv(0x87, Buffer.from([127, 0, 0, 1])));
   const exts = tlv(0xa3, seq(

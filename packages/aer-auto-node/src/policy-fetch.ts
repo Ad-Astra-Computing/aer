@@ -22,14 +22,21 @@ export interface FetchUsagePolicyOptions {
 
 const VALID_MODES: readonly PolicyMode[] = ['off', 'report', 'block'];
 
+export type UsagePolicyOutcome =
+  | { status: 'policy'; policy: UsagePolicy }
+  /** An answer: the agent has no policy (404), or there is no agent to govern. */
+  | { status: 'none' }
+  /** Not an answer: the fetch failed, timed out or returned something unreadable. */
+  | { status: 'unavailable' };
+
 /**
- * Fetch + parse the agent's usage policy. Returns the policy, or null when there
- * is no policy (404) or the fetch could not be completed / parsed (fail-open).
- * Never throws.
+ * Fetch + parse the agent's usage policy, telling "no policy" (404) apart
+ * from "could not find out" (network error, timeout, any other status, a
+ * body it cannot read). Never throws.
  */
-export async function fetchUsagePolicy(opts: FetchUsagePolicyOptions): Promise<UsagePolicy | null> {
+export async function fetchUsagePolicyOutcome(opts: FetchUsagePolicyOptions): Promise<UsagePolicyOutcome> {
   const agentId = opts.agentId;
-  if (!agentId) return null; // no agent → no policy to fetch
+  if (!agentId) return { status: 'none' }; // no agent → no policy to fetch
   const fetchImpl = opts.fetchImpl ?? fetch;
   const baseUrl = opts.baseUrl.replace(/\/$/, '');
   const url = `${baseUrl}/v1/agents/${encodeURIComponent(agentId)}/usage-policy`;
@@ -42,15 +49,24 @@ export async function fetchUsagePolicy(opts: FetchUsagePolicyOptions): Promise<U
       headers: { authorization: `Bearer ${opts.apiKey ?? ''}` },
       signal: controller.signal,
     });
-    if (res.status === 404) return null; // no policy configured → disabled
-    if (!res.ok) return null; // any other non-2xx → fail-open
-    const json = (await res.json()) as unknown;
-    return parsePolicy(json);
+    if (res.status === 404) return { status: 'none' };
+    if (!res.ok) return { status: 'unavailable' };
+    const policy = parsePolicy((await res.json()) as unknown);
+    return policy ? { status: 'policy', policy } : { status: 'unavailable' };
   } catch {
-    return null; // network error / abort / malformed → fail-open
+    return { status: 'unavailable' };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * The policy, or null when there is none or it could not be fetched
+ * (fail-open). Never throws. Use fetchUsagePolicyOutcome to tell those apart.
+ */
+export async function fetchUsagePolicy(opts: FetchUsagePolicyOptions): Promise<UsagePolicy | null> {
+  const out = await fetchUsagePolicyOutcome(opts);
+  return out.status === 'policy' ? out.policy : null;
 }
 
 function parsePolicy(json: unknown): UsagePolicy | null {

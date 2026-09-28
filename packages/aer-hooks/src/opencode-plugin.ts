@@ -10,11 +10,14 @@
 
 import { createHttpSink, resolveSinkOptionsFromEnv, type EventSink, type HttpSinkOptions } from '@adastracomputing/aer-emit';
 import { emitHookEvent } from './core.js';
+import { HOOKS_VERSION } from './version.generated.js';
+import { TOOL_NAME_PLACEHOLDER } from './tool-name.js';
 import {
   normalizeOpencodeToolBefore,
   normalizeOpencodeToolAfter,
   normalizeOpencodeEvent,
   normalizeOpencodeMessage,
+  HARNESS_META,
   type OpencodeToolBeforeInput,
   type OpencodeToolBeforeOutput,
   type OpencodeToolAfterInput,
@@ -38,6 +41,18 @@ export interface AerOpencodeDeps {
   /** Injectable sink opener for tests. Defaults to createHttpSink. */
   openSink?: (opts: HttpSinkOptions) => EventSink;
   env?: NodeJS.ProcessEnv;
+  /** How long dispose may wait for the AER API before opencode exits anyway. Default 3 s. */
+  disposeTimeoutMs?: number;
+}
+
+const DISPOSE_TIMEOUT_MS = 3_000;
+
+/** Resolve when `p` settles or after `ms`, whichever is first. Never rejects. */
+function within(p: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    p.then(() => { clearTimeout(timer); resolve(); }, () => { clearTimeout(timer); resolve(); });
+  });
 }
 
 // Sessions with no id (should not happen for real opencode traffic) share one sink.
@@ -90,14 +105,14 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
     const sink = ensure(llm.sessionRef);
     if (!st.req.has(llm.messageId)) {
       st.req.add(llm.messageId);
-      const payload: Record<string, unknown> = { model: llm.model };
+      const payload: Record<string, unknown> = { ...HARNESS_META, model: llm.model };
       if (llm.provider !== undefined) payload['provider'] = llm.provider;
       void sink.emit('llm.requested', payload);
     }
     if (llm.complete && !st.done.has(llm.messageId)) {
       st.done.add(llm.messageId);
       // opencode streams responses, so streaming:true. Token COUNTS only (bodies-off).
-      const payload: Record<string, unknown> = { model: llm.model, ok: llm.ok, streaming: true };
+      const payload: Record<string, unknown> = { ...HARNESS_META, model: llm.model, ok: llm.ok, streaming: true };
       if (llm.provider !== undefined) payload['provider'] = llm.provider;
       if (llm.inputTokens !== undefined) payload['input_tokens'] = llm.inputTokens;
       if (llm.outputTokens !== undefined) payload['output_tokens'] = llm.outputTokens;
@@ -109,7 +124,15 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
     'tool.execute.before': async (input, output) => {
       try {
         const ev = normalizeOpencodeToolBefore(input, output);
-        emitHookEvent(ev, ensure(ev.sessionRef));
+        const sink = ensure(ev.sessionRef);
+        emitHookEvent(ev, sink);
+        // One marker per call whose name was replaced, so the record counts them.
+        if (ev.tool === TOOL_NAME_PLACEHOLDER) {
+          void sink.emit('collector.report', {
+            collector: 'aer-hooks', phase: 'tool_name_replaced', ...HARNESS_META,
+            ...(ev.sessionRef !== undefined ? { session_ref: ev.sessionRef } : {}),
+          });
+        }
       } catch { /* fail open */ }
     },
     'tool.execute.after': async (input, output) => {
@@ -130,10 +153,18 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
       } catch { /* fail open */ }
     },
     dispose: async () => {
-      const live = [...sinks.values()];
+      const live = [...sinks.entries()];
       sinks.clear();
       msgState.clear();
-      await Promise.all(live.map((s) => s.close().catch(() => undefined)));
+      // `opencode run` ends by disposing its plugins, never by deleting the
+      // session, so the record gets its end marker here.
+      // Bounded: an AER API that never answers must not hold opencode's exit.
+      await within(Promise.all(live.map(([ref, s]) => {
+        try {
+          emitHookEvent({ kind: 'session_end', meta: { ...HARNESS_META }, ...(ref !== SINGLE ? { sessionRef: ref } : {}) }, s);
+        } catch { /* fail open */ }
+        return s.close().catch(() => undefined);
+      })), deps.disposeTimeoutMs ?? DISPOSE_TIMEOUT_MS);
     },
   };
 }
@@ -158,5 +189,15 @@ export async function aerOpencodePlugin(
   const base = resolveSinkOptionsFromEnv(env);
   // The API refuses an open without an environment; nothing could be recorded.
   if (!base || base.environmentId === undefined || base.environmentId.length === 0) return {};
-  return createAerOpencodeHooks({ base: { ...base, agentVersion: base.agentVersion ?? 'unspecified' }, env });
+  return createAerOpencodeHooks({
+    base: {
+      ...base,
+      agentVersion: base.agentVersion ?? 'unspecified',
+      // The same identity the shell hooks declare: a harness recording tool
+      // lifecycle, by aer-hooks, not a wrapped process whose wire was watched.
+      sourceType: 'harness',
+      collector: { name: 'aer-hooks', version: HOOKS_VERSION },
+    },
+    env,
+  });
 }

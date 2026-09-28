@@ -89,6 +89,12 @@ a non-secret `kid` identifying which key produced it, so keys can rotate. The
 for independent verification. The whole path is best-effort and fail-open: a fault
 degrades to a name-only event and never breaks the host SDK call.
 
+A `tool_args_tag` is always computed over the tool name the model returned,
+even when the record shows `(unrecordable tool name)` in its place (see
+*Semantic LLM/tool capture*). Such a tag still commits to what the model
+actually sent, but it cannot be opened from the record's `tool` value: open
+it from your retained plaintext, the real name and its arguments.
+
 ## Safety
 
 - **Kill switch**: `AER_DISABLE=1` installs nothing. No patches, no session, no
@@ -114,18 +120,19 @@ tool arguments.
 
 - **OpenAI** (`openai`): `chat.completions.create`
 - **Anthropic** (`@anthropic-ai/sdk`): `messages.create`
-- **Vercel AI SDK** (`ai`): `generateText` / `streamText` / `generateObject` /
-  `streamObject`. Streaming usage is read from the result's `usage`,
-  `finishReason` and `toolCalls` promises (see below).
+- **Vercel AI SDK** (`ai`): every call a model makes through `generateText`,
+  `streamText`, `generateObject`, `streamObject` or a tool loop, recorded at
+  the provider layer (see below). Named imports such as
+  `import { generateText } from 'ai'` are covered.
 
-All three providers are covered for non-streaming calls, streaming token counts
-and streaming tool names. The capture mechanism differs by provider:
+All three are covered for non-streaming calls, streaming token counts and
+streaming tool names. The capture mechanism differs by SDK:
 
-| Provider | Mechanism |
+| SDK | Mechanism |
 |----------|-----------|
 | OpenAI (`openai`) | in-band chunk tap (`stream_options.include_usage` for tokens) |
 | Anthropic (`@anthropic-ai/sdk`) | in-band chunk tap (message-stream events) |
-| Vercel AI SDK (`ai`) | result `usage` / `finishReason` / `toolCalls` promises |
+| Vercel AI SDK (`ai`) | the provider model's `doGenerate` and `doStream`, in `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/mistral` and `@ai-sdk/groq` |
 
 Every field captured is metadata: model, token counts, finish/stop reason and tool
 **names**. Prompts, generated text, content deltas, tool arguments and request
@@ -144,12 +151,22 @@ sent no token usage, for example OpenAI without `stream_options.include_usage`;
 your code, never changes backpressure and preserves the stream object's identity
 and methods. A stream you never consume yields only `llm.requested`.
 
-The **Vercel AI SDK** exposes streaming usage differently: not as in-band chunks
-but as result promises (`usage`, `finishReason`, `toolCalls`). For `streamText` /
-`streamObject` the adapter attaches non-invasive observers to those promises and
-emits `llm.completed` once they settle, without ever reading `textStream` /
-`fullStream` content. Each promise settles independently, so one rejected or
-missing promise never loses the others.
+The **Vercel AI SDK**'s own module cannot be patched (its namespace is sealed),
+so the collector records one layer down, where each real model call happens:
+the provider model's `doGenerate` and `doStream`. One step of a tool loop is one
+call and one `llm.completed`. A streamed call hands the SDK a pass-through
+stream that reads the finish part's token counts and finish reason and each
+tool call's **name** as your code reads the stream, and records the call when
+the stream ends. It pulls from the provider only when your code pulls, and
+never reads text deltas or tool inputs. A stream that fails or is aborted is
+recorded as `ok: false`. A stream your code stops reading early (a `break` out
+of the loop, or cancelling it) is recorded as `ok: true` with what was seen up
+to that point, usually no token counts. As with OpenAI and Anthropic, a stream
+you never read yields only `llm.requested`, and its tokens never count toward a
+usage policy's budget. A provider package not in the list above (for example
+`@ai-sdk/openai-compatible`) is not instrumented: its requests are still
+recorded by host, and the closing report marks the Vercel adapter
+`unverifiable` rather than claiming no model traffic happened.
 
 The **final `collector.report`** carries an `adapter_activity` summary so you can
 see SDK-level activity at a glance without scanning the event firehose. It is
@@ -166,13 +183,29 @@ keyed by provider and only lists adapters that actually ran:
 and `tool_selections` counts tool calls observed in responses. Counts are
 metadata only.
 
+When a batch of events cannot be delivered (the AER API refused it, failed or
+did not answer within 10 seconds), the collector drops it rather than retrying
+without end, and counts its events. The final `collector.report` then carries
+`events_dropped_budget`, the number of events the collector could not confirm,
+so the record says it is short instead of looking complete. A batch that timed
+out may still have arrived, so the count is an upper bound. The field is
+absent when every batch arrived.
+
+A tool name comes from the model, so it is recorded only when the record can
+keep it: a string of at most 200 UTF-16 code units with no control characters.
+The AER API accepts names up to 512, but a longer name would break the
+commitment the record keeps for that call's tool arguments. Any other name is
+recorded as `(unrecordable tool name)` and counted in that provider's
+`tool_names_replaced`, which appears only when it is not zero. The call itself
+is still recorded.
+
 ## Known limitation
 
 Patch-based capture observes **`globalThis.fetch`** (the common case) and
 **default-import property access** for `node:http(s)` / `node:child_process`
 (`import cp from 'node:child_process'; cp.spawn(...)`). A **named import**
-(`import { spawn } from 'node:child_process'` or `import { generateText } from 'ai'`)
-binds to the original function before the patch applies and is not captured; use
+(`import { spawn } from 'node:child_process'`) binds to the original function
+before the patch applies and is not captured; use
 default-import property access (`cp.spawn(...)`) or `globalThis.fetch` so the
 patched function is resolved at call time.
 
@@ -288,7 +321,19 @@ aborts it if the body throws.
 ## Usage policies
 
 When an operator has set a usage policy for the agent (via the control plane), the
-collector fetches it once at session open and enforces it against every LLM call.
+collector enforces it against every LLM call. When an API key and an agent id
+are configured, it fetches that agent's policy as soon as the collector starts.
+A session for any other agent (`withAerSession({ agentId })`) fetches its
+agent's policy when the first such session starts. The answer is kept per
+agent for the whole process and shared by every session; each session still
+counts its own calls and tokens.
+
+Each session keeps the policy it started with. A session started more than 5
+minutes after the last fetch for its agent starts a refresh and uses the
+previous answer until the refresh arrives; sessions after it get the new one.
+With the default process strategy there is one session per process, so a
+changed policy takes effect when the process next starts. With the task and
+server strategies it takes effect in sessions that start after the refresh.
 A policy can allow or deny models by glob (`gpt-*`, `*-vision`) and cap the calls
 and tokens per session. It runs in one of three modes:
 
@@ -306,10 +351,40 @@ signed record shows which policy governed the run, and a `policy.violation` even
 per breach. Policy events carry the model name and counts only, never prompts or
 content, consistent with the metadata-only rule.
 
-The fetch is best-effort and time-bound. It never blocks or breaks session open.
-If the policy endpoint is unreachable or returns nothing, enforcement is simply
-off for that session (fail-open): this is a cost control, not a security boundary,
-and a fetch you could not complete has no mode to honor.
+The fetch is best-effort and time-bound (3 seconds). A 404 means the agent has
+no policy, and that answer is kept like any other. Anything else that is not a
+policy (a network error, a timeout, another status, a body that cannot be read)
+is not an answer, and the collector tries again after 30 seconds:
+
+- **No answer yet.** When the first fetch for an agent fails, sessions run
+  ungoverned (fail-open) until a later fetch succeeds. This is a cost control
+  rather than a security boundary, and a policy that was never fetched has no
+  mode to honor.
+- **An earlier answer.** When a refresh fails, the last policy fetched keeps
+  governing new sessions. Once it is more than 5 minutes old and the latest
+  refresh has failed, a new session applies `on_unavailable` as the policy
+  says: with `fail_closed` in block mode, every LLM call in that session is
+  refused with `AerPolicyError` and rule `policy_unavailable`; with `fail_open`,
+  or in report mode, the last policy goes on governing as before.
+
+**Latency.** The only call that can wait is one made while the process's first
+fetch for its agent is still in flight: in practice a call made in the first
+moments after the process starts, or the first calls of a session for an agent
+the process has not fetched yet. It waits until that fetch answers, and
+never later than 3 seconds after the fetch started; after that it goes ahead
+ungoverned. Until the answer arrives its mode is not known, so this applies
+whatever the policy turns out to be, or when there is none. Once any answer
+has arrived, no call waits, in any mode. On the Vercel AI SDK the call waits
+before it reaches the provider package. On OpenAI and Anthropic it waits inside
+the SDK's own request preparation, so the promise you get back is still the
+SDK's own; an SDK build without that hook is not held, and such a racing call
+is not governed.
+
+Requests the collector itself makes to the AER API are abandoned after
+10 seconds each, so an API that accepts connections and never answers never
+blocks your process's exit. It can delay it by up to about 30 seconds: at exit
+the collector sends the last batch of events, the closing report and the
+completion one after another, and each can take the full 10 seconds.
 
 ```ts
 import { AerPolicyError } from '@adastracomputing/aer-auto-node';

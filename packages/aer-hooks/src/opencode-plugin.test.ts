@@ -3,9 +3,10 @@
  * emitted across the session, completed on session.deleted / dispose. Uses a fake
  * sink so no network or opencode runtime is needed. Locks fail-open + bodies-off.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { EventSink, HttpSinkOptions } from '@adastracomputing/aer-emit';
 import { createAerOpencodeHooks, aerOpencodePlugin } from './opencode-plugin.js';
+import { HOOKS_VERSION } from './version.generated.js';
 
 interface FakeSink extends EventSink {
   emitted: Array<{ type: string; payload: Record<string, unknown> }>;
@@ -133,6 +134,99 @@ describe('createAerOpencodeHooks', () => {
     const blob = JSON.stringify(sinks[0]!.emitted);
     expect(blob).toContain('claude-sonnet-5'); // model present
     expect(blob).not.toContain('SECRET');      // content absent
+  });
+});
+
+describe('what an opencode record carries', () => {
+  it('records the programs a bash call ran and the file a read opened', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks['tool.execute.before']!({ tool: 'bash', sessionID: 's1', callID: 'c1' }, { args: { command: 'cat a.txt | grep SECRET_VALUE', description: 'd' } });
+    await hooks['tool.execute.before']!({ tool: 'read', sessionID: 's1', callID: 'c2' }, { args: { filePath: '/w/a.txt' } });
+    const emitted = sinks[0]!.emitted;
+    expect(emitted.filter((e) => e.type === 'process.exec').map((e) => e.payload['command'])).toEqual(['cat', 'grep']);
+    expect(emitted.filter((e) => e.type === 'file.opened').map((e) => e.payload['path'])).toEqual(['/w/a.txt']);
+    expect(emitted.every((e) => e.payload['harness'] === 'opencode')).toBe(true);
+    expect(JSON.stringify(emitted)).not.toContain('SECRET_VALUE');
+  });
+
+  it('marks the LLM events with the opencode harness too', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: { type: 'message.updated', properties: { info: { id: 'm1', role: 'assistant', sessionID: 's1', modelID: 'm', providerID: 'p', tokens: { input: 1, output: 2 }, time: { created: 1, completed: 2 } } } } });
+    const llm = sinks[0]!.emitted.filter((e) => e.type.startsWith('llm.'));
+    expect(llm.map((e) => e.type)).toEqual(['llm.requested', 'llm.completed']);
+    for (const e of llm) expect(e.payload['harness']).toBe('opencode');
+  });
+
+  it('does not hold dispose past its bound when the AER API never answers', async () => {
+    const hooks = createAerOpencodeHooks({
+      base: BASE,
+      openSink: () => ({ emit() { /* queued */ }, close: () => new Promise<void>(() => undefined) }),
+      disposeTimeoutMs: 50,
+    });
+    await hooks['tool.execute.before']!({ tool: 'bash', sessionID: 's1', callID: 'c1' }, { args: { command: 'ls' } });
+    const started = Date.now();
+    await hooks.dispose!();
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('marks the end of each session on dispose, then completes it', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: { type: 'session.created', properties: { info: { id: 's1' } } } });
+    await hooks.dispose!();
+    const reports = sinks[0]!.emitted.filter((e) => e.type === 'collector.report');
+    expect(reports.map((r) => [r.payload['phase'], r.payload['harness'], r.payload['session_ref']])).toEqual([
+      ['session_start', 'opencode', 's1'],
+      ['session_end', 'opencode', 's1'],
+    ]);
+    expect(sinks[0]!.closed).toBe(1);
+  });
+});
+
+describe('an opencode tool name the record cannot keep', () => {
+  it('is recorded as the placeholder, with one marker per call to count it', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    const long = 'mcp__server__' + 'x'.repeat(300);
+    await hooks['tool.execute.before']!({ tool: long, sessionID: 's1', callID: 'c1' }, { args: {} });
+    await hooks['tool.execute.after']!({ tool: long, sessionID: 's1', callID: 'c1', args: {} }, { title: 't', output: 'o', metadata: {} });
+    await hooks['tool.execute.before']!({ tool: 'bad\nname', sessionID: 's1', callID: 'c2' }, { args: {} });
+    await hooks['tool.execute.before']!({ tool: 'read', sessionID: 's1', callID: 'c3' }, { args: { filePath: '/a' } });
+    const emitted = sinks[0]!.emitted;
+    expect(emitted.filter((e) => e.type === 'tool.started').map((e) => e.payload['tool'])).toEqual(['(unrecordable tool name)', '(unrecordable tool name)', 'read']);
+    expect(emitted.filter((e) => e.type === 'tool.completed').map((e) => e.payload['tool'])).toEqual(['(unrecordable tool name)']);
+    const markers = emitted.filter((e) => e.type === 'collector.report' && e.payload['phase'] === 'tool_name_replaced');
+    expect(markers).toHaveLength(2);
+    for (const m of markers) expect(m.payload).toMatchObject({ collector: 'aer-hooks', harness: 'opencode', session_ref: 's1' });
+    expect(JSON.stringify(emitted)).not.toContain('x'.repeat(300));
+  });
+});
+
+describe('the session aerOpencodePlugin opens', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('declares the aer-hooks collector and the harness source, as the shell hooks do', async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', async (url: string, init?: { body?: string }) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : undefined });
+      const u = String(url);
+      if (u.endsWith('/v1/sessions')) return new Response(JSON.stringify({ agent_session_id: 'as1', ingest_token: 'it' }), { status: 201 });
+      return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+    });
+    const env = {
+      AER_BASE_URL: 'https://api.test', AER_API_KEY: 'k',
+      AER_TENANT_ID: 't', AER_AGENT_ID: 'a', AER_ENV_ID: 'e',
+    } as unknown as NodeJS.ProcessEnv;
+    const hooks = await aerOpencodePlugin(undefined, undefined, env);
+    await hooks['tool.execute.before']!({ tool: 'bash', sessionID: 's1', callID: 'c1' }, { args: { command: 'ls' } });
+    await hooks.dispose!();
+    const open = calls.find((c) => c.url.endsWith('/v1/sessions'))?.body as Record<string, unknown>;
+    expect(open['collector']).toEqual({ name: 'aer-hooks', version: HOOKS_VERSION });
+    const events = calls.filter((c) => c.url.endsWith('/events')).flatMap((c) => c.body as Array<Record<string, unknown>>);
+    expect(events.length).toBeGreaterThan(0);
+    expect(new Set(events.map((e) => e['source_type']))).toEqual(new Set(['harness']));
   });
 });
 

@@ -187,3 +187,25 @@ describe('AerPolicyError', () => {
     expect(err.version).toBe(1);
   });
 });
+
+describe('a policy that could not be refreshed', () => {
+  const base = { policy_id: 'p', version: 3, llm: { denied_models: ['x-*'] } } as const;
+
+  it('fail_closed in block mode refuses every call as policy_unavailable', () => {
+    const e = new PolicyEnforcer({ ...base, mode: 'block', on_unavailable: 'fail_closed' }, { unavailable: true });
+    const r = e.beforeCall('gpt-4o');
+    expect(r.block).toMatchObject({ rule: 'policy_unavailable', action: 'block', model: 'gpt-4o' });
+    expect(new AerPolicyError({ rule: 'policy_unavailable', model: 'gpt-4o', policyId: 'p', version: 3 }).message).toContain('could not be refreshed');
+  });
+
+  it('fail_open keeps enforcing the last good policy', () => {
+    const e = new PolicyEnforcer({ ...base, mode: 'block', on_unavailable: 'fail_open' }, { unavailable: true });
+    expect(e.beforeCall('gpt-4o').block).toBeNull();
+    expect(e.beforeCall('x-1').block).toMatchObject({ rule: 'model_denied' });
+  });
+
+  it('report mode never refuses for it', () => {
+    const e = new PolicyEnforcer({ ...base, mode: 'report', on_unavailable: 'fail_closed' }, { unavailable: true });
+    expect(e.beforeCall('gpt-4o')).toEqual({ violations: [], block: null });
+  });
+});

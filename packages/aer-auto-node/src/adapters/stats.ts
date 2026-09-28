@@ -12,9 +12,11 @@ export interface AdapterCallCounts {
   error: number;
   /** tool.selected events emitted from response payloads. */
   tool_selections: number;
+  /** Tool names recorded as the placeholder because ingest could not hold them. Present only when non-zero. */
+  tool_names_replaced?: number;
 }
 
-export type AdapterRecordKind = 'call' | 'ok' | 'error' | 'tool';
+export type AdapterRecordKind = 'call' | 'ok' | 'error' | 'tool' | 'tool_name_replaced';
 
 /**
  * Mutable accumulator shared by every installed adapter. One bucket per provider,
@@ -40,6 +42,7 @@ export class AdapterStats {
       if (kind === 'call') b.calls++;
       else if (kind === 'ok') b.ok++;
       else if (kind === 'error') b.error++;
+      else if (kind === 'tool_name_replaced') b.tool_names_replaced = (b.tool_names_replaced ?? 0) + 1;
       else b.tool_selections++;
     } catch {
       /* observability must never affect the wrapped call */

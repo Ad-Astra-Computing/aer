@@ -5,8 +5,10 @@
 // returned promise without altering its type or consuming streams.
 
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CollectorEvent } from '../session.js';
 import type { AdapterStats } from './stats.js';
+import { recordableToolName, TOOL_NAME_PLACEHOLDER } from './tool-name.js';
 import { isAsyncIterable, tapAsyncIterable, usageObserved, type StreamAccumulator } from './stream-tap.js';
 import { AerPolicyError, type PolicyEnforcer, type PolicyViolation } from '../policy.js';
 import { canonicalizeRequest, promptCanonTag, responseTag, wireBodyTag, toolArgsTag, toolResultTag, CANON_VERSION } from '../commitment.js';
@@ -40,6 +42,18 @@ const MAX_COMMIT_TEXT_BYTES = 4 * 1024 * 1024;
 export interface PolicyOption {
   enforcer: PolicyEnforcer;
   emit: (eventType: string, payload: Record<string, unknown>) => void;
+  /**
+   * Present only while the first fetch of this agent's policy in this process
+   * is still in flight and inside its bound (`waitUntil`, epoch ms, at most
+   * 3 s after that fetch started). A wrapper whose call is already
+   * asynchronous (the Vercel provider layer) may wait on it until then and
+   * resolve the option again, so a call racing process start is governed.
+   * Never rejects. Once any answer has arrived, cached or not, it is absent
+   * and nothing waits. The OpenAI and Anthropic client wrappers cannot wait
+   * without changing the SDK's own promise type, so they ignore it.
+   */
+  ready?: Promise<void>;
+  waitUntil?: number;
 }
 
 /**
@@ -49,7 +63,7 @@ export interface PolicyOption {
  */
 export type PolicyOptionSource = PolicyOption | (() => PolicyOption | undefined);
 
-function resolvePolicy(src: PolicyOptionSource | undefined): PolicyOption | undefined {
+export function resolvePolicy(src: PolicyOptionSource | undefined): PolicyOption | undefined {
   if (!src) return undefined;
   if (typeof src === 'function') {
     try { return src() ?? undefined; } catch { return undefined; }
@@ -76,6 +90,14 @@ export interface LlmResponseMeta {
 
 export interface ProviderConfig {
   provider: string;
+  /**
+   * The SDK is a Stainless-generated client (openai, @anthropic-ai/sdk): the
+   * resource keeps its client on `_client`, and the client awaits its own
+   * `prepareOptions` before it builds a request. A call that races the first
+   * policy fetch is then gated there, inside the SDK's own promise, instead
+   * of going out ungoverned.
+   */
+  stainlessClient?: true;
   extractRequest: (args: unknown[]) => LlmRequestMeta | null;
   extractResponse: (response: unknown) => LlmResponseMeta | null;
   /**
@@ -159,6 +181,94 @@ function emitViolations(policy: PolicyOption, violations: PolicyViolation[]): vo
   }
 }
 
+/**
+ * The usage-policy pre-call gate. Records every violation and, in block mode,
+ * throws AerPolicyError so the caller never makes the model call. The only
+ * throw that reaches the host; an enforcer bug is swallowed and never blocks.
+ */
+export function gateBeforeCall(policy: PolicyOption | undefined, model: string | undefined): void {
+  if (!policy || !policy.enforcer.active) return;
+  let block: PolicyViolation | null = null;
+  try {
+    const result = policy.enforcer.beforeCall(model);
+    emitViolations(policy, result.violations);
+    block = result.block;
+  } catch { block = null; /* an enforcer bug must never block the host */ }
+  if (block) {
+    throw new AerPolicyError({
+      rule: block.rule,
+      ...(block.model !== undefined ? { model: block.model } : {}),
+      ...(block.limit !== undefined ? { limit: block.limit } : {}),
+      ...(block.observed !== undefined ? { observed: block.observed } : {}),
+      policyId: policy.enforcer.policyId,
+      version: policy.enforcer.version,
+    });
+  }
+}
+
+/**
+ * Post-call token accounting. Tokens are known only after the response, so
+ * this reports and never throws, even in block mode.
+ */
+export function accountAfterCall(policy: PolicyOption | undefined, inputTokens?: number, outputTokens?: number): void {
+  if (!policy || !policy.enforcer.active) return;
+  try {
+    emitViolations(policy, policy.enforcer.afterCall(inputTokens, outputTokens));
+  } catch { /* never break the host over token accounting */ }
+}
+
+/**
+ * Wait for `p` until `until` (epoch ms) at the latest. The timer is a normal,
+ * referenced one: a host call is waiting on it, so it must keep the process
+ * alive, and it is cleared as soon as `p` settles.
+ */
+export function settleBy(p: Promise<void>, until: number): Promise<void> {
+  const ms = Math.max(0, until - Date.now());
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    p.then(() => { clearTimeout(timer); resolve(); }, () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+// The gate a call racing the first policy fetch must pass. It rides the
+// async context of that one call, so the client's prepareOptions finds it
+// however the SDK copies the request body on the way.
+const REQUEST_GATE = new AsyncLocalStorage<Promise<void>>();
+const PREPARE_PATCHED = Symbol.for('adastra.aer.adapter.prepareOptions');
+
+/**
+ * Make `self`'s client await the current call's gate in prepareOptions,
+ * before it builds the request, so a rejection refuses the call without a
+ * byte sent and the caller's promise stays the SDK's own. Returns false when
+ * the client does not have that shape; the caller then goes ahead ungated.
+ */
+function gateAtPrepare(self: unknown): boolean {
+  const client = (self as { _client?: unknown } | null)?._client as Record<string | symbol, unknown> | undefined;
+  if (!client || typeof client !== 'object' || typeof client['prepareOptions'] !== 'function') return false;
+  if (client[PREPARE_PATCHED]) return true;
+  const original = client['prepareOptions'] as (this: unknown, options: unknown) => unknown;
+  const wrapped = async function (this: unknown, options: unknown): Promise<unknown> {
+    const gate = REQUEST_GATE.getStore();
+    if (gate) await gate;
+    return original.call(this, options);
+  };
+  try {
+    client['prepareOptions'] = wrapped;
+    if (client['prepareOptions'] !== wrapped) return false;
+    client[PREPARE_PATCHED] = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The tool name to record, counting each one replaced by the placeholder. */
+export function toolNameToRecord(name: unknown, provider: string, stats?: AdapterStats): string {
+  const recorded = recordableToolName(name);
+  if (recorded === TOOL_NAME_PLACEHOLDER) stats?.record(provider, 'tool_name_replaced');
+  return recorded;
+}
+
 // Observations started but not yet emitted. A session close waits on these,
 // so a completion cannot be lost to the flush that was racing it.
 const inFlightObservations = new Set<Promise<void>>();
@@ -185,7 +295,7 @@ export async function pendingObservations(): Promise<void> {
 export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Capture, stats?: AdapterStats, policySource?: PolicyOptionSource, commit?: CommitOption): AnyFn {
   return function wrapped(this: unknown, ...args: unknown[]): unknown {
     const req = safe(() => cfg.extractRequest(args));
-    const policy = resolvePolicy(policySource);
+    let policy = resolvePolicy(policySource);
     // Content commitment (ADR-011): mint a client-side correlation id per attempt
     // so the prompt commitment and the completion can be joined in the bundle.
     // A retry re-enters wrapped() and mints a fresh request_ref (a retry is a real
@@ -195,26 +305,8 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
     // Usage-policy pre-call gate (P3). The ONLY case enforcement throws into the
     // host is a block-mode blocking violation, thrown BEFORE the SDK call so the
     // call never happens. Everything else (evaluation, emission) is fail-open.
-    if (policy && policy.enforcer.active) {
-      let block: PolicyViolation | null = null;
-      try {
-        const result = policy.enforcer.beforeCall(req?.model);
-        emitViolations(policy, result.violations);
-        block = result.block;
-      } catch { block = null; /* an enforcer bug must never block the host */ }
-      if (block) {
-        throw new AerPolicyError({
-          rule: block.rule,
-          ...(block.model !== undefined ? { model: block.model } : {}),
-          ...(block.limit !== undefined ? { limit: block.limit } : {}),
-          ...(block.observed !== undefined ? { observed: block.observed } : {}),
-          policyId: policy.enforcer.policyId,
-          version: policy.enforcer.version,
-        });
-      }
-    }
-
-    if (req) {
+    const emitRequested = (): void => {
+      if (!req) return;
       stats?.record(cfg.provider, 'call');
       safeCapture(capture, {
         event_type: 'llm.requested',
@@ -225,55 +317,73 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
           ...(req.tools_available != null ? { tools_available: req.tools_available } : {}),
         },
       });
-    }
+    };
 
     // Content commitment (ADR-011): HMAC the request we are about to submit under
     // the customer key and emit ONLY the tag. Reads message/system/tool bodies,
     // but nothing plaintext ever leaves - the tag is one-way. Wrapped so a bug
     // here never breaks the host SDK call.
-    if (commit && req) {
-      try {
-        const canon = canonicalizeRequest(cfg.provider, args);
-        if (canon) {
-          // wire_canon_tag (slice 2, capture_point: wire): commits the FULL request
-          // body as sent - sampling params and all - alongside the semantic tag.
-          const wireTag = safe(() => wireBodyTag(commit.key, args[0]));
-          // tool_result_tags (slice 2): commit each tool result fed back into this
-          // request (prior tool execution output carried as tool/tool_result msgs).
-          const toolResults = safe(() => cfg.extractToolResults?.(args) ?? null);
-          const toolResultTags = toolResults
-            ? toolResults.map((r) => safe(() => toolResultTag(commit.key, r.content))).filter((t): t is string => t !== null)
-            : [];
-          safeCapture(capture, {
-            event_type: 'llm.prompt_committed',
-            payload: {
-              request_ref: requestRef,
-              provider: cfg.provider,
-              model: req.model,
-              kid: commit.kid,
-              canon: CANON_VERSION,
-              capture_point: 'adapter_request',
-              prompt_canon_tag: promptCanonTag(commit.key, canon),
-              ...(wireTag ? { wire_canon: 'aer-wire.v1', wire_canon_tag: wireTag } : {}),
-              ...(toolResultTags.length > 0 ? { tool_result_tags: toolResultTags } : {}),
-              message_count: canon.message_count,
-              prompt_bytes: canon.text_bytes,
-              retained: 'none',
-            },
-          });
-        }
-      } catch { /* commitment is best-effort; never break the host */ }
+    const emitPromptCommitted = (): void => {
+      if (commit && req) {
+        try {
+          const canon = canonicalizeRequest(cfg.provider, args);
+          if (canon) {
+            // wire_canon_tag (slice 2, capture_point: wire): commits the FULL request
+            // body as sent - sampling params and all - alongside the semantic tag.
+            const wireTag = safe(() => wireBodyTag(commit.key, args[0]));
+            // tool_result_tags (slice 2): commit each tool result fed back into this
+            // request (prior tool execution output carried as tool/tool_result msgs).
+            const toolResults = safe(() => cfg.extractToolResults?.(args) ?? null);
+            const toolResultTags = toolResults
+              ? toolResults.map((r) => safe(() => toolResultTag(commit.key, r.content))).filter((t): t is string => t !== null)
+              : [];
+            safeCapture(capture, {
+              event_type: 'llm.prompt_committed',
+              payload: {
+                request_ref: requestRef,
+                provider: cfg.provider,
+                model: req.model,
+                kid: commit.kid,
+                canon: CANON_VERSION,
+                capture_point: 'adapter_request',
+                prompt_canon_tag: promptCanonTag(commit.key, canon),
+                ...(wireTag ? { wire_canon: 'aer-wire.v1', wire_canon_tag: wireTag } : {}),
+                ...(toolResultTags.length > 0 ? { tool_result_tags: toolResultTags } : {}),
+                message_count: canon.message_count,
+                prompt_bytes: canon.text_bytes,
+                retained: 'none',
+              },
+            });
+          }
+        } catch { /* commitment is best-effort; never break the host */ }
+      }
+    };
+
+    // A call racing the process's first policy fetch: the SDK's request is
+    // held in its own prepareOptions until the fetch answers (never past its
+    // bound), then gated like any other call. Otherwise gate now.
+    let gate: Promise<void> | undefined;
+    if (cfg.stainlessClient && policy?.ready && policy.waitUntil !== undefined && !policy.enforcer.active && gateAtPrepare(this)) {
+      gate = settleBy(policy.ready, policy.waitUntil).then(() => {
+        policy = resolvePolicy(policySource);
+        gateBeforeCall(policy, req?.model);
+        emitRequested();
+        emitPromptCommitted();
+      });
+      gate.catch(() => undefined);
+    }
+    const deferred = gate !== undefined;
+    if (!deferred) {
+      gateBeforeCall(policy, req?.model);
+      emitRequested();
+      emitPromptCommitted();
     }
 
     // Post-call token accounting (P3). Tokens are known only after the response;
     // this is report-after and never throws (even in block mode). Wrapped so an
     // enforcer bug never breaks the host.
     const afterCallPolicy = (res: LlmResponseMeta | null): void => {
-      if (!policy || !policy.enforcer.active) return;
-      try {
-        const violations = policy.enforcer.afterCall(res?.input_tokens, res?.output_tokens);
-        emitViolations(policy, violations);
-      } catch { /* never break the host over token accounting */ }
+      accountAfterCall(policy, res?.input_tokens, res?.output_tokens);
     };
 
     const emitCompleted = (response: unknown): void => {
@@ -322,13 +432,13 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
             // request_ref rides alongside the tag (only when a tag exists) so the
             // generator can correlate this tool-argument commitment to the same
             // request's prompt commitment. Tag-less tool.selected stays unchanged.
-            payload: { provider: cfg.provider, tool: call.name, ...(argsTag ? { request_ref: requestRef, tool_args_tag: argsTag } : {}) },
+            payload: { provider: cfg.provider, tool: toolNameToRecord(call.name, cfg.provider, stats), ...(argsTag ? { request_ref: requestRef, tool_args_tag: argsTag } : {}) },
           });
         }
       } else {
         for (const name of res?.tool_names ?? []) {
           stats?.record(cfg.provider, 'tool');
-          safeCapture(capture, { event_type: 'tool.selected', payload: { provider: cfg.provider, tool: name } });
+          safeCapture(capture, { event_type: 'tool.selected', payload: { provider: cfg.provider, tool: toolNameToRecord(name, cfg.provider, stats) } });
         }
       }
       afterCallPolicy(res);
@@ -390,7 +500,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
       });
       for (const name of acc?.tool_names ?? []) {
         stats?.record(cfg.provider, 'tool');
-        safeCapture(capture, { event_type: 'tool.selected', payload: { provider: cfg.provider, tool: name } });
+        safeCapture(capture, { event_type: 'tool.selected', payload: { provider: cfg.provider, tool: toolNameToRecord(name, cfg.provider, stats) } });
       }
       afterCallPolicy({ tool_names: acc?.tool_names ?? [], ...(acc?.input_tokens != null ? { input_tokens: acc.input_tokens } : {}), ...(acc?.output_tokens != null ? { output_tokens: acc.output_tokens } : {}) });
     };
@@ -401,7 +511,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
 
     let result: unknown;
     try {
-      result = original.apply(this, args);
+      result = gate ? REQUEST_GATE.run(gate, () => original.apply(this, args)) : original.apply(this, args);
     } catch (err) {
       emitError();
       throw err;
@@ -489,7 +599,10 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
         trackObservation(new Promise<void>((resolve) => {
           Promise.resolve(result).then(
             (r) => { try { handleResolved(r); } finally { resolve(); } },
-            () => { try { emitError(); } finally { resolve(); } },
+            (err: unknown) => {
+              // A call the policy refused never happened: nothing to record.
+              try { if (!(err instanceof AerPolicyError)) emitError(); } finally { resolve(); }
+            },
           );
         }));
       } catch { /* observation must not affect the host */ }

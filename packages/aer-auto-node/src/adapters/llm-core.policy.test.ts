@@ -146,3 +146,127 @@ describe('wrapCreate policy enforcement: inert paths', () => {
     expect(original).toHaveBeenCalledTimes(1);
   });
 });
+
+// A client shaped like the OpenAI and Anthropic SDKs: the resource method
+// returns the client's own promise, and the client awaits prepareOptions
+// before it builds and sends the request.
+function stainless(send: (body: unknown) => unknown) {
+  const client = {
+    sent: [] as unknown[],
+    async prepareOptions(_o: unknown): Promise<void> { /* the SDK default */ },
+    request(options: { body: unknown }): Promise<unknown> {
+      return (async () => {
+        await this.prepareOptions(options);
+        client.sent.push(options.body);
+        return send(options.body);
+      })();
+    },
+  };
+  // Like @anthropic-ai/sdk, which copies the params before sending them.
+  const resource = { _client: client, create(body: unknown) { return client.request({ body: { ...(body as object) } }); } };
+  return { client, resource };
+}
+
+describe('a call made while the first policy fetch is still in flight', () => {
+  const stainlessCfg: ProviderConfig = { ...cfg, stainlessClient: true };
+
+  function racing(events: CollectorEvent[]) {
+    let enforcer = new PolicyEnforcer(null);
+    let pending = true;
+    let arrive!: () => void;
+    const ready = new Promise<void>((r) => { arrive = r; });
+    const source = () => ({
+      enforcer,
+      emit: (event_type: string, payload: Record<string, unknown>) => { events.push({ event_type, payload }); },
+      ...(pending ? { ready, waitUntil: Date.now() + 3_000 } : {}),
+    });
+    const land = (p: UsagePolicy | null) => { enforcer = new PolicyEnforcer(p); pending = false; arrive(); };
+    return { source, land };
+  }
+
+  it('is refused before the request is sent when the policy that lands denies it', async () => {
+    const { capture, events } = capt();
+    const { client, resource } = stainless(() => ({ usage: { in: 1, out: 1 } }));
+    const r = racing(events);
+    resource.create = wrapCreate(resource.create, stainlessCfg, capture, undefined, r.source) as typeof resource.create;
+    const call = resource.create({ model: 'gpt-4-vision' });
+    r.land(policy({ mode: 'block', llm: { denied_models: ['*-vision'] } }));
+    await expect(call).rejects.toBeInstanceOf(AerPolicyError);
+    expect(client.sent).toHaveLength(0);
+    expect(events.map((e) => e.event_type)).toEqual(['policy.violation']);
+  });
+
+  it('goes ahead, recorded as usual, when the policy allows it', async () => {
+    const { capture, events } = capt();
+    const { client, resource } = stainless(() => ({ usage: { in: 2, out: 3 } }));
+    const r = racing(events);
+    resource.create = wrapCreate(resource.create, stainlessCfg, capture, undefined, r.source) as typeof resource.create;
+    const call = resource.create({ model: 'gpt-4o' });
+    r.land(policy({ mode: 'report' }));
+    await expect(call).resolves.toBeDefined();
+    await new Promise((res) => setTimeout(res, 0));
+    expect(client.sent).toHaveLength(1);
+    expect(events.map((e) => e.event_type)).toEqual(['llm.requested', 'llm.completed']);
+  });
+
+  it('keeps the SDK own promise object', () => {
+    const { capture, events } = capt();
+    const { resource } = stainless(() => ({ usage: {} }));
+    const r = racing(events);
+    const orig = resource.create;
+    let returned: unknown;
+    resource.create = ((body: unknown) => { returned = orig.call(resource, body); return returned; }) as typeof resource.create;
+    resource.create = wrapCreate(resource.create, stainlessCfg, capture, undefined, r.source) as typeof resource.create;
+    const out = resource.create({ model: 'gpt-4o' });
+    expect(out).toBe(returned);
+    r.land(null);
+  });
+
+  it('records no prompt commitment for a call the policy then refuses', async () => {
+    const { capture, events } = capt();
+    const { client, resource } = stainless(() => ({ usage: {} }));
+    const r = racing(events);
+    const commitCfg: ProviderConfig = { ...stainlessCfg, provider: 'openai' };
+    resource.create = wrapCreate(resource.create, commitCfg, capture, undefined, r.source, { key: Buffer.alloc(32, 1), kid: 'k' }) as typeof resource.create;
+    const call = resource.create({ model: 'gpt-4-vision', messages: [{ role: 'user', content: 'hi' }] });
+    r.land(policy({ mode: 'block', llm: { denied_models: ['*-vision'] } }));
+    await expect(call).rejects.toBeInstanceOf(AerPolicyError);
+    expect(client.sent).toHaveLength(0);
+    expect(events.map((e) => e.event_type)).toEqual(['policy.violation']);
+  });
+
+  it('records the request then its commitment for an allowed call, as without a wait', async () => {
+    const { capture, events } = capt();
+    const { resource } = stainless(() => ({ usage: {} }));
+    const r = racing(events);
+    const commitCfg: ProviderConfig = { ...stainlessCfg, provider: 'openai' };
+    resource.create = wrapCreate(resource.create, commitCfg, capture, undefined, r.source, { key: Buffer.alloc(32, 1), kid: 'k' }) as typeof resource.create;
+    const call = resource.create({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] });
+    r.land(null);
+    await call;
+    await new Promise((res) => setTimeout(res, 0));
+    expect(events.map((e) => e.event_type).slice(0, 2)).toEqual(['llm.requested', 'llm.prompt_committed']);
+  });
+
+  it('is sent without waiting past the bound when the fetch never answers', async () => {
+    const { capture, events } = capt();
+    const { client, resource } = stainless(() => ({ usage: {} }));
+    const source = () => ({ enforcer: new PolicyEnforcer(null), emit: () => undefined, ready: new Promise<void>(() => undefined), waitUntil: Date.now() + 80 });
+    resource.create = wrapCreate(resource.create, stainlessCfg, capture, undefined, source) as typeof resource.create;
+    const started = Date.now();
+    await resource.create({ model: 'gpt-4o' });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(client.sent).toHaveLength(1);
+    void events;
+  });
+
+  it('falls back to an ungated call when the client has no prepareOptions', async () => {
+    const { capture, events } = capt();
+    const original = vi.fn(async () => ({ usage: {} }));
+    const r = racing(events);
+    const wrapped = wrapCreate(original, stainlessCfg, capture, undefined, r.source);
+    await wrapped({ model: 'gpt-4-vision' });
+    expect(original).toHaveBeenCalledTimes(1);
+    r.land(null);
+  });
+});
