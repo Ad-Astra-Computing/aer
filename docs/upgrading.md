@@ -6,10 +6,10 @@ action. The ones that do are listed first in each section.
 
 | Package | From | To |
 | --- | --- | --- |
-| [`@adastracomputing/aer`](#aer-cli) | 0.1.4 | 0.4.0 |
-| [`@adastracomputing/aer-hooks`](#aer-hooks) | 0.1.3 | 0.5.0 |
+| [`@adastracomputing/aer`](#aer-cli) | 0.1.4 | 0.4.2 |
+| [`@adastracomputing/aer-hooks`](#aer-hooks) | 0.1.3 | 0.6.0 |
 | [`@adastracomputing/aer-mcp-recorder`](#aer-mcp-recorder) | 0.1.2 | 0.3.2 |
-| [`@adastracomputing/aer-auto-node`](#aer-auto-node) | 0.3.0 | 0.5.0 |
+| [`@adastracomputing/aer-auto-node`](#aer-auto-node) | 0.3.0 | 0.6.0 |
 | [`@adastracomputing/aer-emit`](#aer-emit) | 0.1.2 | 0.4.0 |
 | [`@adastracomputing/aer-sdk-ts`](#aer-sdk-ts) | 0.1.2 | 0.2.1 |
 | [`@adastracomputing/aer-resource-node`](#aer-resource-node) | 0.1.2 | 0.3.0 |
@@ -32,8 +32,15 @@ recommended.
 
 ## aer (CLI)
 
-From 0.1.4 to 0.4.0.
+From 0.1.4 to 0.4.2.
 
+- `aer doctor` reports the aer-hooks 0.6.0 checks below: an end-of-session
+  entry with no time budget, a relative `CODEX_HOME` and an Antigravity
+  registration that records no tool calls. It also compares an installed
+  `aer-hook` against aer-hooks 0.6.0, so a 0.5.x hook is now flagged as
+  outdated. These are warnings, not failing checks: a zero exit from
+  `doctor` does not mean every hook registration is current, only that
+  nothing it treats as a hard failure was found.
 - `aer smoke` now exits 1 when the API has no completed session for your
   agent after the workload ran. It used to exit 0 whenever the workload
   itself exited 0, so a CI step that passed on a silent collector now fails.
@@ -75,7 +82,56 @@ From 0.1.4 to 0.4.0.
 
 ## aer-hooks
 
-From 0.1.3 to 0.5.0.
+From 0.1.3 to 0.6.0.
+
+New in 0.6.0, from 0.5.1:
+
+- Re-run `aer-hooks install <harness>` for Claude Code, Codex and
+  Antigravity to add `--end-budget-ms` to the entry that ends a session, so
+  it can declare how long the harness actually allows it and hand the rest
+  to a short-lived background process that outlives the harness. Until you
+  re-run it, `aer-hooks status` and `aer doctor` report `no_end_budget`.
+- Re-run `aer-hooks install antigravity`. A 0.5.x install wrote Antigravity's
+  tool events in a flat form Antigravity loads and never runs, so those
+  registrations record turns and no tool calls. `aer-hooks status` and
+  `aer doctor` report this as `antigravity_flat_tool_entry` and name the
+  command to fix it.
+- Codex users must approve the hook again after either re-install, because
+  it changes the registered command and Codex records trust against the
+  exact command text. A hook Codex does not trust is skipped silently, with
+  no error on either side. Start Codex and use its startup trust review, or
+  run `/hooks` and approve the AER entry; for a non-interactive `codex exec`
+  that has already vetted the hook, `--dangerously-bypass-hook-trust` runs
+  it without a recorded approval.
+- `aer-hooks install codex` now honours `CODEX_HOME`: `install`, `status`
+  and `uninstall` read and write `$CODEX_HOME/hooks.json` when it is an
+  absolute path, rather than always `~/.codex/hooks.json`. A relative
+  `CODEX_HOME` is refused by `install` and reported by `status` and
+  `aer doctor` as `relative_codex_home`. If AER entries were written to
+  `~/.codex/hooks.json` before `CODEX_HOME` was set, Codex no longer reads
+  them there, but they would fire again alongside the new registration if
+  `CODEX_HOME` were later unset; `install` and `status` warn about the
+  stray file and print the command that removes it,
+  `CODEX_HOME= aer-hooks uninstall codex`.
+- Codex now records a `file.written` event for each file `apply_patch`
+  touches, read only from the patch's file headers, never its content. A
+  patch naming more than 16 files records the first 16 and puts the true
+  count on the call's `tool.started` event.
+- The opencode plugin declares its session as the `aer-hooks` collector
+  recording a harness rather than as a wrapped process, and every event it
+  sends, including LLM usage, now carries `harness: opencode`. It also
+  reduces tool calls the way the shell hooks already do: `bash` to the
+  programs it ran and the hosts its network clients reached, `read`,
+  `write` and `edit` to the file path, `webfetch` to the target's host,
+  never the command line, file content or URL path. Anything reading
+  opencode records should expect the smaller shape. Plugin `dispose`, which
+  is how `opencode run` ends, now waits at most 3 seconds for the API.
+- A tool name in the opencode plugin longer than 200 UTF-16 code units or
+  containing control characters is now recorded as `(unrecordable tool
+  name)` instead of being refused, and each such call adds a
+  `collector.report` marker with phase `tool_name_replaced`.
+
+From earlier releases, 0.1.3 to 0.5.0:
 
 - Re-run `aer-hooks install <harness>` after upgrading. The record now
   closes on `SessionEnd` instead of on every `Stop`, and the hook is
@@ -152,7 +208,36 @@ From 0.1.2 to 0.3.2.
 
 ## aer-auto-node
 
-From 0.3.0 to 0.5.0.
+From 0.3.0 to 0.6.0.
+
+New in 0.6.0, from 0.5.0:
+
+- The usage policy is now fetched when the collector starts for its
+  configured agent, instead of by each session on its first call, kept
+  fresh for 5 minutes and, on a failed fetch, retried after 30 seconds. A
+  call made while that first fetch is still in flight waits for it, never
+  more than 3 seconds, and a policy in block mode now governs even the
+  process's first call on the OpenAI, Anthropic and Vercel AI SDK paths. A
+  block-mode call to a denied model on the Vercel path now throws
+  `AerPolicyError` before the request is sent, where 0.5.0 let it through
+  with no policy check.
+- `fail_closed` now takes effect once the last fetched policy is more than 5
+  minutes old and the latest refresh has failed, refusing every LLM call in
+  new sessions with rule `policy_unavailable`, rather than only when no
+  policy was ever fetched.
+- Every request the collector makes to the AER API is now abandoned after
+  10 seconds. A host process can be delayed exiting by up to about 30
+  seconds after its last event, since the closing report and completion are
+  still sent one after another.
+- A batch of events the API did not accept adds its count to the closing
+  `collector.report`'s new `events_dropped_budget` field, so the record
+  says it is short instead of looking complete. A tool name longer than 200
+  UTF-16 code units or containing control characters is recorded as
+  `(unrecordable tool name)` and counted per provider in
+  `adapter_activity`'s new `tool_names_replaced`, rather than refusing the
+  whole `tool.selected` event.
+
+From earlier releases, 0.3.0 to 0.5.0:
 
 - The collector does not start inside a Claude Code tool shell
   (`CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT` set). Claude Code exports its

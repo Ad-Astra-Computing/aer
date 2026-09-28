@@ -13,7 +13,9 @@ without a summary.
 - The installer now writes `--end-budget-ms` on the entry that ends a session
   (Claude Code and Codex SessionEnd, Antigravity `Stop`). The hook delivers for
   that long itself, up to 30 seconds. Run `aer-hooks install` again to add
-  it; `aer-hooks status` and `aer doctor` point out an entry without it.
+  it; `aer-hooks status` and `aer doctor` point out an entry without it. On
+  Codex, re-running install changes the registered command, so Codex skips
+  the hook silently until it is approved again.
 - The hook also starts a short-lived background process that outlives the
   harness and finishes what is left: all of it when no budget is declared, in
   which case the hook itself stops 1.2 seconds after it started. The process

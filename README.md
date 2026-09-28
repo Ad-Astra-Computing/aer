@@ -184,7 +184,9 @@ npx @adastracomputing/aer-hooks install claude-code
 `codex` and `antigravity` work the same way; opencode loads an in-process
 plugin instead (see the `aer-hooks` README). `status` shows what is wired, and
 lists any registration that has fallen behind: missing the current hook
-lifecycle, running an older `aer-hooks` release or shadowed by a nix-profile copy of
+lifecycle, an end-of-session entry with no time budget, a relative
+`CODEX_HOME`, an Antigravity registration that records no tool calls,
+running an older `aer-hooks` release or shadowed by a nix-profile copy of
 `aer-hook` that sits ahead of the project's own on `PATH`. `uninstall` removes AER's entries and only those.
 Every config write keeps a backup, and running `install` again is safe: it
 updates an existing registration in place instead of duplicating it, which is
