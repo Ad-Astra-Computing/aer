@@ -71,6 +71,7 @@ async function completed(sink, n, ms = 20_000) {
 /** What the API would store: a resend of an event_id it already has is ignored. */
 const stored = (sink) => [...new Map(sink.events().map((e) => [e.event_id, e])).values()];
 const byType = (sink, t) => stored(sink).filter((e) => e.event_type === t);
+
 const phases = (sink) => byType(sink, 'collector.report').map((e) => e.payload?.phase);
 
 /** A Claude Code transcript with one assistant message carrying model and usage. */
@@ -210,17 +211,22 @@ export default function register(registry) {
       const inst = await c.bin('aer-hooks', ['install', harness], { env: envFor(c, home), cwd: home });
       c.assert.exit(inst, 0, 'install');
       const cfg = readJson(join(home, ...cfgRel));
-      const cmd = wiredCommands(cfg).SessionStart.find((h) => /--harness/.test(h.command)).command;
+      const cmdFor = (ev) => wiredCommands(cfg)[ev].find((h) => /--harness/.test(h.command)).command;
+      c.assert.match(cmdFor('SessionEnd'), /--end-budget-ms \d+/, 'the SessionEnd entry declares its budget');
       const env = hookEnv(c, home, sink.url);
       const sid = randomUUID();
       const proj = c.tmp('proj-');
       for (const ev of ['SessionStart', 'SessionEnd']) {
-        const r = await c.run('/bin/sh', ['-c', cmd], { env, input: JSON.stringify({ session_id: sid, cwd: proj, transcript_path: join(proj, 't.jsonl'), hook_event_name: ev }), timeoutMs: 20_000 });
+        // Slower than the 1.2 s a SessionEnd with no budget keeps for itself,
+        // so only the declared budget completes the record inside the hook.
+        if (ev === 'SessionEnd') sink.route('POST', /\/(events|complete)$/, async () => { await new Promise((r) => setTimeout(r, 600)); return false; });
+        const r = await c.run('/bin/sh', ['-c', cmdFor(ev)], { env, input: JSON.stringify({ session_id: sid, cwd: proj, transcript_path: join(proj, 't.jsonl'), hook_event_name: ev }), timeoutMs: 20_000 });
         c.assert.exit(r, 0, `wired command on ${ev}`);
         c.assert.equal(r.stdout, '', `wired command stdout on ${ev}`);
       }
       c.assert.equal(opens(sink).length, 1, 'sessions opened by the wired command');
-      c.assert.equal(await completed(sink, 1), 1, 'sessions completed by the wired command');
+      // Before the hook exited, which is what a container that ends with the harness depends on.
+      c.assert.equal(completes(sink).length, 1, 'the wired SessionEnd did not complete the record before it exited');
       const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
       c.assert.ok(start, 'no session_start marker');
       c.assert.equal(start.payload.harness, harness, 'harness on the marker');
@@ -744,19 +750,20 @@ export default function register(registry) {
     c.assert.excludes(bad.stdout + bad.stderr, id.AER_API_KEY, 'install printed the key');
     const inst = await c.bin('aer-hooks', ['install', 'claude-code', '--env-file', file], { env, cwd: home });
     c.assert.exit(inst, 0, 'install --env-file');
-    const cmd = wiredCommands(readJson(join(home, '.claude', 'settings.json'))).SessionStart.find((h) => /--harness/.test(h.command)).command;
-    c.assert.includes(cmd, `--env-file '${file}'`, 'wired command');
+    const wired = wiredCommands(readJson(join(home, '.claude', 'settings.json')));
+    const cmdFor = (ev) => wired[ev].find((h) => /--harness/.test(h.command)).command;
+    c.assert.includes(cmdFor('SessionStart'), `--env-file '${file}'`, 'wired command');
     const sid = randomUUID();
     const proj = c.tmp('proj-');
     // No AER_* in the environment at all: everything comes from the file.
     for (const ev of ['SessionStart', 'SessionEnd']) {
-      const r = await c.run('/bin/sh', ['-c', cmd], { env, input: JSON.stringify({ session_id: sid, cwd: proj, hook_event_name: ev }), timeoutMs: 20_000 });
+      const r = await c.run('/bin/sh', ['-c', cmdFor(ev)], { env, input: JSON.stringify({ session_id: sid, cwd: proj, hook_event_name: ev }), timeoutMs: 20_000 });
       c.assert.exit(r, 0, `wired command on ${ev}`);
       c.assert.excludes(r.stderr, id.AER_API_KEY, 'stderr leaked the key');
     }
     c.assert.equal(opens(sink).length, 1, 'opens');
     c.assert.equal(opens(sink)[0].json.agent_id, id.AER_AGENT_ID, 'agent from the file');
-    c.assert.equal(await completed(sink, 1), 1, 'completes');
+    c.assert.equal(completes(sink).length, 1, 'the wired SessionEnd did not complete the record before it exited');
     // status warns when a key is exported in the shell as well, without showing it.
     const st = await c.bin('aer-hooks', ['status', '--json'], { env: { ...env, AER_API_KEY: 'exported-matrix-key', AER_BASE_URL: sink.url }, cwd: home });
     const f = JSON.parse(st.stdout).hooks.stale_registrations.find((s) => s.reason === 'key_in_shell_env');
