@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import { writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { staleRegistrations } from './hooks-doctor.js';
 import { install, uninstall, status, configPathFor, AER_HOOK_MARKER, hookCommandResolves, strandedCodexRegistration } from './install.js';
 
 let dir: string;
@@ -398,9 +399,29 @@ describe('CODEX_HOME', () => {
     expect(await strandedCodexRegistration()).toBeUndefined();
   });
 
-  it('ignores a relative CODEX_HOME, which Codex would resolve against a cwd the hook does not share', async () => {
+  it('refuses a relative CODEX_HOME, which Codex resolves against its own working directory', async () => {
     process.env['CODEX_HOME'] = 'relative/codex';
+    await expect(install('codex')).rejects.toThrow(/CODEX_HOME is set to a relative path \(relative\/codex\).*absolute/);
+    await expect(fs.access(path.join(home, '.codex', 'hooks.json'))).rejects.toThrow();
+    // Only codex reads CODEX_HOME, and an explicit --dir elsewhere is unaffected.
+    await expect(install('claude-code')).resolves.toBeDefined();
+    await expect(install('codex', { dir: path.join(dir, 'other') })).resolves.toBeDefined();
+  });
+
+  it('treats an empty CODEX_HOME as unset', async () => {
+    process.env['CODEX_HOME'] = '';
     const r = await install('codex');
     expect(r.path).toBe(path.join(home, '.codex', 'hooks.json'));
+  });
+
+  it('flags a relative CODEX_HOME in the doctor findings', async () => {
+    delete process.env['CODEX_HOME'];
+    await install('codex');
+    process.env['CODEX_HOME'] = 'relative/codex';
+    const findings = await staleRegistrations();
+    const f = findings.find((x) => x.reason === 'relative_codex_home');
+    expect(f?.harness).toBe('codex');
+    expect(f?.detail).toContain('relative/codex');
+    expect(f?.fix).toMatch(/absolute/);
   });
 });

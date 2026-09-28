@@ -254,10 +254,22 @@ function baseDir(opts: InstallOptions): string {
 }
 
 /**
+ * Why CODEX_HOME cannot be used, or undefined. Codex resolves a relative
+ * value against its own working directory, which differs from run to run and
+ * from the installer's, so there is no one file to install into. Empty is
+ * unset.
+ */
+export function relativeCodexHome(): string | undefined {
+  const v = process.env['CODEX_HOME'];
+  return v !== undefined && v.length > 0 && !path.isAbsolute(v) ? v : undefined;
+}
+
+/**
  * The config file this command reads and writes. Codex keeps its user-level
  * config in $CODEX_HOME when that is set, not ~/.codex, so for the user's own
- * home that is where its hooks.json is. A relative CODEX_HOME is ignored: it
- * would resolve against a working directory the hook does not share.
+ * home that is where its hooks.json is. A relative CODEX_HOME is refused by
+ * install and flagged by the doctor (see relativeCodexHome); here it falls
+ * back to ~/.codex so that status and uninstall still read something.
  */
 function configFile(harness: Harness, opts: InstallOptions): string {
   const base = baseDir(opts);
@@ -367,6 +379,13 @@ export interface InstallResult {
 
 /** Wire AER hooks into the harness config. Conservative read-modify-write. */
 export async function install(harness: Harness, opts: InstallOptions = {}): Promise<InstallResult> {
+  const rel = harness === 'codex' ? relativeCodexHome() : undefined;
+  if (rel !== undefined && path.resolve(baseDir(opts)) === path.resolve(os.homedir())) {
+    throw new Error(
+      `refusing to install: CODEX_HOME is set to a relative path (${rel}), which Codex resolves against whatever directory it starts in, ` +
+        'so no one hooks.json would be read. Set CODEX_HOME to an absolute path, or unset it, and run the install again.',
+    );
+  }
   const file = configFile(harness, opts);
   const config = await readJsonOrAbort(file);
   if (opts.envFile !== undefined && !isSafeToPin(opts.envFile)) throw new Error('refusing an --env-file path with control characters');
