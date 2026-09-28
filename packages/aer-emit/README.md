@@ -13,10 +13,35 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
 
 ## What it gives you
 
-- `EventSink`: `emit(eventType, payload)` and `close()`.
+- `EventSink`: `emit(eventType, payload, eventId?)` and `close()`. `eventId` lets a
+  caller that can derive a stable id for an event make re-emitting it idempotent at
+  ingest; omitted, the sink assigns a fresh random id. `eventId` must be a
+  lowercase UUID; anything else is treated as not supplied and a random id is
+  generated instead, silently.
 - `NullSink`: a no-op sink used when AER is not configured.
 - `createHttpSink(opts)`: opens a session lazily on the first emit, batches events
-  and completes the session on close.
+  and completes the session on close. Batches at `opts.batchSize` events (default
+  64); a buffer over `opts.maxPending` events (default 10000) drops its oldest
+  events to make room, reported once on stderr, a second, silent-after-the-first
+  drop path distinct from the ingest failures described under Non-negotiable
+  properties below. `opts.requestTimeoutMs`
+  (default 10000) bounds each request. `opts.session` attaches to an
+  already-open session (`{ id, ingestToken }`) instead of opening a new one, for
+  a sink that shares one AER session with another process; `opts.completeOnClose`
+  (default `true`) can be set `false` on such an attached sink so its `close()`
+  does not end a session another process owns. `opts.onOpen` fires once, with
+  the session identity, the moment a session is opened lazily (never in attach
+  mode). `opts.clientRef` (paired with `deriveClientRef`) makes a repeated
+  session open reuse the running session instead of minting a duplicate; a
+  400 that names `client_ref` is retried once without it. `opts.onComplete(ok)`
+  fires once close() has a session to
+  complete, whether opened lazily or attached, and `completeOnClose` is not
+  `false`; it does not fire for a disabled sink or one whose session never
+  opened. `opts.collector` (`{ name, version?, schema_capability? }`) names
+  which collector opened the session, for a reader that needs to tell a
+  harness recording from a wrapped process.
+- `deriveClientRef(harness, rootHarnessSessionId, agentId)`: derives the
+  deterministic `client_ref` a caller passes to `createHttpSink`.
 - `sinkFromEnv(env?, overrides?)`: builds a sink from the standard `AER_*` env
   vars, or a `NullSink` when unconfigured.
 - `resolvePrincipal(id, kind, display)`: normalizes the on-whose-behalf principal
@@ -27,14 +52,22 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
 Every network call is best-effort. A failed session open, event POST or complete is
 swallowed, logged to stderr at most once and never thrown. Emitting is never in the
 critical path of the producer's real work. An idle producer that never emits never
-touches the network.
+touches the network. A batch the API does not accept is dropped, never handed back
+to your code. A network error or a 429, 502, 503 or 504 gets three retries, then the
+batch is dropped; any other non-2xx drops the batch at once; a 401, 403, 404 or 409
+disables the sink, so every later event is dropped too. Each of these prints one
+stderr line the first time it happens in a process and nothing on later occurrences,
+so a run that looked clean on stderr can still be missing events. `close()` still
+resolves and `onComplete` still reports `true` once `/complete` succeeds.
 
 ## Environment
 
 `AER_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID` are required for a live sink;
 `AER_ENV_ID`, `AER_BASE_URL`, `AER_AGENT_VERSION`, `AER_PRINCIPAL_ID`,
 `AER_PRINCIPAL_KIND` and `AER_PRINCIPAL_DISPLAY` are optional. Miss any of the three
-required values and `sinkFromEnv` returns a `NullSink`.
+required values and `sinkFromEnv` returns a `NullSink`. `AER_ENV_ID` is not checked
+there, but the API refuses to open a session without it, so a live sink built
+without it records nothing and says so once on stderr.
 
 ## License
 

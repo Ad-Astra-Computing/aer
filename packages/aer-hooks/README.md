@@ -85,7 +85,7 @@ point the hooks at it instead:
 
 ```
 install -m 600 /dev/null ~/.config/aer/hooks.env
-$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_AGENT_ID=...
+$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_AGENT_ID=..., AER_ENV_ID=...
 aer-hooks install claude-code --env-file ~/.config/aer/hooks.env
 ```
 
@@ -93,10 +93,13 @@ Every command the installer writes then carries `--env-file <path>`. The hook re
 only the file's `AER_*` lines and never puts the values into its own environment,
 so nothing it starts inherits them. It refuses a file that is a link,
 belongs to another user or can be read or written by anyone else, and says so on
-stderr without showing the contents. Installing again without `--env-file` keeps the
-file already configured. `AER_ENV_FILE=<path>` works in place of the flag.
-`aer-hooks status` and `aer doctor` warn when an AER key is exported in the shell
-they run in while hooks are wired.
+stderr without showing the contents. Refused at hook run time rather than install
+time (the file changed, or the flag was added by hand), the hook warns on stderr
+and falls back to the process's own environment rather than recording nothing, so
+a reader should not assume a refusal means silence. Installing again without
+`--env-file` keeps the file already configured. `AER_ENV_FILE=<path>` works in
+place of the flag. `aer-hooks status` and `aer doctor` warn when an AER key is
+exported in the shell they run in while hooks are wired.
 
 ## One AER session per harness session
 
@@ -158,10 +161,19 @@ silently split across two records.
 ## Redaction, with no way to turn it off
 
 The hook records tool names, argument KEY names (the `Object.keys` of the tool
-input) and result flags only. It never records argument values or result content,
-and there is no flag that changes that. Every payload is filtered against the set
-of keys AER ingest stores before it is sent, so a value the record could not hold
-never reaches the wire either.
+input) and result flags for most tools, never argument values or result
+content, and there is no flag that changes that. A few tools carry a narrow,
+named exception instead of the bare key-name rule: a shell command is reduced
+to the programs it runs (up to 16) and the hosts its network clients were
+pointed at (up to 8), never the command line itself; a file read or write
+records the path, never the file's content; a web fetch records the target's
+host and scheme, never its path or query; and a Claude Code transcript's
+assistant messages contribute `llm.completed` events carrying the model name
+and the input/output token counts, read from the transcript's `message.model`
+and `message.usage` fields plus the entry's id, timestamp and subagent type,
+never the prompt or completion text. Every payload, whatever tool produced it, is filtered against the set
+of keys AER ingest stores before it is sent, so a value the record could not
+hold never reaches the wire either.
 
 If you need evidence about the arguments themselves, use content commitments
 (ADR-011): the record carries a one-way tag you can later open against your own
