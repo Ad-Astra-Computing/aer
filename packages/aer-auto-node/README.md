@@ -89,6 +89,12 @@ a non-secret `kid` identifying which key produced it, so keys can rotate. The
 for independent verification. The whole path is best-effort and fail-open: a fault
 degrades to a name-only event and never breaks the host SDK call.
 
+A `tool_args_tag` is always computed over the tool name the model returned,
+even when the record shows `(unrecordable tool name)` in its place (see
+*Semantic LLM/tool capture*). Such a tag still commits to what the model
+actually sent, but it cannot be opened from the record's `tool` value: open
+it from your retained plaintext, the real name and its arguments.
+
 ## Safety
 
 - **Kill switch**: `AER_DISABLE=1` installs nothing. No patches, no session, no

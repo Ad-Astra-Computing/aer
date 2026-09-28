@@ -96,3 +96,22 @@ describe('every SDK path records a bounded tool name and counts each replacement
     expect(stats.snapshot()['testllm']).toEqual({ calls: 1, ok: 1, error: 0, tool_selections: 1 });
   });
 });
+
+describe('a replaced name on the commitment path', () => {
+  it('records the placeholder, with the argument tag still over the name the model returned', async () => {
+    const { toolArgsTag } = await import('../commitment.js');
+    const key = Buffer.alloc(32, 7);
+    const { capture, events } = capt();
+    const cfg: ProviderConfig = {
+      provider: 'testllm',
+      extractRequest: () => ({ provider: 'testllm', model: 'm' }),
+      extractResponse: () => ({ tool_names: [LONG] }),
+      extractToolCalls: () => [{ name: LONG, args: { q: 1 } }],
+    };
+    await wrapCreate(async () => ({}), cfg, capture, undefined, undefined, { key, kid: 'k1' })({ messages: [] });
+    await new Promise((r) => setTimeout(r, 0));
+    const sel = events.find((e) => e.event_type === 'tool.selected')!.payload as Record<string, unknown>;
+    expect(sel['tool']).toBe(TOOL_NAME_PLACEHOLDER);
+    expect(sel['tool_args_tag']).toBe(toolArgsTag(key, LONG, { q: 1 }));
+  });
+});
