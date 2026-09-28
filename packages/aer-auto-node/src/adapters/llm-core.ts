@@ -319,6 +319,46 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
       });
     };
 
+    // Content commitment (ADR-011): HMAC the request we are about to submit under
+    // the customer key and emit ONLY the tag. Reads message/system/tool bodies,
+    // but nothing plaintext ever leaves - the tag is one-way. Wrapped so a bug
+    // here never breaks the host SDK call.
+    const emitPromptCommitted = (): void => {
+      if (commit && req) {
+        try {
+          const canon = canonicalizeRequest(cfg.provider, args);
+          if (canon) {
+            // wire_canon_tag (slice 2, capture_point: wire): commits the FULL request
+            // body as sent - sampling params and all - alongside the semantic tag.
+            const wireTag = safe(() => wireBodyTag(commit.key, args[0]));
+            // tool_result_tags (slice 2): commit each tool result fed back into this
+            // request (prior tool execution output carried as tool/tool_result msgs).
+            const toolResults = safe(() => cfg.extractToolResults?.(args) ?? null);
+            const toolResultTags = toolResults
+              ? toolResults.map((r) => safe(() => toolResultTag(commit.key, r.content))).filter((t): t is string => t !== null)
+              : [];
+            safeCapture(capture, {
+              event_type: 'llm.prompt_committed',
+              payload: {
+                request_ref: requestRef,
+                provider: cfg.provider,
+                model: req.model,
+                kid: commit.kid,
+                canon: CANON_VERSION,
+                capture_point: 'adapter_request',
+                prompt_canon_tag: promptCanonTag(commit.key, canon),
+                ...(wireTag ? { wire_canon: 'aer-wire.v1', wire_canon_tag: wireTag } : {}),
+                ...(toolResultTags.length > 0 ? { tool_result_tags: toolResultTags } : {}),
+                message_count: canon.message_count,
+                prompt_bytes: canon.text_bytes,
+                retained: 'none',
+              },
+            });
+          }
+        } catch { /* commitment is best-effort; never break the host */ }
+      }
+    };
+
     // A call racing the process's first policy fetch: the SDK's request is
     // held in its own prepareOptions until the fetch answers (never past its
     // bound), then gated like any other call. Otherwise gate now.
@@ -328,6 +368,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
         policy = resolvePolicy(policySource);
         gateBeforeCall(policy, req?.model);
         emitRequested();
+        emitPromptCommitted();
       });
       gate.catch(() => undefined);
     }
@@ -335,44 +376,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
     if (!deferred) {
       gateBeforeCall(policy, req?.model);
       emitRequested();
-    }
-
-    // Content commitment (ADR-011): HMAC the request we are about to submit under
-    // the customer key and emit ONLY the tag. Reads message/system/tool bodies,
-    // but nothing plaintext ever leaves - the tag is one-way. Wrapped so a bug
-    // here never breaks the host SDK call.
-    if (commit && req) {
-      try {
-        const canon = canonicalizeRequest(cfg.provider, args);
-        if (canon) {
-          // wire_canon_tag (slice 2, capture_point: wire): commits the FULL request
-          // body as sent - sampling params and all - alongside the semantic tag.
-          const wireTag = safe(() => wireBodyTag(commit.key, args[0]));
-          // tool_result_tags (slice 2): commit each tool result fed back into this
-          // request (prior tool execution output carried as tool/tool_result msgs).
-          const toolResults = safe(() => cfg.extractToolResults?.(args) ?? null);
-          const toolResultTags = toolResults
-            ? toolResults.map((r) => safe(() => toolResultTag(commit.key, r.content))).filter((t): t is string => t !== null)
-            : [];
-          safeCapture(capture, {
-            event_type: 'llm.prompt_committed',
-            payload: {
-              request_ref: requestRef,
-              provider: cfg.provider,
-              model: req.model,
-              kid: commit.kid,
-              canon: CANON_VERSION,
-              capture_point: 'adapter_request',
-              prompt_canon_tag: promptCanonTag(commit.key, canon),
-              ...(wireTag ? { wire_canon: 'aer-wire.v1', wire_canon_tag: wireTag } : {}),
-              ...(toolResultTags.length > 0 ? { tool_result_tags: toolResultTags } : {}),
-              message_count: canon.message_count,
-              prompt_bytes: canon.text_bytes,
-              retained: 'none',
-            },
-          });
-        }
-      } catch { /* commitment is best-effort; never break the host */ }
+      emitPromptCommitted();
     }
 
     // Post-call token accounting (P3). Tokens are known only after the response;

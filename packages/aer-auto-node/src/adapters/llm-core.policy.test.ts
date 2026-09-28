@@ -222,6 +222,32 @@ describe('a call made while the first policy fetch is still in flight', () => {
     r.land(null);
   });
 
+  it('records no prompt commitment for a call the policy then refuses', async () => {
+    const { capture, events } = capt();
+    const { client, resource } = stainless(() => ({ usage: {} }));
+    const r = racing(events);
+    const commitCfg: ProviderConfig = { ...stainlessCfg, provider: 'openai' };
+    resource.create = wrapCreate(resource.create, commitCfg, capture, undefined, r.source, { key: Buffer.alloc(32, 1), kid: 'k' }) as typeof resource.create;
+    const call = resource.create({ model: 'gpt-4-vision', messages: [{ role: 'user', content: 'hi' }] });
+    r.land(policy({ mode: 'block', llm: { denied_models: ['*-vision'] } }));
+    await expect(call).rejects.toBeInstanceOf(AerPolicyError);
+    expect(client.sent).toHaveLength(0);
+    expect(events.map((e) => e.event_type)).toEqual(['policy.violation']);
+  });
+
+  it('records the request then its commitment for an allowed call, as without a wait', async () => {
+    const { capture, events } = capt();
+    const { resource } = stainless(() => ({ usage: {} }));
+    const r = racing(events);
+    const commitCfg: ProviderConfig = { ...stainlessCfg, provider: 'openai' };
+    resource.create = wrapCreate(resource.create, commitCfg, capture, undefined, r.source, { key: Buffer.alloc(32, 1), kid: 'k' }) as typeof resource.create;
+    const call = resource.create({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] });
+    r.land(null);
+    await call;
+    await new Promise((res) => setTimeout(res, 0));
+    expect(events.map((e) => e.event_type).slice(0, 2)).toEqual(['llm.requested', 'llm.prompt_committed']);
+  });
+
   it('is sent without waiting past the bound when the fetch never answers', async () => {
     const { capture, events } = capt();
     const { client, resource } = stainless(() => ({ usage: {} }));
