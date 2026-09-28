@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { runHook, main } from './cli.js';
+import { runHook, main, runDrain } from './cli.js';
 import { FakeApi } from './fake-api.test-support.js';
 
 const V2 = ['--harness', 'claude-code', '--lifecycle', 'v2'];
@@ -435,5 +435,63 @@ describe('state left behind', () => {
     expect(fs.existsSync(stale)).toBe(false);
     expect(fs.existsSync(drop)).toBe(false);
     expect(fs.existsSync(storeFile('cc-sweep'))).toBe(true);
+  });
+});
+
+describe('the end of a session the harness will not wait for', () => {
+  it('hands the record to a worker and returns within the harness budget, and the worker completes it', async () => {
+    const lead = { session_id: 'cc-headless', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' });
+    api.openDelayMs = 0;
+    api.eventsDelayMs = 3000;
+    api.completeDelayMs = 3000;
+    const handed: string[][] = [];
+    const t = Date.now();
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+    });
+    // Claude Code gives SessionEnd hooks 1.5 s unless configured otherwise.
+    expect(Date.now() - t).toBeLessThan(1500);
+    expect(api.completes()).toHaveLength(0);
+    expect(handed).toHaveLength(1);
+    expect(handed[0]).toContain('--drain');
+    expect(JSON.stringify(handed[0])).not.toMatch(/tok-|AER_API_KEY|"k"/);
+
+    api.eventsDelayMs = 0;
+    api.completeDelayMs = 0;
+    await runDrain(handed[0]!, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+    const s = [...api.sessions.values()][0]!;
+    expect(s.status).toBe('completed');
+    expect(s.events.map((e) => e.payload['phase'])).toEqual(['session_start', 'session_end']);
+  });
+
+  it('completes inline when the API answers quickly, and the worker then finds nothing to do', async () => {
+    const lead = { session_id: 'cc-fast-end', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' });
+    const handed: string[][] = [];
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+    });
+    expect(api.completes()).toHaveLength(1);
+    await runDrain(handed[0]!, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+    expect(api.opens()).toHaveLength(1);
+  });
+
+  it('a worker that cannot be started leaves the hook to deliver inline with its full budget', async () => {
+    const lead = { session_id: 'cc-no-worker', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' });
+    api.completeDelayMs = 1500;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: () => false,
+    });
+    expect(api.completes()).toHaveLength(1);
   });
 });

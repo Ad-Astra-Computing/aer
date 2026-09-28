@@ -30,8 +30,8 @@ for the whole run lifecycle: SessionStart, UserPromptSubmit, PreToolUse,
 PostToolUse, Stop, SubagentStart, SubagentStop and SessionEnd. `Stop` fires
 once per assistant turn, so the record is completed at `SessionEnd` and a
 multi-turn conversation stays one record. On Claude Code the SessionEnd entry
-carries its own `timeout`, because that harness shares 1.5 seconds across
-every SessionEnd hook and completing a record takes longer than that. If `aer-hook` is not on `PATH` at install
+carries its own `timeout`, because that harness otherwise allows SessionEnd
+hooks 1.5 seconds. If `aer-hook` is not on `PATH` at install
 time, the installer writes the absolute path of the copy it is running from and
 says so, which keeps recording working but ties the config to that install
 location. `npx @adastracomputing/aer-hooks install ...` works the same way, and
@@ -190,6 +190,20 @@ send stays queued for the next event rather than being cut off mid-request; if
 the budget is exceeded anyway, it writes one stderr line saying so. If AER is
 unconfigured it does nothing and exits 0. Recording is always best-effort
 and never in the critical path of the tool the harness is running.
+
+### The end of a session is finished in the background
+
+A harness does not wait long for its SessionEnd hooks, and some kill them when
+it exits: Claude Code allows 1.5 seconds unless the entry sets a `timeout` (and in
+print mode, `claude -p`, cancels the hook and everything it started when that runs
+out), Codex caps its SessionEnd hooks at a few seconds and Antigravity at 30.
+Against a real API, sending the closing report and completing the record can take
+longer. So at the end of a session the hook starts a small worker detached from
+the harness, delivers what it can in under a second itself, and returns. The worker
+sends whatever is still queued, completes the record and exits; it gives up after
+a minute. It never writes to the terminal: anything it has to report goes to
+`drain.log` in the state directory, which is kept under 64 KB and never holds a
+token or a credential.
 
 ## Install safety
 
