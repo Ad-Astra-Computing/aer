@@ -71,6 +71,22 @@ an exception aborts the remote session so nothing is left running. A 207
 response is transport success with per-event rejections inside; inspect
 explicit `flush()` results to observe them.
 
+### `AerClient` options
+
+| Option | Default | Notes |
+|---|---|---|
+| `base_url` | (required) | Gateway URL. |
+| `session_id` | (required) | `agent_session_id` returned by `create_session`. |
+| `ingest_token` | (required) | Bearer returned by the same call. Keep this secret. |
+| `batch_size` | 50 | |
+| `flush_interval_ms` | 500 | `0` turns off the background flush thread. |
+| `max_retries` | 3 | Applies only to 5xx and network errors. |
+| `retry_base_ms` | 100 | Exponential backoff base. |
+| `request_timeout_s` | 30.0 | Per-request timeout. |
+| `transport` | the built-in transport | Pass a fake for testing. |
+| `clock` | `time.time` | For deterministic testing. |
+| `on_ingest_result` | none | Called with the result of every events POST, including ones a background flush sent on its own, so a 207 partial accept from a flush the caller did not itself await is not lost. |
+
 ## Capture discipline
 
 AER is bodies-off. Emit metadata only: model names, token counts, tool names,
