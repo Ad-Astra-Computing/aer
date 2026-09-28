@@ -72,6 +72,48 @@ The pins sit at the top of `scripts/matrix/cases/vercel-ai.mjs` and
 recorded under `thirdParty` in the JSON report, so moving to a newer SDK or
 opencode release is a deliberate change to one of those tables.
 
+Three suites drive the coding harnesses the hooks support, for real and in
+both of the ways a person runs them: headless, and the interactive TUI driven
+through a pseudo-terminal (util-linux `script`, so no native module is
+needed). Each wires the hooks with `aer-hooks install <harness> --env-file`
+into a throwaway home, as the `aer-hooks` README recommends, and asserts one
+completed record with the tools, programs, hosts, files and model the run
+produced, with no prompt, argument, file content or answer in it.
+
+- `codex` installs `@openai/codex` from npm at a pinned version and points
+  it at a local server that speaks the OpenAI Responses protocol and answers
+  with tool calls, so Codex runs a shell line and writes a file through
+  `apply_patch` itself. It covers `codex exec` (hook trust granted with
+  `--dangerously-bypass-hook-trust`, and without it, where nothing may be
+  recorded), `CODEX_HOME`, an API as slow as the real one, an unreachable
+  API, and the TUI with and without its background app-server daemon, trust
+  granted at its startup review.
+- `antigravity` drives the `agy` on PATH (nixpkgs `antigravity-cli`; there
+  is no npm package, so its version is recorded rather than pinned) in its
+  Gemini API key mode against a local Gemini-protocol server, so no Google
+  account is needed. It covers `agy -p`, a slow and an unreachable API, and
+  the TUI, including agy's first-run onboarding and a two-turn conversation.
+- `claude-code` drives the signed-in `claude` on PATH with
+  `--setting-sources project`, so it loads only the throwaway project's
+  settings, where the hooks are wired. Its model calls go to the real
+  Anthropic API through that sign-in, which the matrix never reads, on the
+  cheapest model, through a proxy that allows `api.anthropic.com` alone. The
+  model may run only `cat`, `echo` and `curl` and edit files in the
+  throwaway project. claude records each folder it opens in the real
+  `~/.claude.json` and keeps a transcript under `~/.claude/projects`; every
+  case removes both for its own project when it ends, pass or fail, and
+  touches nothing else there. It covers `claude -p` and the TUI, each also
+  with the SessionEnd `timeout` key removed against a slow API. These cases are marked
+  `requires: claude-login`: they are reported as SKIP where `claude` is
+  missing or signed out, and under CI (when `CI` is set) they run only with
+  `--with claude-login`. `--without claude-login` skips them anywhere.
+
+The Codex pin sits at the top of `scripts/matrix/cases/codex.mjs`. The
+versions of every harness a run drove are printed at the end and recorded
+under `thirdParty` in the JSON report. To see which harness modes a released
+`aer-hooks` handles, run the same suites against it:
+`pnpm matrix --source registry --tag latest --only codex,claude-code,antigravity`.
+
 No case may reach the AER service. The runner drops every `AER_*` variable it
 was started with, refuses to start a child whose environment or arguments name
 `api.aer.run`, and routes each case process's non-loopback traffic to a proxy
@@ -79,6 +121,16 @@ that nothing listens on. That proxy relies on Node's `NODE_USE_ENV_PROXY`, which
 covers both `fetch` and `node:http(s)` only from Node 22.21 and 24.5 (never 23),
 so the matrix refuses to start on an older Node. The `harness` suite checks the
 guard first on every run, and if any of its cases fails no other suite runs.
+The `claude-code` suite, whose harness must reach its model provider, gets an
+allowlisting proxy in place of that one: it opens a tunnel to
+`api.anthropic.com` and refuses everything else, the AER API included. Both
+proxies are environment-based, not a network-level block: they hold for a
+client that honours the proxy variables, and a client that ignored them would
+connect directly. Two suites check that their harness honours them: the
+`claude-code` cases assert that the tunnel to `api.anthropic.com` was
+opened, and the `opencode` case that its catalogue fetch met the blackhole
+proxy. Independently of the proxy, `AER_BASE_URL`
+always names a local sink and no child may name `api.aer.run`.
 
 The one exception is `--live`, off by default. A positive `aer verify` verdict
 needs a record signed by a key in the CLI's pinned production trust root, and

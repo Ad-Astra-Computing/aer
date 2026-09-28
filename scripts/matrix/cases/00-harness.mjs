@@ -11,6 +11,9 @@
  */
 import { run, ProductionTargetError, PRODUCTION_HOST } from '../lib/proc.mjs';
 import { createSecureContext } from 'node:tls';
+import { writeFileSync as writeFileSyncH, readFileSync as readFileSyncH, statSync as statSyncH } from 'node:fs';
+import { join as joinH } from 'node:path';
+import { forgetClaudeProjects } from '../lib/claude-config.mjs';
 import { mintTlsCert } from './aer-auto-node.mjs';
 
 export default function register(registry) {
@@ -62,6 +65,37 @@ export default function register(registry) {
     c.assert.equal((await open({ ...good, environment_id: 'prod' })).status, 400, 'an open with an environment_id that is not a UUID');
     const { environment_id: _e, ...noEnv } = good;
     c.assert.equal((await open(noEnv)).status, 400, 'an open without environment_id');
+  });
+
+  t.case('the claude-code cleanup removes only the matrix\'s own project entries', (c) => {
+    const dir = c.tmp('claude-json-');
+    const file = joinH(dir, '.claude.json');
+    const mine = '/tmp/aer-matrix-AbC123/cases/claude-code-XyZ789/cc-proj-Qw3rTy';
+    const theirs = '/home/someone/real-project';
+    const lookalike = '/home/someone/aer-matrix-notes/cc-proj-Qw3rTy';
+    writeFileSyncH(file, JSON.stringify({ oauthAccount: { kept: true }, projects: { [mine]: { a: 1 }, [theirs]: { b: 2 }, [lookalike]: { c: 3 } } }, null, 2), { mode: 0o600 });
+    c.assert.equal(forgetClaudeProjects([mine, theirs, lookalike], { file }), 1, 'entries removed');
+    const after = JSON.parse(readFileSyncH(file, 'utf8'));
+    c.assert.equal(Object.keys(after.projects).sort().join(','), [lookalike, theirs].sort().join(','), 'projects kept');
+    c.assert.equal(after.oauthAccount?.kept, true, 'other keys kept');
+    c.assert.equal(statSyncH(file).mode & 0o777, 0o600, 'mode kept');
+    c.assert.equal(forgetClaudeProjects([mine], { file }), 0, 'a second pass is a no-op');
+  });
+
+  t.case('a timed-out run with killGroup ends everything it started', async (c) => {
+    const pidFile = joinH(c.tmp('grp-'), 'pid');
+    // A shell that leaves a grandchild behind, then outlives the timeout.
+    const r = await run('/bin/sh', ['-c', `sleep 60 & echo $! > '${pidFile}'; sleep 60`], { timeoutMs: 500, killGroup: true });
+    c.assert.ok(r.timedOut, 'the run was not timed out');
+    // Killing only the shell leaves the grandchild holding the output pipes,
+    // and the run then waits for it.
+    c.assert.ok(r.ms < 5000, `the run returned after ${r.ms} ms`);
+    const pid = Number(readFileSyncH(pidFile, 'utf8').trim());
+    await new Promise((res) => setTimeout(res, 300));
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    if (alive) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    c.assert.ok(!alive, 'the grandchild outlived the timeout');
   });
 
   t.case('every certificate the harness mints is one Node accepts', (c) => {

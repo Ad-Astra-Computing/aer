@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { accessSync, constants as fsConstants, statSync } from 'node:fs';
 import * as path from 'node:path';
-import { status } from './install.js';
+import { status, relativeCodexHome } from './install.js';
 import { diagnoseRegistrations, diagnoseVersion, diagnoseNixShadow, type StaleRegistration } from './doctor.js';
 import { HOOKS_VERSION } from './evidence.js';
 
@@ -67,6 +67,15 @@ export async function staleRegistrations(opts: { dir?: string } = {}): Promise<S
       reason: 'key_in_shell_env',
       detail: `${keyVar} is exported in this shell, so a harness started from it passes the key to every command its agent runs, and anything among them that loads an AER emitter records under your agent`,
       fix: `move the AER_* settings into an owner-only file (chmod 600), stop exporting them in your shell profile, and run: aer-hooks install ${wired.length === 1 ? wired[0]!.harness : '<harness>'} --env-file <path>`,
+    });
+  }
+  const rel = opts.dir === undefined ? relativeCodexHome() : undefined;
+  if (rel !== undefined) {
+    findings.push({
+      harness: 'codex',
+      reason: 'relative_codex_home',
+      detail: `CODEX_HOME is set to a relative path (${rel}), which Codex resolves against whatever directory it starts in, so the hooks it reads depend on where it was started`,
+      fix: 'set CODEX_HOME to an absolute path (or unset it) and run: aer-hooks install codex',
     });
   }
   const projectBinDir = path.join(process.cwd(), 'node_modules', '.bin');

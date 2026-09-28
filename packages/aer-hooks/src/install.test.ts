@@ -3,7 +3,8 @@ import { promises as fs } from 'node:fs';
 import { writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { install, uninstall, status, configPathFor, AER_HOOK_MARKER, hookCommandResolves } from './install.js';
+import { staleRegistrations } from './hooks-doctor.js';
+import { install, uninstall, status, configPathFor, AER_HOOK_MARKER, hookCommandResolves, strandedCodexRegistration } from './install.js';
 
 let dir: string;
 
@@ -317,5 +318,110 @@ describe('install safety hardening', () => {
     await install('claude-code', { dir });
     const mode = (await fs.stat(cc)).mode & 0o777;
     expect(mode).toBe(0o644);
+  });
+});
+
+describe('CODEX_HOME', () => {
+  // Codex reads its user-level config from $CODEX_HOME when it is set. An
+  // install that wrote ~/.codex regardless looked finished, reported itself
+  // wired, and recorded nothing.
+  let saved: { HOME?: string; CODEX_HOME?: string };
+  let home: string;
+  let codexHome: string;
+  beforeEach(async () => {
+    saved = { HOME: process.env['HOME'], CODEX_HOME: process.env['CODEX_HOME'] };
+    home = path.join(dir, 'home');
+    codexHome = path.join(dir, 'elsewhere', 'codex');
+    await fs.mkdir(home, { recursive: true });
+    process.env['HOME'] = home;
+    process.env['CODEX_HOME'] = codexHome;
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('installs into $CODEX_HOME/hooks.json, not ~/.codex', async () => {
+    const r = await install('codex');
+    expect(r.path).toBe(path.join(codexHome, 'hooks.json'));
+    const cfg = await readJson(r.path);
+    expect(Object.keys(cfg['hooks'] as object)).toContain('SessionEnd');
+    await expect(fs.access(path.join(home, '.codex', 'hooks.json'))).rejects.toThrow();
+  });
+
+  it('reports and removes the registration where Codex reads it', async () => {
+    await install('codex');
+    const st = (await status()).find((e) => e.harness === 'codex')!;
+    expect(st.path).toBe(path.join(codexHome, 'hooks.json'));
+    expect(st.wiredEvents.length).toBe(8);
+    // The home passed explicitly, as the hook's evidence does, is still the user home.
+    const again = (await status({ dir: home })).find((e) => e.harness === 'codex')!;
+    expect(again.wiredEvents.length).toBe(8);
+    const u = await uninstall('codex');
+    expect(u.path).toBe(path.join(codexHome, 'hooks.json'));
+    expect(u.removed.length).toBe(8);
+  });
+
+  it('leaves an explicit --dir alone, and every other harness', async () => {
+    const other = path.join(dir, 'other');
+    const r = await install('codex', { dir: other });
+    expect(r.path).toBe(path.join(other, '.codex', 'hooks.json'));
+    expect(configPathFor('claude-code', home)).toBe(path.join(home, '.claude', 'settings.json'));
+  });
+
+  it('names a registration left in ~/.codex that Codex no longer reads', async () => {
+    delete process.env['CODEX_HOME'];
+    await install('codex');
+    process.env['CODEX_HOME'] = codexHome;
+    expect(await strandedCodexRegistration()).toBe(path.join(home, '.codex', 'hooks.json'));
+    await install('codex');
+    expect(await strandedCodexRegistration()).toBe(path.join(home, '.codex', 'hooks.json'));
+    delete process.env['CODEX_HOME'];
+    expect(await strandedCodexRegistration()).toBeUndefined();
+  });
+
+  it('sees no stray registration when CODEX_HOME is a link to ~/.codex', async () => {
+    await fs.mkdir(path.join(home, '.codex'), { recursive: true });
+    const link = path.join(home, 'codexlink');
+    await fs.symlink(path.join(home, '.codex'), link);
+    delete process.env['CODEX_HOME'];
+    await install('codex');
+    process.env['CODEX_HOME'] = link;
+    expect(await strandedCodexRegistration()).toBeUndefined();
+  });
+
+  it('sees no stray registration when ~/.codex is a link to CODEX_HOME', async () => {
+    await fs.mkdir(codexHome, { recursive: true });
+    await fs.symlink(codexHome, path.join(home, '.codex'));
+    await install('codex');
+    expect(await strandedCodexRegistration()).toBeUndefined();
+  });
+
+  it('refuses a relative CODEX_HOME, which Codex resolves against its own working directory', async () => {
+    process.env['CODEX_HOME'] = 'relative/codex';
+    await expect(install('codex')).rejects.toThrow(/CODEX_HOME is set to a relative path \(relative\/codex\).*absolute/);
+    await expect(fs.access(path.join(home, '.codex', 'hooks.json'))).rejects.toThrow();
+    // Only codex reads CODEX_HOME, and an explicit --dir elsewhere is unaffected.
+    await expect(install('claude-code')).resolves.toBeDefined();
+    await expect(install('codex', { dir: path.join(dir, 'other') })).resolves.toBeDefined();
+  });
+
+  it('treats an empty CODEX_HOME as unset', async () => {
+    process.env['CODEX_HOME'] = '';
+    const r = await install('codex');
+    expect(r.path).toBe(path.join(home, '.codex', 'hooks.json'));
+  });
+
+  it('flags a relative CODEX_HOME in the doctor findings', async () => {
+    delete process.env['CODEX_HOME'];
+    await install('codex');
+    process.env['CODEX_HOME'] = 'relative/codex';
+    const findings = await staleRegistrations();
+    const f = findings.find((x) => x.reason === 'relative_codex_home');
+    expect(f?.harness).toBe('codex');
+    expect(f?.detail).toContain('relative/codex');
+    expect(f?.fix).toMatch(/absolute/);
   });
 });
