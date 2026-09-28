@@ -197,8 +197,8 @@ never the prompt or completion text. Every payload, whatever tool produced it, i
 of keys AER ingest stores before it is sent, so a value the record could not
 hold never reaches the wire either.
 
-If you need evidence about the arguments themselves, use content commitments
-(ADR-011): the record carries a one-way tag you can later open against your own
+If you need evidence about the arguments themselves, use content commitments:
+the record carries a one-way tag you can later open against your own
 retained plaintext with a key that never leaves your machine.
 
 ## Fail-open, never blocking
@@ -239,6 +239,13 @@ rest of the harness's environment, and reads the credential file itself. It writ
 nothing to the terminal: what it has to report goes to `drain.log` in the state
 directory, which is kept under 64 KB and never holds a token or a credential.
 
+An install from before 0.6.0 has no `--end-budget-ms` on the entry that ends
+a session. Run `aer-hooks install <harness>` again to add it; `aer-hooks
+status` and `aer doctor` report an entry without it as `no_end_budget` and
+name the harness to reinstall. On Codex, re-running install changes the
+registered command, so Codex skips the hook silently until you approve it
+again (see [Codex will not run the hook until you trust it](#codex-will-not-run-the-hook-until-you-trust-it)).
+
 Two limits. A container, CI step or sandbox that ends with the harness ends the
 background process too, so there the record completes only if the declared budget
 was enough. Codex's is the tightest: 2.5 seconds inside its 3-second cap, so against
@@ -250,7 +257,7 @@ the record.
 
 ### Antigravity records each turn
 
-An `aer-hooks` release before this one registered Antigravity's tool events
+An `aer-hooks` release before 0.6.0 registered Antigravity's tool events
 in a form Antigravity loads and never runs, so those installs record turns
 and no tool calls. `aer-hooks status` and `aer doctor` report such a
 registration; `aer-hooks install antigravity` rewrites it.
