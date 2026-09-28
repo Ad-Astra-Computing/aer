@@ -40,6 +40,14 @@ const MAX_COMMIT_TEXT_BYTES = 4 * 1024 * 1024;
 export interface PolicyOption {
   enforcer: PolicyEnforcer;
   emit: (eventType: string, payload: Record<string, unknown>) => void;
+  /**
+   * Present while the session's policy fetch is still in flight. A wrapper
+   * whose call is already asynchronous (the Vercel provider layer) awaits it
+   * and resolves the option again, so the first call of a session is governed
+   * too. Never rejects. The OpenAI and Anthropic client wrappers cannot wait
+   * without changing the SDK's own promise type, so they ignore it.
+   */
+  ready?: Promise<void>;
 }
 
 /**
@@ -49,7 +57,7 @@ export interface PolicyOption {
  */
 export type PolicyOptionSource = PolicyOption | (() => PolicyOption | undefined);
 
-function resolvePolicy(src: PolicyOptionSource | undefined): PolicyOption | undefined {
+export function resolvePolicy(src: PolicyOptionSource | undefined): PolicyOption | undefined {
   if (!src) return undefined;
   if (typeof src === 'function') {
     try { return src() ?? undefined; } catch { return undefined; }
@@ -159,6 +167,42 @@ function emitViolations(policy: PolicyOption, violations: PolicyViolation[]): vo
   }
 }
 
+/**
+ * The usage-policy pre-call gate. Records every violation and, in block mode,
+ * throws AerPolicyError so the caller never makes the model call. The only
+ * throw that reaches the host; an enforcer bug is swallowed and never blocks.
+ */
+export function gateBeforeCall(policy: PolicyOption | undefined, model: string | undefined): void {
+  if (!policy || !policy.enforcer.active) return;
+  let block: PolicyViolation | null = null;
+  try {
+    const result = policy.enforcer.beforeCall(model);
+    emitViolations(policy, result.violations);
+    block = result.block;
+  } catch { block = null; /* an enforcer bug must never block the host */ }
+  if (block) {
+    throw new AerPolicyError({
+      rule: block.rule,
+      ...(block.model !== undefined ? { model: block.model } : {}),
+      ...(block.limit !== undefined ? { limit: block.limit } : {}),
+      ...(block.observed !== undefined ? { observed: block.observed } : {}),
+      policyId: policy.enforcer.policyId,
+      version: policy.enforcer.version,
+    });
+  }
+}
+
+/**
+ * Post-call token accounting. Tokens are known only after the response, so
+ * this reports and never throws, even in block mode.
+ */
+export function accountAfterCall(policy: PolicyOption | undefined, inputTokens?: number, outputTokens?: number): void {
+  if (!policy || !policy.enforcer.active) return;
+  try {
+    emitViolations(policy, policy.enforcer.afterCall(inputTokens, outputTokens));
+  } catch { /* never break the host over token accounting */ }
+}
+
 // Observations started but not yet emitted. A session close waits on these,
 // so a completion cannot be lost to the flush that was racing it.
 const inFlightObservations = new Set<Promise<void>>();
@@ -195,24 +239,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
     // Usage-policy pre-call gate (P3). The ONLY case enforcement throws into the
     // host is a block-mode blocking violation, thrown BEFORE the SDK call so the
     // call never happens. Everything else (evaluation, emission) is fail-open.
-    if (policy && policy.enforcer.active) {
-      let block: PolicyViolation | null = null;
-      try {
-        const result = policy.enforcer.beforeCall(req?.model);
-        emitViolations(policy, result.violations);
-        block = result.block;
-      } catch { block = null; /* an enforcer bug must never block the host */ }
-      if (block) {
-        throw new AerPolicyError({
-          rule: block.rule,
-          ...(block.model !== undefined ? { model: block.model } : {}),
-          ...(block.limit !== undefined ? { limit: block.limit } : {}),
-          ...(block.observed !== undefined ? { observed: block.observed } : {}),
-          policyId: policy.enforcer.policyId,
-          version: policy.enforcer.version,
-        });
-      }
-    }
+    gateBeforeCall(policy, req?.model);
 
     if (req) {
       stats?.record(cfg.provider, 'call');
@@ -269,11 +296,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
     // this is report-after and never throws (even in block mode). Wrapped so an
     // enforcer bug never breaks the host.
     const afterCallPolicy = (res: LlmResponseMeta | null): void => {
-      if (!policy || !policy.enforcer.active) return;
-      try {
-        const violations = policy.enforcer.afterCall(res?.input_tokens, res?.output_tokens);
-        emitViolations(policy, violations);
-      } catch { /* never break the host over token accounting */ }
+      accountAfterCall(policy, res?.input_tokens, res?.output_tokens);
     };
 
     const emitCompleted = (response: unknown): void => {

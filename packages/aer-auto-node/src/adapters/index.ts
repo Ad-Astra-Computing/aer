@@ -61,7 +61,7 @@ export async function patchRemainingCopies(
   // it is instrumented one layer down, at the provider model classes.
   if (adapterNames.includes('vercel')) {
     try {
-      const installed = await installVercelProviderAdapter(capture, stats);
+      const installed = await installVercelProviderAdapter(capture, stats, policy);
       if (installed.enabled) {
         enabled.push('vercel-provider');
         uninstalls.push(installed.uninstall);

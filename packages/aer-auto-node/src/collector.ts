@@ -131,7 +131,11 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
   // enforcer with independent call/token counters, populated once its policy
   // fetch resolves. Keyed by SessionManager so the adapter's PolicyOption
   // resolver (below) can find the enforcer for the current async context.
-  interface PerSessionPolicy { enforcer: PolicyEnforcer }
+  interface PerSessionPolicy {
+    enforcer: PolicyEnforcer;
+    /** The policy fetch, until it settles; then undefined. Never rejects. */
+    ready?: Promise<void>;
+  }
   const sessionPolicy = new WeakMap<SessionManager, PerSessionPolicy>();
   const policyFetcher = deps.policyFetcher
     ?? ((o: { baseUrl: string; agentId?: string | undefined; apiKey?: string | undefined }) =>
@@ -163,7 +167,13 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     // (fail-open). When an active policy lands, emit ONE policy.applied event so
     // the bundle records which policy governed the run.
     const agentId = opts.agentId ?? config.agentId;
-    void policyFetcher({ baseUrl: opts.baseUrl ?? config.baseUrl, agentId, ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}) })
+    let fetching: Promise<import('./policy.js').UsagePolicy | null>;
+    try {
+      fetching = policyFetcher({ baseUrl: opts.baseUrl ?? config.baseUrl, agentId, ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}) });
+    } catch (err) {
+      fetching = Promise.reject(err);
+    }
+    state.ready = Promise.resolve(fetching)
       .then((policy) => {
         if (!policy) return;
         const enforcer = new PolicyEnforcer(policy);
@@ -175,7 +185,8 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
           });
         }
       })
-      .catch((err) => onError(err, 'policy-fetch'));
+      .catch((err) => { try { onError(err, 'policy-fetch'); } catch { /* never reject */ } })
+      .finally(() => { delete state.ready; });
     return session;
   };
 
@@ -190,6 +201,7 @@ export function createCollector(config: AerAutoConfig, deps: CreateCollectorDeps
     return {
       enforcer: state.enforcer,
       emit: (eventType, payload) => { s.capture({ event_type: eventType, payload }); },
+      ...(state.ready ? { ready: state.ready } : {}),
     };
   };
 

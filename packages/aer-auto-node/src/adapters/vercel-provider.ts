@@ -8,7 +8,7 @@
 import type { CollectorEvent } from '../session.js';
 import type { AdapterInstall, ProtoTarget } from './resolve.js';
 import { loadModuleCopies } from './resolve.js';
-import { patchMethod } from './llm-core.js';
+import { patchMethod, resolvePolicy, gateBeforeCall, accountAfterCall, type PolicyOption, type PolicyOptionSource } from './llm-core.js';
 import type { AdapterStats } from './stats.js';
 
 type Capture = (event: CollectorEvent) => void;
@@ -96,6 +96,7 @@ function protosOf(mod: unknown, factoryName: string): ProtoTarget[] {
 export async function installVercelProviderAdapter(
   capture: Capture,
   stats?: AdapterStats,
+  policy?: PolicyOptionSource,
 ): Promise<AdapterInstall> {
   const uninstalls: Array<() => void> = [];
 
@@ -105,13 +106,13 @@ export async function installVercelProviderAdapter(
         for (const proto of protosOf(mod, factory)) {
           const gen = patchMethod(
             proto, 'doGenerate',
-            (orig) => wrapModelCall(orig, provider, capture, stats, false),
+            (orig) => wrapModelCall(orig, provider, capture, stats, false, policy),
             `vercel-provider.${provider}.doGenerate`,
           );
           if (gen) uninstalls.push(gen);
           const stream = patchMethod(
             proto, 'doStream',
-            (orig) => wrapModelCall(orig, provider, capture, stats, true),
+            (orig) => wrapModelCall(orig, provider, capture, stats, true, policy),
             `vercel-provider.${provider}.doStream`,
           );
           if (stream) uninstalls.push(stream);
@@ -132,53 +133,221 @@ export async function installVercelProviderAdapter(
 type AnyFn = (...args: any[]) => any;
 
 /**
- * Wrap one model call. The LanguageModel spec is uniform across providers:
- * the model id is on the instance, and doGenerate resolves with usage and a
- * finish reason. Nothing here reads the prompt or the generated text.
+ * How long a first model call waits for its session's usage policy to arrive.
+ * The fetch bounds itself at 3 s; this bounds an injected fetcher too.
  */
-function wrapModelCall(
+const POLICY_WAIT_MS = 3_000;
+
+function settleWithin(p: Promise<void>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    (timer as { unref?: () => void }).unref?.();
+    p.then(() => { clearTimeout(timer); resolve(); }, () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+/** What a finished call carries: usage, finish reason and tool NAMES only. */
+interface CallMeta {
+  input_tokens?: number;
+  output_tokens?: number;
+  stop_reason?: string;
+  model?: string;
+  tool_names: string[];
+}
+
+/** Tool names from a doGenerate result's content parts. Never the input. */
+export function toolNamesOf(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const out: string[] = [];
+  for (const part of content) {
+    const rec = part as Record<string, unknown> | null;
+    if (rec?.['type'] !== 'tool-call') continue;
+    const name = str(rec['toolName']);
+    if (name !== undefined) out.push(name);
+  }
+  return out;
+}
+
+function metaOfResult(value: unknown): CallMeta {
+  const v = value as Record<string, unknown> | undefined;
+  const usage = v?.['usage'] as Record<string, unknown> | undefined;
+  const meta: CallMeta = { tool_names: toolNamesOf(v?.['content']) };
+  const input = tokenCount(usage?.['inputTokens']);
+  const output = tokenCount(usage?.['outputTokens']);
+  if (input !== undefined) meta.input_tokens = input;
+  if (output !== undefined) meta.output_tokens = output;
+  const stop = finishReasonOf(v?.['finishReason']);
+  if (stop !== undefined) meta.stop_reason = stop;
+  // The response can name a more specific model than the request asked for.
+  const responded = str((v?.['response'] as Record<string, unknown> | undefined)?.['modelId']);
+  if (responded !== undefined) meta.model = responded;
+  return meta;
+}
+
+/**
+ * Fold one stream part into the running metadata. Reads the part TYPE, the
+ * finish part's usage and reason, a tool-call's NAME and the response model
+ * id. Never a text delta, a tool input or any other content.
+ */
+export function foldStreamPart(part: unknown, meta: CallMeta): 'error' | undefined {
+  const rec = part as Record<string, unknown> | null;
+  const type = rec?.['type'];
+  if (type === 'tool-call') {
+    const name = str(rec?.['toolName']);
+    if (name !== undefined) meta.tool_names.push(name);
+  } else if (type === 'finish') {
+    const usage = rec?.['usage'] as Record<string, unknown> | undefined;
+    const input = tokenCount(usage?.['inputTokens']);
+    const output = tokenCount(usage?.['outputTokens']);
+    if (input !== undefined) meta.input_tokens = input;
+    if (output !== undefined) meta.output_tokens = output;
+    const stop = finishReasonOf(rec?.['finishReason']);
+    if (stop !== undefined) meta.stop_reason = stop;
+  } else if (type === 'response-metadata') {
+    const model = str(rec?.['modelId']);
+    if (model !== undefined) meta.model = model;
+  } else if (type === 'error') {
+    return 'error';
+  }
+  return undefined;
+}
+
+/**
+ * Put a pass-through stream in place of `result.stream` that records the call
+ * when the host finishes reading it. It pulls from the provider only when the
+ * host pulls from it, so it never reads ahead or changes backpressure, and it
+ * hands every part on unchanged. `onEnd` runs exactly once: with the metadata
+ * when the stream ends or the host cancels it, with null when it errors.
+ * Returns false when the result has no stream it can replace.
+ */
+export function tapResultStream(
+  result: unknown,
+  onEnd: (meta: CallMeta | null) => void,
+): boolean {
+  const rec = result as Record<string, unknown> | null;
+  const source = rec?.['stream'] as ReadableStream<unknown> | undefined;
+  if (!source || typeof (source as { getReader?: unknown }).getReader !== 'function') return false;
+
+  const meta: CallMeta = { tool_names: [] };
+  let errored = false;
+  let ended = false;
+  const end = (failed: boolean): void => {
+    if (ended) return;
+    ended = true;
+    try { onEnd(failed || errored ? null : meta); } catch { /* never break the host */ }
+  };
+
+  let reader: ReadableStreamDefaultReader<unknown>;
+  try {
+    reader = source.getReader();
+  } catch {
+    return false;
+  }
+  const tapped = new ReadableStream<unknown>({
+    async pull(controller) {
+      let r: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        r = await reader.read();
+      } catch (err) {
+        end(true);
+        controller.error(err);
+        return;
+      }
+      if (r.done) {
+        end(false);
+        controller.close();
+        return;
+      }
+      try { if (foldStreamPart(r.value, meta) === 'error') errored = true; } catch { /* metadata is best-effort */ }
+      controller.enqueue(r.value);
+    },
+    async cancel(reason) {
+      // The host stopped reading. Whatever was observed is what happened;
+      // an abort surfaces as an error part or a read error, not here.
+      end(false);
+      await reader.cancel(reason);
+    },
+  }, { highWaterMark: 0 });
+
+  try {
+    rec!['stream'] = tapped;
+    if (rec!['stream'] !== tapped) throw new Error('read-only');
+  } catch {
+    // Could not swap it in: hand the original back untouched.
+    try { reader.releaseLock(); } catch { /* already released */ }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Wrap one model call. The LanguageModel spec is uniform across providers:
+ * the model id is on the instance, doGenerate resolves with usage, a finish
+ * reason and content parts, and doStream resolves with a stream whose finish
+ * part carries the same. Nothing here reads the prompt, the generated text or
+ * a tool input.
+ */
+export function wrapModelCall(
   original: AnyFn,
   provider: string,
   capture: Capture,
   stats: AdapterStats | undefined,
   streaming: boolean,
+  policySource?: PolicyOptionSource,
 ): AnyFn {
   return function wrapped(this: unknown, ...args: unknown[]): unknown {
-    const model = str((this as Record<string, unknown> | null)?.['modelId']);
-    const base: Record<string, unknown> = { provider, ...(model !== undefined ? { model } : {}) };
+    const self = this;
+    const model = str((self as Record<string, unknown> | null)?.['modelId']);
+    const first = resolvePolicy(policySource);
+    // The session's usage policy may still be on its way. Both methods return
+    // a promise by spec, so waiting for it costs the host nothing it relies
+    // on, and the first call of a session is governed like every other.
+    if (first?.ready) {
+      return settleWithin(first.ready, POLICY_WAIT_MS)
+        .then(() => call(self, args, model, resolvePolicy(policySource)));
+    }
+    return call(self, args, model, first);
+  };
 
+  function call(self: unknown, args: unknown[], model: string | undefined, policy: PolicyOption | undefined): unknown {
+    // Throws AerPolicyError in block mode, before the provider is reached.
+    gateBeforeCall(policy, model);
+
+    const base: Record<string, unknown> = { provider, ...(model !== undefined ? { model } : {}) };
     try {
       capture({ event_type: 'llm.requested', payload: { ...base, streaming } });
       stats?.record(provider, 'call');
     } catch { /* never break the call */ }
 
+    const finish = (meta: CallMeta | null): void => {
+      safeComplete(capture, stats, provider, base, meta, streaming);
+      if (meta) accountAfterCall(policy, meta.input_tokens, meta.output_tokens);
+    };
+
     let result: unknown;
     try {
-      result = original.apply(this, args);
+      result = original.apply(self, args);
     } catch (err) {
-      safeComplete(capture, stats, provider, base, undefined, false);
+      finish(null);
       throw err;
     }
 
+    const settle = (value: unknown): void => {
+      if (!streaming) { finish(metaOfResult(value)); return; }
+      // A stream resolves before its tokens exist. The counts arrive in the
+      // finish part, so the call is recorded when the host has read it.
+      if (!tapResultStream(value, finish)) finish({ tool_names: [] });
+    };
+
     if (result instanceof Promise || (typeof result === 'object' && result !== null && typeof (result as PromiseLike<unknown>).then === 'function')) {
       return (result as Promise<unknown>).then(
-        (value) => {
-          // A stream resolves before its tokens exist; the counts arrive in
-          // the finish part, which this slice does not read. Recording the
-          // call without counts is honest; inventing them would not be.
-          safeComplete(capture, stats, provider, base, streaming ? undefined : value, true);
-          return value;
-        },
-        (err: unknown) => {
-          safeComplete(capture, stats, provider, base, undefined, false);
-          throw err;
-        },
+        (value) => { settle(value); return value; },
+        (err: unknown) => { finish(null); throw err; },
       );
     }
-
-    safeComplete(capture, stats, provider, base, streaming ? undefined : result, true);
+    settle(result);
     return result;
-  };
+  }
 }
 
 function safeComplete(
@@ -186,24 +355,27 @@ function safeComplete(
   stats: AdapterStats | undefined,
   provider: string,
   base: Record<string, unknown>,
-  value: unknown,
-  ok: boolean,
+  meta: CallMeta | null,
+  streaming: boolean,
 ): void {
   try {
+    const ok = meta !== null;
     const payload: Record<string, unknown> = { ...base, ok };
-    const v = value as Record<string, unknown> | undefined;
-    const usage = v?.['usage'] as Record<string, unknown> | undefined;
-    const input = tokenCount(usage?.['inputTokens']);
-    const output = tokenCount(usage?.['outputTokens']);
-    if (input !== undefined) payload['input_tokens'] = input;
-    if (output !== undefined) payload['output_tokens'] = output;
-    const stop = finishReasonOf(v?.['finishReason']);
-    if (stop !== undefined) payload['stop_reason'] = stop;
-    // The response can name a more specific model than the request asked for.
-    const responded = str((v?.['response'] as Record<string, unknown> | undefined)?.['modelId']);
-    if (responded !== undefined) payload['model'] = responded;
+    if (!ok) payload['error'] = true;
+    if (streaming) {
+      payload['streaming'] = true;
+      if (ok) payload['usage_observed'] = meta.input_tokens !== undefined || meta.output_tokens !== undefined;
+    }
+    if (meta?.input_tokens !== undefined) payload['input_tokens'] = meta.input_tokens;
+    if (meta?.output_tokens !== undefined) payload['output_tokens'] = meta.output_tokens;
+    if (meta?.stop_reason !== undefined) payload['stop_reason'] = meta.stop_reason;
+    if (meta?.model !== undefined) payload['model'] = meta.model;
 
     capture({ event_type: 'llm.completed', payload });
     stats?.record(provider, ok ? 'ok' : 'error');
+    for (const tool of meta?.tool_names ?? []) {
+      capture({ event_type: 'tool.selected', payload: { provider, tool } });
+      stats?.record(provider, 'tool');
+    }
   } catch { /* never break the call */ }
 }

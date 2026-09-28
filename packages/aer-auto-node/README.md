@@ -114,18 +114,19 @@ tool arguments.
 
 - **OpenAI** (`openai`): `chat.completions.create`
 - **Anthropic** (`@anthropic-ai/sdk`): `messages.create`
-- **Vercel AI SDK** (`ai`): `generateText` / `streamText` / `generateObject` /
-  `streamObject`. Streaming usage is read from the result's `usage`,
-  `finishReason` and `toolCalls` promises (see below).
+- **Vercel AI SDK** (`ai`): every call a model makes through `generateText`,
+  `streamText`, `generateObject`, `streamObject` or a tool loop, recorded at
+  the provider layer (see below). Named imports such as
+  `import { generateText } from 'ai'` are covered.
 
-All three providers are covered for non-streaming calls, streaming token counts
-and streaming tool names. The capture mechanism differs by provider:
+All three are covered for non-streaming calls, streaming token counts and
+streaming tool names. The capture mechanism differs by SDK:
 
-| Provider | Mechanism |
+| SDK | Mechanism |
 |----------|-----------|
 | OpenAI (`openai`) | in-band chunk tap (`stream_options.include_usage` for tokens) |
 | Anthropic (`@anthropic-ai/sdk`) | in-band chunk tap (message-stream events) |
-| Vercel AI SDK (`ai`) | result `usage` / `finishReason` / `toolCalls` promises |
+| Vercel AI SDK (`ai`) | the provider model's `doGenerate` and `doStream`, in `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/mistral` and `@ai-sdk/groq` |
 
 Every field captured is metadata: model, token counts, finish/stop reason and tool
 **names**. Prompts, generated text, content deltas, tool arguments and request
@@ -144,12 +145,18 @@ sent no token usage, for example OpenAI without `stream_options.include_usage`;
 your code, never changes backpressure and preserves the stream object's identity
 and methods. A stream you never consume yields only `llm.requested`.
 
-The **Vercel AI SDK** exposes streaming usage differently: not as in-band chunks
-but as result promises (`usage`, `finishReason`, `toolCalls`). For `streamText` /
-`streamObject` the adapter attaches non-invasive observers to those promises and
-emits `llm.completed` once they settle, without ever reading `textStream` /
-`fullStream` content. Each promise settles independently, so one rejected or
-missing promise never loses the others.
+The **Vercel AI SDK**'s own module cannot be patched (its namespace is sealed),
+so the collector records one layer down, where each real model call happens:
+the provider model's `doGenerate` and `doStream`. One step of a tool loop is one
+call and one `llm.completed`. A streamed call hands the SDK a pass-through
+stream that reads the finish part's token counts and finish reason and each
+tool call's **name** as your code reads the stream, and records the call when
+the stream ends. It pulls from the provider only when your code pulls, and
+never reads text deltas or tool inputs. A stream that fails or is aborted is
+recorded as `ok: false`. A provider package not in the list above (for example
+`@ai-sdk/openai-compatible`) is not instrumented: its requests are still
+recorded by host, and the closing report marks the Vercel adapter
+`unverifiable` rather than claiming no model traffic happened.
 
 The **final `collector.report`** carries an `adapter_activity` summary so you can
 see SDK-level activity at a glance without scanning the event firehose. It is
@@ -171,8 +178,8 @@ metadata only.
 Patch-based capture observes **`globalThis.fetch`** (the common case) and
 **default-import property access** for `node:http(s)` / `node:child_process`
 (`import cp from 'node:child_process'; cp.spawn(...)`). A **named import**
-(`import { spawn } from 'node:child_process'` or `import { generateText } from 'ai'`)
-binds to the original function before the patch applies and is not captured; use
+(`import { spawn } from 'node:child_process'`) binds to the original function
+before the patch applies and is not captured; use
 default-import property access (`cp.spawn(...)`) or `globalThis.fetch` so the
 patched function is resolved at call time.
 
@@ -310,6 +317,13 @@ The fetch is best-effort and time-bound. It never blocks or breaks session open.
 If the policy endpoint is unreachable or returns nothing, enforcement is simply
 off for that session (fail-open): this is a cost control, not a security boundary,
 and a fetch you could not complete has no mode to honor.
+
+The fetch starts when the session sees its first activity. A Vercel AI SDK
+call that arrives while it is still in flight waits for it (at most three
+seconds), so even a session's first call is governed. The OpenAI and Anthropic
+client wrappers cannot wait without changing the SDK's own promise type: when
+one of their calls is the first thing a session does, it runs before the
+policy arrives and is not governed. Calls after the policy arrives are.
 
 ```ts
 import { AerPolicyError } from '@adastracomputing/aer-auto-node';
