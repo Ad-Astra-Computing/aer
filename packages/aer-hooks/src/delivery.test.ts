@@ -610,4 +610,19 @@ describe('what the worker writes down', () => {
       expect(l).toMatch(/the record stays open/);
     }
   });
+
+  it('the hook stays quiet about an inline send the worker is taking over', async () => {
+    const sid = 'cc-quiet-handoff';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    api.eventsDelayMs = 60_000;
+    const lines: string[] = [];
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: () => true,
+      logError: (m) => lines.push(m),
+    });
+    expect(lines).toEqual([]);
+  });
+
 });

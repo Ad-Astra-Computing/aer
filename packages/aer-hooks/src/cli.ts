@@ -1030,6 +1030,9 @@ async function orchestrateAndEmit(
   }
 
   if (ctx.final && handOffEnd(ctx, event, opts)) {
+    // The worker reports what it could not do; a line from this hook about a
+    // send the worker is about to finish would only mislead.
+    ctx.warn = () => undefined;
     // The worker finishes whatever this hook cannot send in the time the
     // harness allows. Delivering here as well means a fast API completes the
     // record at once; the lease keeps the two from sending twice.
