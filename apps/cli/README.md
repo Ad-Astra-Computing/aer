@@ -123,12 +123,12 @@ print `verified`. To check records signed by your own test keys, use
   `--bundle <file.json>` plus `--key` is fully offline; `--aer <id>` always
   fetches the bundle itself, so it always needs `AER_BASE_URL`. With neither a
   local key nor `AER_BASE_URL`, the command refuses to run rather than report
-  an unverified match. The result's `bundle_signature.anchored` is `true`
-  only when this command itself verified an anchor, which it never does; a
-  bundle that only claims anchoring, or one this command has not checked
-  against a log, is `false`, and the `anchor_status` field alongside it
-  carries `claimed` or `none` so a script can tell those two apart. Use
-  `aer verify` for the full anchor check.
+  an unverified match. The result's `bundle_signature.anchored` is always
+  `false`, since this command has no transparency-log evidence to verify an
+  anchor against. The `anchor_status` field alongside it carries `claimed`
+  when the bundle asserts anchoring or `none` otherwise, so a script can
+  still tell those two cases apart. Use `aer verify` for the full anchor
+  check.
 - `aer import claude-code <session.jsonl>`: turn a Claude Code transcript into
   bodies-off AER events on the client; names and hosts only, never content.
   `-` in place of a file reads the transcript from stdin. Run with no file to
