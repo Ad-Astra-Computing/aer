@@ -153,7 +153,11 @@ stream that reads the finish part's token counts and finish reason and each
 tool call's **name** as your code reads the stream, and records the call when
 the stream ends. It pulls from the provider only when your code pulls, and
 never reads text deltas or tool inputs. A stream that fails or is aborted is
-recorded as `ok: false`. A provider package not in the list above (for example
+recorded as `ok: false`. A stream your code stops reading early (a `break` out
+of the loop, or cancelling it) is recorded as `ok: true` with what was seen up
+to that point, usually no token counts. As with OpenAI and Anthropic, a stream
+you never read yields only `llm.requested`, and its tokens never count toward a
+usage policy's budget. A provider package not in the list above (for example
 `@ai-sdk/openai-compatible`) is not instrumented: its requests are still
 recorded by host, and the closing report marks the Vercel adapter
 `unverifiable` rather than claiming no model traffic happened.
