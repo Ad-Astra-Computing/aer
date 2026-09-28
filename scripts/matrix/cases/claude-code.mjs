@@ -141,7 +141,16 @@ async function wiredProject(c, { baseUrl, k, withoutTimeout = false }) {
   return { proj, env, id, proxy, hookHome };
 }
 
-const CLAUDE_ARGS = ['--model', CLAUDE_MODEL, '--setting-sources', 'project', '--allowedTools', 'Bash', 'Write', '--permission-mode', 'acceptEdits'];
+// A real model in the real HOME gets only what the prompt needs: the three
+// programs of its shell line, and file edits, which acceptEdits confines to
+// the project directory. Anything else it tried would ask for permission,
+// which print mode refuses and the TUI case would time out on.
+const CLAUDE_ARGS = [
+  '--model', CLAUDE_MODEL,
+  '--setting-sources', 'project',
+  '--allowedTools', 'Bash(cat:*)', 'Bash(echo:*)', 'Bash(curl:*)', 'Write',
+  '--permission-mode', 'acceptEdits',
+];
 
 /** What a completed Claude Code run records. */
 function assertClaudeRun(c, sink, { proj, k, proxy }) {
