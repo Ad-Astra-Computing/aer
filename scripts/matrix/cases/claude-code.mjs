@@ -22,7 +22,8 @@
  * print-mode kill the detached session-end worker exists for), and the
  * interactive TUI through a pseudo-terminal, both ways.
  */
-import { writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import { forgetClaudeProjects } from '../lib/claude-config.mjs';
 import { join, dirname, delimiter, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { randomInt } from 'node:crypto';
@@ -106,6 +107,11 @@ async function wiredProject(c, { baseUrl, k, withoutTimeout = false }) {
   const transcripts = join(homedir(), '.claude', 'projects', proj.replace(/[^A-Za-z0-9]/g, '-'));
   c.cleanup(() => {
     if (basename(transcripts).includes('aer-matrix-') && existsSync(transcripts)) rmSync(transcripts, { recursive: true, force: true });
+    // claude also remembers the folder (and the answer to its trust question)
+    // in the real ~/.claude.json. Cleanups run whether the case passed or not.
+    let real = proj;
+    try { real = realpathSync(proj); } catch { /* gone already */ }
+    forgetClaudeProjects([proj, real]);
   });
 
   const hookHome = c.home();
