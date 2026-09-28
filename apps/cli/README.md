@@ -134,7 +134,9 @@ print `verified`. To check records signed by your own test keys, use
   bodies-off AER events on the client; names and hosts only, never content.
   `-` in place of a file reads the transcript from stdin. Run with no file to
   see where Claude Code keeps transcripts for the current directory and the
-  newest three found there. Tenant, agent and environment ids fall back to
+  newest three found there, and exit 64 (a usage error, the same code
+  `doctor` exits on a base-URL mismatch); a CI step gating on exit codes
+  should match that number. Tenant, agent and environment ids fall back to
   `aer.config.json` when not set in the environment. Refuses a transcript
   with no session activity rather than open a session for an empty run.
 - `aer download <aer-id>`, `aer badge <aer-id>`: fetch the public bundle, print
