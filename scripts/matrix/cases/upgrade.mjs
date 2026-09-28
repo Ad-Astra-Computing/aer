@@ -24,7 +24,6 @@ function failingChecks(r) {
 
 function readJson(p) { return JSON.parse(readFileSync(p, 'utf8')); }
 
-/** A project with the old versions installed and an env that runs its bins. */
 // The version the old install actually resolved to. `latest` moves, so a case
 // that depends on old behaviour has to ask rather than assume.
 function installedVersion(p, name) {
@@ -35,6 +34,7 @@ const olderThan = (v, major, minor) => {
   return a < major || (a === major && b < minor);
 };
 
+/** A project with the old versions installed and an env that runs its bins. */
 async function oldProject(c, env) {
   const dir = c.tmp('project-');
   writeFileSync(join(dir, 'package.json'), JSON.stringify({
@@ -224,17 +224,17 @@ export default function register(registry, env) {
     c.assert.ok(sessionIds.has(completed), 'the completed session is the one the old hook opened');
   }, { timeoutMs: 600_000 });
 
-  t.case('aer-hooks: an install that recorded nothing starts recording after the upgrade', async (c) => {
+  t.case('aer-hooks: an install without AER_AGENT_VERSION records after the upgrade', async (c) => {
     const p = await oldProject(c, env);
-    const oldVersion = installedVersion(p, 'aer-hooks');
-    if (!olderThan(oldVersion, 0, 5)) {
-      return { skip: `the old install is aer-hooks ${oldVersion}, which already sends a default agent_version` };
-    }
+    // From 0.5.0 the hooks send a default agent_version, so an old install
+    // without AER_AGENT_VERSION already records; then the check is that the
+    // default survives the upgrade rather than that recording starts.
+    const oldAlreadyRecords = !olderThan(installedVersion(p, 'aer-hooks'), 0, 5);
     const r0 = await c.run(join(p.binDir, 'aer-hooks'), ['install', 'claude-code'], { env: p.mkEnv(), cwd: p.dir });
     c.assert.exit(r0, 0, 'old install');
     const sink = await c.sink();
-    // No AER_AGENT_VERSION: the old releases sent no agent_version, so the
-    // API refused every open and the install recorded nothing.
+    // No AER_AGENT_VERSION: releases before 0.5.0 sent no agent_version, so
+    // the API refused every open and the install recorded nothing.
     const { AER_AGENT_VERSION: _unset, ...ids } = identity(sink);
     const hookEnv = p.mkEnv(ids);
     const sid = randomUUID();
@@ -248,7 +248,13 @@ export default function register(registry, env) {
     };
     await fire('SessionStart', { source: 'startup' });
     const accepted = () => sink.find('POST', '/v1/sessions').filter((r) => r.status >= 200 && r.status < 300);
-    c.assert.equal(accepted().length, 0, 'the old install had a session accepted');
+    if (oldAlreadyRecords) {
+      c.assert.equal(accepted().length, 1, 'the old install opened a session');
+      c.assert.equal(accepted()[0].json?.agent_version, 'unspecified', 'agent_version on the old open');
+    } else {
+      c.assert.equal(accepted().length, 0, 'the old install had a session accepted');
+    }
+    const acceptedBefore = accepted().length;
 
     await upgradeInPlace(c, env, p);
     const r1 = await c.run(join(p.binDir, 'aer-hooks'), ['install', 'claude-code'], { env: p.mkEnv(), cwd: p.dir });
@@ -265,7 +271,7 @@ export default function register(registry, env) {
     await fire2('Stop', {});
     await fire2('SessionEnd', { reason: 'exit' });
 
-    const opens = accepted();
+    const opens = accepted().slice(acceptedBefore);
     c.assert.equal(opens.length, 1, 'accepted session opens after the upgrade');
     c.assert.equal(opens[0].json?.agent_version, 'unspecified', 'agent_version on the open');
     c.assert.equal(sink.find('POST', /\/complete$/).length, 1, '/complete calls');
