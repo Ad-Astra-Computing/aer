@@ -91,11 +91,15 @@ describe('root-session join (ADR-023 B1)', () => {
 describe('antigravity registration', () => {
   it('marks every invocation boundary', async () => {
     await install('antigravity', { dir });
-    const raw = JSON.parse(readFileSync(configPathFor('antigravity', dir), 'utf8')) as Record<string, Record<string, Array<{ command: string }>>>;
+    const raw = JSON.parse(readFileSync(configPathFor('antigravity', dir), 'utf8')) as Record<string, Record<string, Array<{ command?: string; hooks?: Array<{ command: string }> }>>>;
     const group = raw['aer'] ?? {};
-    for (const ev of ['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop']) {
+    for (const ev of ['PreInvocation', 'PostInvocation', 'Stop']) {
       // The command is on the entry here, not in a nested hooks array.
       expect(group[ev]?.[0]?.command, `${ev} not registered`).toContain('aer-hook');
+    }
+    for (const ev of ['PreToolUse', 'PostToolUse']) {
+      // The tool events fire only from a matcher group.
+      expect(group[ev]?.[0]?.hooks?.[0]?.command, `${ev} not registered`).toContain('aer-hook');
     }
   });
 });

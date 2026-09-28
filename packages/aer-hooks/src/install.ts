@@ -191,26 +191,24 @@ function existingEnvFile(config: unknown): string | undefined {
   return undefined;
 }
 
-/** One Antigravity entry: the command sits on the entry itself. */
-interface AntigravityEntry {
-  matcher?: string;
-  command: string;
-}
-
 /**
  * The hook group AER installs into an Antigravity config.
  *
- * Antigravity differs from the other two at both levels: named groups at the
- * root with no `hooks` wrapper, and the command directly on the entry. The
- * nested typed-object form the others use is rejected outright, with
- * `command hook must specify 'command'` in the CLI log and nothing loaded.
+ * Antigravity has named groups at the root with no `hooks` wrapper, and two
+ * kinds of entry inside one. The tool events take a matcher group with the
+ * command in a nested `hooks` array, as Claude Code does; the invocation
+ * events and Stop take the command directly on the entry. Each form is wrong
+ * for the other kind: a nested invocation entry is rejected with `command
+ * hook must specify 'command'` and none of the group loads, and a flat tool
+ * entry loads and never fires. Both seen against agy 1.2.6.
  */
 function antigravityGroup(envFile?: string): Record<string, unknown> {
   const group: Record<string, unknown> = { enabled: true };
   for (const ev of ANTIGRAVITY_EVENTS) {
-    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev, envFile, endBudgetMs('antigravity', ev)) };
-    if (ANTIGRAVITY_MATCHED.has(ev)) entry.matcher = '*';
-    group[ev] = [entry];
+    const command = harnessCommand('antigravity', ev, envFile, endBudgetMs('antigravity', ev));
+    group[ev] = ANTIGRAVITY_MATCHED.has(ev)
+      ? [{ matcher: '*', hooks: [{ type: 'command', command }] }]
+      : [{ command }];
   }
   return group;
 }
