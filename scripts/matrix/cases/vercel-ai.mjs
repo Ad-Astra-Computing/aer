@@ -688,7 +688,8 @@ export default function register(registry, env) {
 
   // ---- live, opt-in ---------------------------------------------------------
 
-  const live = registry.suite('live', 'api.aer.run');
+  // Real provider APIs, not api.aer.run: a suite of their own.
+  const live = registry.suite('vercel-ai-live', 'real provider APIs');
   const keys = [
     ['openai', 'MATRIX_OPENAI_API_KEY', 'MATRIX_OPENAI_MODEL', 'gpt-4o-mini'],
     ['anthropic', 'MATRIX_ANTHROPIC_API_KEY', 'MATRIX_ANTHROPIC_MODEL', 'claude-haiku-4-5'],

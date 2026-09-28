@@ -89,9 +89,11 @@ public reads only and no credential. Run it before `pnpm promote`. Positive
 verdicts with self-minted keys are covered offline through the
 `@adastracomputing/aer-verify` library.
 
-With `--live`, the live suite can also run the Vercel AI SDK path against a
-real provider, but only when a key is supplied explicitly in the environment of
-that run: `MATRIX_OPENAI_API_KEY` or `MATRIX_ANTHROPIC_API_KEY`, with
-`MATRIX_OPENAI_MODEL` or `MATRIX_ANTHROPIC_MODEL` to choose the model. No key
-is ever read from disk. The record still goes to a local sink, and without a
-key those cases are reported as SKIP.
+With `--live`, the `vercel-ai-live` suite runs the Vercel AI SDK path against
+a real provider rather than api.aer.run, with
+`pnpm matrix --only vercel-ai-live --live`. It runs only when a key is supplied
+explicitly in the environment of that run, `MATRIX_OPENAI_API_KEY` or
+`MATRIX_ANTHROPIC_API_KEY`, with `MATRIX_OPENAI_MODEL` or
+`MATRIX_ANTHROPIC_MODEL` to choose the model. No key is ever read from disk.
+The record still goes to a local sink. Without a key those cases are reported
+as SKIP.
