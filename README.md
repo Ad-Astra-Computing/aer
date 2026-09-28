@@ -216,7 +216,7 @@ the credentials in a file only you can read instead:
 
 ```sh
 install -m 600 /dev/null ~/.config/aer/hooks.env
-$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_ENV_ID=...
+$EDITOR ~/.config/aer/hooks.env      # AER_API_KEY=..., AER_TENANT_ID=..., AER_AGENT_ID=..., AER_ENV_ID=...
 npx @adastracomputing/aer-hooks install claude-code --env-file ~/.config/aer/hooks.env
 ```
 
