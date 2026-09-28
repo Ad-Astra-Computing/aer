@@ -230,7 +230,9 @@ export default function register(registry) {
       for (const ev of ['SessionStart', 'SessionEnd']) {
         // Slower than the 1.2 s a SessionEnd with no budget keeps for itself,
         // so only the declared budget completes the record inside the hook.
-        if (ev === 'SessionEnd') sink.route('POST', /\/(events|complete)$/, async () => { await new Promise((r) => setTimeout(r, 600)); return false; });
+        // Claude Code's 13.5 s leaves room for that on a loaded machine;
+        // Codex's 2.5 s does not, so its sink stays fast.
+        if (ev === 'SessionEnd' && harness === 'claude-code') sink.route('POST', /\/(events|complete)$/, async () => { await new Promise((r) => setTimeout(r, 600)); return false; });
         const r = await c.run('/bin/sh', ['-c', cmdFor(ev)], { env, input: JSON.stringify({ session_id: sid, cwd: proj, transcript_path: join(proj, 't.jsonl'), hook_event_name: ev }), timeoutMs: 20_000 });
         c.assert.exit(r, 0, `wired command on ${ev}`);
         c.assert.equal(r.stdout, '', `wired command stdout on ${ev}`);
