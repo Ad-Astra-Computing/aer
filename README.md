@@ -201,10 +201,11 @@ API refuses to open a session without one. `AER_AGENT_VERSION` is optional
 and defaults to `unspecified`, because a harness does not tell its hooks its
 own version.
 
-A shell command records the programs it runs (up to 16) and the hosts a
-target passed to `curl`, `wget`, `git`, `ssh`, `scp` or `rsync` was pointed at
-(up to 8). Never the full command, an argument, a path or a query. A session that runs for hours is
-completed in parts rather than left open indefinitely: at the first turn end
+A shell command records the programs it runs (up to 16) and the hosts that
+`curl`, `wget`, `git`, `ssh`, `scp` or `rsync` were pointed at (up to 8).
+Never the full command, an argument, a path or a query. A session that runs
+for hours is completed in parts rather than left open indefinitely: at the
+first turn end
 once the record is four hours old, and before the next event after an hour of
 quiet. `AER_HOOK_CHECKPOINT_MINUTES` and `AER_HOOK_QUIET_MINUTES` change
 either; `0` turns one off. The parts share one session reference, so they read
