@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, symlinkSync, chmodSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { canaries, assertNoCanaries } from '../lib/harness.mjs';
 import { deadPort } from '../lib/sink.mjs';
 
@@ -58,6 +59,15 @@ async function fire(c, env, payload, args = V2, { timeoutMs = 20_000, cwd } = {}
 
 const opens = (sink) => sink.find('POST', '/v1/sessions');
 const completes = (sink) => sink.find('POST', /^\/v1\/sessions\/[^/]+\/complete$/);
+/**
+ * Wait for `n` completions. A session end hands what it cannot send in time
+ * to a worker that finishes after the hook exits, so against a slow sink the
+ * completion arrives after the last hook returns.
+ */
+async function completed(sink, n, ms = 20_000) {
+  for (const until = Date.now() + ms; completes(sink).length < n && Date.now() < until;) await new Promise((r) => setTimeout(r, 100));
+  return completes(sink).length;
+}
 const byType = (sink, t) => sink.events().filter((e) => e.event_type === t);
 const phases = (sink) => byType(sink, 'collector.report').map((e) => e.payload?.phase);
 
@@ -524,6 +534,31 @@ export default function register(registry) {
     c.assert.excludes(r.stderr, env.AER_API_KEY, 'stderr leaked the API key');
   });
 
+  t.case('aer-hook: a SessionEnd the harness kills at 1.5 s still completes the record', async (c) => {
+    // Claude Code in print mode gives SessionEnd hooks 1.5 s without a
+    // timeout key, then kills the hook's whole process group.
+    const home = c.home();
+    const sink = await c.sink();
+    const env = hookEnv(c, home, sink.url);
+    const sid = randomUUID();
+    const proj = c.tmp('proj-');
+    await fire(c, env, { session_id: sid, cwd: proj, hook_event_name: 'SessionStart', source: 'startup' });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    sink.route('POST', /^\/v1\/sessions$/, async () => { await wait(2500); return false; });
+    sink.route('POST', /\/(events|complete)$/, async () => { await wait(1500); return false; });
+    const started = Date.now();
+    const exit = await new Promise((done) => {
+      const child = spawn(process.execPath, [join(c.install.binDir, 'aer-hook'), ...V2], { env, detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+      const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ } done('killed'); }, 1500);
+      child.on('close', (code) => { clearTimeout(timer); done(code); });
+      child.stdin.end(JSON.stringify({ session_id: sid, cwd: proj, hook_event_name: 'SessionEnd', reason: 'other' }));
+    });
+    c.assert.equal(exit, 0, `the hook was still running at 1.5 s (${Date.now() - started} ms)`);
+    c.assert.equal(await completed(sink, 1), 1, 'the record was never completed');
+    c.assert.ok(phases(sink).includes('session_end'), 'the closing report never arrived');
+    c.assert.equal(sink.sessions.size, 1, 'sessions');
+  });
+
   t.case('aer-hook: 5xx on open, exit 0, and the next event still records', async (c) => {
     const home = c.home();
     const sink = await c.sink();
@@ -625,8 +660,8 @@ export default function register(registry) {
     ];
     await Promise.all([start, ...rest.map((p) => fire(c, env, p))]);
     await fire(c, env, { ...lead, hook_event_name: 'SessionEnd', reason: 'other' });
+    c.assert.equal(await completed(sink, 1), 1, 'completes');
     c.assert.equal(opens(sink).length, 1, 'opens (each extra open mints a token toward the server cap)');
-    c.assert.equal(completes(sink).length, 1, 'completes');
     c.assert.equal(byType(sink, 'tool.started').length, 3, 'tool.started');
     const ph = phases(sink);
     c.assert.equal(ph.filter((p) => p === 'subagent_start').length, 2, `subagent_start (${ph})`);
