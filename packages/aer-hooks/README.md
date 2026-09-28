@@ -37,6 +37,10 @@ says so, which keeps recording working but ties the config to that install
 location. `npx @adastracomputing/aer-hooks install ...` works the same way, and
 is the case that needs the absolute path, since `npx` puts nothing on `PATH`.
 
+Codex keeps its configuration in `$CODEX_HOME` when that is set, rather than
+`~/.codex`, so `aer-hooks install codex` (and `status` and `uninstall`) use
+`$CODEX_HOME/hooks.json` in that case.
+
 That command is idempotent: running it again after an upgrade updates the
 existing registration in place, rather than leaving it on an older hook
 lifecycle. `npx @adastracomputing/aer doctor` (from the `aer` CLI) also

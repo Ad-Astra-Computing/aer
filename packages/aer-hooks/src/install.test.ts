@@ -319,3 +319,60 @@ describe('install safety hardening', () => {
     expect(mode).toBe(0o644);
   });
 });
+
+describe('CODEX_HOME', () => {
+  // Codex reads its user-level config from $CODEX_HOME when it is set. An
+  // install that wrote ~/.codex regardless looked finished, reported itself
+  // wired, and recorded nothing.
+  let saved: { HOME?: string; CODEX_HOME?: string };
+  let home: string;
+  let codexHome: string;
+  beforeEach(async () => {
+    saved = { HOME: process.env['HOME'], CODEX_HOME: process.env['CODEX_HOME'] };
+    home = path.join(dir, 'home');
+    codexHome = path.join(dir, 'elsewhere', 'codex');
+    await fs.mkdir(home, { recursive: true });
+    process.env['HOME'] = home;
+    process.env['CODEX_HOME'] = codexHome;
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('installs into $CODEX_HOME/hooks.json, not ~/.codex', async () => {
+    const r = await install('codex');
+    expect(r.path).toBe(path.join(codexHome, 'hooks.json'));
+    const cfg = await readJson(r.path);
+    expect(Object.keys(cfg['hooks'] as object)).toContain('SessionEnd');
+    await expect(fs.access(path.join(home, '.codex', 'hooks.json'))).rejects.toThrow();
+  });
+
+  it('reports and removes the registration where Codex reads it', async () => {
+    await install('codex');
+    const st = (await status()).find((e) => e.harness === 'codex')!;
+    expect(st.path).toBe(path.join(codexHome, 'hooks.json'));
+    expect(st.wiredEvents.length).toBe(8);
+    // The home passed explicitly, as the hook's evidence does, is still the user home.
+    const again = (await status({ dir: home })).find((e) => e.harness === 'codex')!;
+    expect(again.wiredEvents.length).toBe(8);
+    const u = await uninstall('codex');
+    expect(u.path).toBe(path.join(codexHome, 'hooks.json'));
+    expect(u.removed.length).toBe(8);
+  });
+
+  it('leaves an explicit --dir alone, and every other harness', async () => {
+    const other = path.join(dir, 'other');
+    const r = await install('codex', { dir: other });
+    expect(r.path).toBe(path.join(other, '.codex', 'hooks.json'));
+    expect(configPathFor('claude-code', home)).toBe(path.join(home, '.claude', 'settings.json'));
+  });
+
+  it('ignores a relative CODEX_HOME, which Codex would resolve against a cwd the hook does not share', async () => {
+    process.env['CODEX_HOME'] = 'relative/codex';
+    const r = await install('codex');
+    expect(r.path).toBe(path.join(home, '.codex', 'hooks.json'));
+  });
+});

@@ -253,6 +253,21 @@ function baseDir(opts: InstallOptions): string {
   return opts.dir ?? os.homedir();
 }
 
+/**
+ * The config file this command reads and writes. Codex keeps its user-level
+ * config in $CODEX_HOME when that is set, not ~/.codex, so for the user's own
+ * home that is where its hooks.json is. A relative CODEX_HOME is ignored: it
+ * would resolve against a working directory the hook does not share.
+ */
+function configFile(harness: Harness, opts: InstallOptions): string {
+  const base = baseDir(opts);
+  if (harness === 'codex' && path.resolve(base) === path.resolve(os.homedir())) {
+    const codexHome = process.env['CODEX_HOME'];
+    if (codexHome !== undefined && path.isAbsolute(codexHome)) return path.join(codexHome, 'hooks.json');
+  }
+  return configPathFor(harness, base);
+}
+
 async function readJsonOrAbort(file: string): Promise<Record<string, unknown>> {
   let text: string;
   try {
@@ -352,8 +367,7 @@ export interface InstallResult {
 
 /** Wire AER hooks into the harness config. Conservative read-modify-write. */
 export async function install(harness: Harness, opts: InstallOptions = {}): Promise<InstallResult> {
-  const base = baseDir(opts);
-  const file = configPathFor(harness, base);
+  const file = configFile(harness, opts);
   const config = await readJsonOrAbort(file);
   if (opts.envFile !== undefined && !isSafeToPin(opts.envFile)) throw new Error('refusing an --env-file path with control characters');
   const envFile = opts.envFile ?? existingEnvFile(config);
@@ -482,8 +496,7 @@ async function installAntigravity(
 
 /** Remove only AER's hook entries. Leaves every other hook intact. */
 export async function uninstall(harness: Harness, opts: InstallOptions = {}): Promise<UninstallResult> {
-  const base = baseDir(opts);
-  const file = configPathFor(harness, base);
+  const file = configFile(harness, opts);
   const config = await readJsonOrAbort(file);
 
   if (harness === 'antigravity') {
@@ -554,10 +567,9 @@ export function endEventOf(harness: Harness): string {
 
 /** Report which events currently carry an AER hook entry, per harness. */
 export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> {
-  const base = baseDir(opts);
   const out: StatusEntry[] = [];
   for (const harness of ['claude-code', 'codex', 'antigravity'] as const) {
-    const file = configPathFor(harness, base);
+    const file = configFile(harness, opts);
     let exists = false;
     let wiredEvents: string[] = [];
     let resolves = true;
