@@ -1,15 +1,23 @@
 ---
-'@adastracomputing/aer-hooks': patch
+'@adastracomputing/aer-hooks': minor
 ---
 
-A session run headless, such as `claude -p`, now ends with a completed record.
-Claude Code gives SessionEnd hooks 1.5 seconds unless the entry sets a timeout,
-and in print mode cancels the hook and everything it started when that runs
-out, so against a real API the closing report and the completion were cut off
-and the session stayed open until the server closed it hours later, without a
-summary. At the end of a session the hook now starts a small worker outside
-the harness's reach, delivers what it can in under a second itself and returns;
-the worker sends the rest, completes the record and exits within a minute. It
-writes nothing to the terminal; its notes go to `drain.log` in the state
-directory. The same applies to Codex and Antigravity, which also bound how long
-a SessionEnd hook may run.
+The record of a session now completes when the harness allows the session's last
+hook only a short time. Configs written by `aer-hooks install` already gave
+Claude Code's SessionEnd a 15-second timeout and completed; what is fixed is a
+Claude Code entry without a `timeout` (a hand-written or edited config), which
+`claude -p` cancelled after 1.5 seconds, and Codex, which caps SessionEnd hooks
+at 3 seconds. Both left the session open until the server closed it hours later,
+without a summary.
+
+- The installer now writes `--end-budget-ms` on the entry that ends a session
+  (Claude Code and Codex SessionEnd, Antigravity `Stop`). The hook delivers for
+  that long itself. Run `aer-hooks install` again to add it.
+- The hook also starts a short-lived background process that outlives the
+  harness and finishes what is left: all of it when no budget is declared, in
+  which case the hook itself stops 1.2 seconds after it started. The process
+  gets only the variables it needs, writes its notes to `drain.log` in the state
+  directory and exits within a minute. A container that ends with the harness
+  ends it too, and on Windows none is started.
+- The closing report is no longer dropped after repeated failed sends; a failure
+  where no answer came at all no longer counts toward that limit.

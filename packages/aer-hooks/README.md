@@ -191,19 +191,35 @@ the budget is exceeded anyway, it writes one stderr line saying so. If AER is
 unconfigured it does nothing and exits 0. Recording is always best-effort
 and never in the critical path of the tool the harness is running.
 
-### The end of a session is finished in the background
+### How the end of a session is delivered
 
-A harness does not wait long for its SessionEnd hooks, and some kill them when
-it exits: Claude Code allows 1.5 seconds unless the entry sets a `timeout` (and in
-print mode, `claude -p`, cancels the hook and everything it started when that runs
-out), Codex caps its SessionEnd hooks at a few seconds and Antigravity at 30.
-Against a real API, sending the closing report and completing the record can take
-longer. So at the end of a session the hook starts a small worker detached from
-the harness, delivers what it can in under a second itself, and returns. The worker
-sends whatever is still queued, completes the record and exits; it gives up after
-a minute. It never writes to the terminal: anything it has to report goes to
-`drain.log` in the state directory, which is kept under 64 KB and never holds a
-token or a credential.
+A harness does not wait long for the hook that ends a session. Claude Code allows a
+SessionEnd hook 1.5 seconds unless its entry sets a `timeout`, and in print mode
+(`claude -p`) cancels the hook and every process it started when that runs out.
+Codex caps its SessionEnd hooks at 3 seconds. Antigravity has no SessionEnd: its
+session ends at a `Stop` with `fullyIdle`, and its hooks run for up to 30 seconds by
+default. Against a real API, sending the closing report and completing the record
+can take several seconds.
+
+So the installer declares on the entry that ends a session how long the harness
+allows it (`--end-budget-ms`: 13.5 seconds within the 15-second `timeout` it sets on
+Claude Code's SessionEnd, 2.5 seconds for Codex, 25 seconds on Antigravity's
+`Stop`). The hook delivers for that long itself. As a fallback it also starts a
+short-lived background process that outlives the harness: when the entry declares
+no budget (a hand-written or edited config), the hook delivers for at most 1.2
+seconds from its start and leaves the rest to that process. It sends whatever is
+still queued, completes the record and exits within a minute. It gets only the
+variables it needs (paths, locale, proxy and certificate settings, `AER_*`), not the
+rest of the harness's environment, and reads the credential file itself. It writes
+nothing to the terminal: what it has to report goes to `drain.log` in the state
+directory, which is kept under 64 KB and never holds a token or a credential.
+
+Two limits. A container, CI step or sandbox that ends with the harness ends the
+background process too, so there the record completes only if the declared budget
+was enough. On a platform without `/bin/sh` (Windows) no background process starts
+and the hook delivers within its own time as before. Either way the closing report
+stays queued until the API accepts it, however long the API is unreachable, so a
+resumed session completes the record.
 
 ## Install safety
 
