@@ -1051,9 +1051,14 @@ async function orchestrateAndEmit(
     const start = opts.deps.processStart ?? opts.invokedAt;
     const window = endBudgetWindowMs(opts.argv);
     if (handedOff) {
-      // The worker reports what it could not do; a line from this hook about a
-      // send the worker is about to finish would only mislead.
-      ctx.warn = () => undefined;
+      // The worker reports what it could not send; a line from this hook
+      // about a send the worker is about to finish would only mislead. Events
+      // the API refused for good are gone before the worker sees the queue,
+      // so those are still reported here.
+      const warn = ctx.warn;
+      ctx.warn = (kind, message) => {
+        if (kind === 'refused') warn(kind, message);
+      };
     }
     if (window !== undefined) {
       // The entry declares how long the harness allows it, so the hook sends
@@ -1177,6 +1182,8 @@ function drainLogger(env: NodeJS.ProcessEnv): (message: string) => void {
 /**
  * The worker's budget: DRAIN_BUDGET_MS, or less when AER_HOOK_DRAIN_BUDGET_MS
  * (or a test) asks for less. It is never raised: the hard stop is fixed.
+ * AER_HOOK_DRAIN_BUDGET_MS exists for tests and is documented only in
+ * CONTRIBUTING.
  */
 function drainBudget(env: NodeJS.ProcessEnv, deps: RunHookDeps): number {
   const fromEnv = Number(env['AER_HOOK_DRAIN_BUDGET_MS']);

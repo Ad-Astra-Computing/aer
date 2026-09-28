@@ -208,7 +208,7 @@ Claude Code's SessionEnd, 2.5 seconds for Codex, 25 seconds on Antigravity's
 short-lived background process that outlives the harness: when the entry declares
 no budget (a hand-written or edited config), the hook delivers for at most 1.2
 seconds from its start and leaves the rest to that process. It sends whatever is
-still queued, completes the record and exits within a minute. It gets only the
+still queued, completes the record and exits after about a minute at most. It gets only the
 variables it needs (paths, locale, proxy and certificate settings, `AER_*`), not the
 rest of the harness's environment, and reads the credential file itself. It writes
 nothing to the terminal: what it has to report goes to `drain.log` in the state
@@ -218,8 +218,8 @@ Two limits. A container, CI step or sandbox that ends with the harness ends the
 background process too, so there the record completes only if the declared budget
 was enough. On a platform without `/bin/sh` (Windows) no background process starts
 and the hook delivers within its own time as before. Either way the closing report
-stays queued until the API accepts it, however long the API is unreachable, so a
-resumed session completes the record.
+stays queued however long the API is unreachable, so a resumed session completes
+the record.
 
 ## Install safety
 

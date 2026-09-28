@@ -97,3 +97,10 @@ explicitly in the environment of that run, `MATRIX_OPENAI_API_KEY` or
 `MATRIX_ANTHROPIC_MODEL` to choose the model. No key is ever read from disk.
 The record still goes to a local sink. Without a key those cases are reported
 as SKIP.
+
+## Test settings of the hooks
+
+`AER_HOOK_DRAIN_BUDGET_MS` shortens how long the background process that
+finishes a session end may run, so a test can watch it give up and exit
+without waiting out the full minute. It can only lower that budget, never
+raise it, and is not meant for use outside tests.
