@@ -7,8 +7,9 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { runHook, main } from './cli.js';
+import { runHook, main, runDrain } from './cli.js';
 import { FakeApi } from './fake-api.test-support.js';
+import { loadState, saveState } from './session-store.js';
 
 const V2 = ['--harness', 'claude-code', '--lifecycle', 'v2'];
 
@@ -25,6 +26,8 @@ function env(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     AER_BASE_URL: 'http://aer.test',
     XDG_CACHE_HOME: cache,
     TMPDIR: path.join(dir, 'tmp'),
+    // Never the developer's own: its harness config would count as registered.
+    HOME: path.join(dir, 'home'),
     ...extra,
   } as NodeJS.ProcessEnv;
 }
@@ -115,7 +118,9 @@ describe('under production latency', () => {
     const lead = { session_id: 'cc-lat', cwd: dir, permission_mode: 'default' };
     const sub = (id: string) => ({ ...lead, agent_id: id, agent_type: 'Explore' });
     const start = fire({ ...lead, hook_event_name: 'SessionStart' });
-    await sleep(100);
+    // As in Claude Code, nothing else runs before the start has queued; its
+    // slow open still overlaps everything below.
+    for (let i = 0; i < 500 && !fs.existsSync(storeFile('cc-lat')); i++) await sleep(20);
     const rest = [
       { ...lead, hook_event_name: 'UserPromptSubmit' },
       { ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'l1' },
@@ -435,5 +440,325 @@ describe('state left behind', () => {
     expect(fs.existsSync(stale)).toBe(false);
     expect(fs.existsSync(drop)).toBe(false);
     expect(fs.existsSync(storeFile('cc-sweep'))).toBe(true);
+  });
+});
+
+describe('the end of a session the harness will not wait for', () => {
+  it('hands the record to a worker and returns within the harness budget, and the worker completes it', async () => {
+    const lead = { session_id: 'cc-headless', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' });
+    api.openDelayMs = 0;
+    api.eventsDelayMs = 3000;
+    api.completeDelayMs = 3000;
+    const handed: string[][] = [];
+    const t = Date.now();
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+    });
+    // Claude Code gives SessionEnd hooks 1.5 s unless configured otherwise.
+    expect(Date.now() - t).toBeLessThan(1500);
+    expect(api.completes()).toHaveLength(0);
+    expect(handed).toHaveLength(1);
+    expect(handed[0]).toContain('--drain=cc-headless');
+    expect(JSON.stringify(handed[0])).not.toMatch(/tok-|AER_API_KEY|"k"/);
+
+    api.eventsDelayMs = 0;
+    api.completeDelayMs = 0;
+    await runDrain(handed[0]!, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+    const s = [...api.sessions.values()][0]!;
+    expect(s.status).toBe('completed');
+    expect(s.events.map((e) => e.payload['phase'])).toEqual(['session_start', 'session_end']);
+  });
+
+  it('counts the inline window from process start, and sends nothing when too little of it is left', async () => {
+    const lead = { session_id: 'cc-late-end', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' });
+    const before = api.requests.length;
+    const handed: string[][] = [];
+    const t = Date.now();
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+      // Node startup, stdin and the config reads already took a second.
+      processStart: Date.now() - 1000,
+    });
+    expect(Date.now() - t).toBeLessThan(400);
+    expect(api.requests.length).toBe(before);
+    expect(handed).toHaveLength(1);
+  });
+
+  it('completes inline when the API answers quickly, and the worker then finds nothing to do', async () => {
+    const lead = { session_id: 'cc-fast-end', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' });
+    const handed: string[][] = [];
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+    });
+    expect(api.completes()).toHaveLength(1);
+    await runDrain(handed[0]!, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+    expect(api.opens()).toHaveLength(1);
+  });
+
+  it('a worker that cannot be started leaves the hook to deliver inline with its full budget', async () => {
+    const lead = { session_id: 'cc-no-worker', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' });
+    api.completeDelayMs = 1500;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: () => false,
+    });
+    expect(api.completes()).toHaveLength(1);
+  });
+});
+
+describe('the worker when the API never answers', () => {
+  const neverAnswers = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    await new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+    throw new Error('unreachable');
+  }) as typeof fetch;
+
+  async function endedWithQueue(sid: string): Promise<string[]> {
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    const handed: string[][] = [];
+    api.eventsDelayMs = 60_000;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+      logError: () => undefined,
+    });
+    api.eventsDelayMs = 0;
+    return handed[0]!;
+  }
+
+  it('keeps the closing report queued however many times no answer comes', async () => {
+    const argv = await endedWithQueue('cc-never');
+    // The probe: several workers in turn, each spending its whole budget on an API that never answers.
+    for (let i = 0; i < 6; i++) await runDrain(argv, env(), { fetch: neverAnswers, drainBudgetMs: 2500, logError: () => undefined });
+    const st = loadState('cc-never', env())!;
+    expect(st.complete).toBe('end');
+    expect(st.outbox.map((e) => e.payload['phase'])).toEqual(['session_end']);
+    expect(st.droppedBudget).toBe(0);
+    // When the API comes back, the next worker completes the record.
+    await runDrain(argv, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+  }, 60_000);
+
+  it('never drops the closing report to the send-attempt cap, even on repeated refusals', async () => {
+    const argv = await endedWithQueue('cc-refused');
+    const refuses = (async () => new Response('{}', { status: 503 })) as typeof fetch;
+    for (let i = 0; i < 8; i++) await runDrain(argv, env(), { fetch: refuses, drainBudgetMs: 2500, logError: () => undefined });
+    const st = loadState('cc-refused', env())!;
+    expect(st.outbox.map((e) => e.payload['phase'])).toEqual(['session_end']);
+    await runDrain(argv, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+  }, 60_000);
+});
+
+describe('what the worker is told', () => {
+  async function handedFor(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<string[]> {
+    const lead = { session_id: `cc-args-${args.length}`, cwd: dir };
+    const e = env(extraEnv);
+    await runHook([...V2, ...args], e, { readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionStart' }), fetch: api.fetch });
+    const handed: string[][] = [];
+    await runHook([...V2, ...args], e, {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+    });
+    return handed[0]!;
+  }
+
+  it('gets only the flags it reads: the credential file and which session to finish, for which harness', async () => {
+    const argv = await handedFor(['--root-session', 'root-x', '--event', 'Stop']);
+    expect(argv.filter((a) => a.startsWith('--')).map((a) => a.split('=')[0])).toEqual(['--drain', '--drain-harness', '--harness-pid']);
+  });
+
+  it('gets a session id that looks like a flag as data, never as a flag', async () => {
+    const sid = '--env-file=/tmp/not-a-credential-file';
+    const lead = { session_id: sid, cwd: dir };
+    await runHook(V2, env(), { readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionStart' }), fetch: api.fetch });
+    const handed: string[][] = [];
+    api.eventsDelayMs = 60_000;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ ...lead, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+    });
+    api.eventsDelayMs = 0;
+    const argv = handed[0]!;
+    expect(argv.filter((a) => a.startsWith('--env-file'))).toEqual([]);
+    expect(argv).toContain(`--drain=${sid}`);
+    await runDrain(argv, env(), { fetch: api.fetch });
+    expect(api.completes()).toHaveLength(1);
+  });
+
+  it('gets the credential file as an absolute path, so it does not depend on a directory that may be gone', async () => {
+    const file = path.join(dir, 'hooks.env');
+    fs.writeFileSync(file, 'AER_TENANT_ID=t\n', { mode: 0o600 });
+    const rel = path.relative(process.cwd(), file);
+    const argv = await handedFor(['--env-file', rel]);
+    expect(argv[argv.indexOf('--env-file') + 1]).toBe(file);
+  });
+});
+
+describe('what the worker writes down', () => {
+  it('says the record stays open, never that a later event will send it', async () => {
+    const sid = 'cc-worker-words';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    const handed: string[][] = [];
+    api.eventsDelayMs = 60_000;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed.push(argv); return true; },
+      logError: () => undefined,
+    });
+    const lines: string[] = [];
+    const refuses = (async () => new Response('{}', { status: 503 })) as typeof fetch;
+    await runDrain(handed[0]!, env(), { fetch: refuses, drainBudgetMs: 2500, logError: (m) => lines.push(m) });
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) {
+      expect(l).not.toMatch(/later event/);
+      expect(l).toMatch(/the record stays open/);
+    }
+  });
+
+  it('still reports events the API refused for good, which no worker will send', async () => {
+    const sid = 'cc-refused-after-handoff';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    api.fault({ path: /\/events$/, status: 400, times: 1 });
+    const lines: string[] = [];
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: () => true,
+      logError: (m) => lines.push(m),
+    });
+    expect(lines).toEqual([expect.stringMatching(/refused .*dropped and counted/)]);
+  });
+
+  it('the hook stays quiet about an inline send the worker is taking over', async () => {
+    const sid = 'cc-quiet-handoff';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    api.eventsDelayMs = 60_000;
+    const lines: string[] = [];
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: () => true,
+      logError: (m) => lines.push(m),
+    });
+    expect(lines).toEqual([]);
+  });
+
+});
+
+describe('a batch that never gets an answer', () => {
+  /** An API that answers a batch of up to `max` events at once and never answers a larger one. */
+  function answersUpTo(max: number, counter: { posts: number }): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/events')) {
+        counter.posts += 1;
+        if ((JSON.parse(String(init?.body)) as unknown[]).length > max) {
+          await new Promise((_r, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+        }
+      }
+      return api.fetch(input, init);
+    }) as typeof fetch;
+  }
+
+  async function queued(sid: string, n: number): Promise<void> {
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    const st = loadState(sid, env())!;
+    for (let i = 0; i < n; i++) {
+      st.seq += 1;
+      st.outbox.push({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, type: 'tool.started', ts: new Date().toISOString(), payload: { tool: 'Read', seq: st.seq } });
+    }
+    saveState(sid, st, env());
+  }
+
+  it('is halved until it gets through, not sent one event at a time', async () => {
+    const sid = 'cc-halve';
+    await queued(sid, 100);
+    const counter = { posts: 0 };
+    const drain = [`--drain=${sid}`, '--drain-harness=claude-code', '--harness-pid=1'];
+    for (let i = 0; i < 4 && (loadState(sid, env())?.outbox.length ?? 0) > 0; i++) {
+      await runDrain(drain, env(), { fetch: answersUpTo(12, counter), drainBudgetMs: 20_000, requestTimeoutMs: 300, logError: () => undefined });
+    }
+    expect(loadState(sid, env())?.outbox).toEqual([]);
+    expect(api.eventsOf('tool.started')).toHaveLength(100);
+    // 100, 50 and 25 time out, then nine batches of at most 12: 12 requests, not 100.
+    expect(counter.posts).toBeLessThanOrEqual(13);
+  }, 60_000);
+
+  it('is not split when this invocation ran out of time, which says nothing about its size', async () => {
+    const sid = 'cc-no-split';
+    await queued(sid, 20);
+    const counter = { posts: 0 };
+    // The hook's own deadline cuts the request short, well before the full timeout.
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/x' } }),
+      fetch: answersUpTo(1, counter),
+      hardTimeoutMs: 1500,
+      logError: () => undefined,
+    });
+    const st = loadState(sid, env())!;
+    expect(st.outbox.length).toBeGreaterThan(0);
+    expect(st.postLimit).toBeUndefined();
+  });
+});
+
+describe('the count of dropped events on the closing report', () => {
+  it('includes what the queue dropped to make room for the report itself', async () => {
+    const sid = 'cc-full-queue';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    const st = loadState(sid, env())!;
+    for (let i = 0; i < 1000; i++) {
+      st.seq += 1;
+      st.outbox.push({ id: `00000000-0000-4000-9000-${String(i).padStart(12, '0')}`, type: 'tool.started', ts: new Date().toISOString(), payload: { tool: 'Read', seq: st.seq } });
+    }
+    saveState(sid, st, env());
+    const down = (async () => { throw new TypeError('fetch failed'); }) as typeof fetch;
+    await runHook(V2, env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: down,
+      logError: () => undefined,
+    });
+    const after = loadState(sid, env())!;
+    expect(after.droppedBudget).toBeGreaterThan(0);
+    const closing = after.outbox.find((e) => e.payload['phase'] === 'session_end')!;
+    expect(closing.payload['events_dropped_budget']).toBe(after.droppedBudget);
+  });
+});
+
+describe('the hook and its worker never send the same events at once', () => {
+  it('holds the network role while it sends, with a process start that is not a whole millisecond', async () => {
+    const sid = 'cc-lease';
+    await fire({ session_id: sid, cwd: dir, hook_event_name: 'SessionStart' });
+    api.eventsDelayMs = 800;
+    let handed: string[] = [];
+    const hook = runHook([...V2, '--end-budget-ms', '8000'], env(), {
+      readInput: async () => JSON.stringify({ session_id: sid, cwd: dir, hook_event_name: 'SessionEnd', reason: 'other' }),
+      fetch: api.fetch,
+      handOff: (argv) => { handed = argv; return true; },
+      // performance.timeOrigin is fractional.
+      processStart: Date.now() + 0.25,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    // The worker starts while the hook's send is in flight.
+    const worker = runDrain(handed, env(), { fetch: api.fetch });
+    await Promise.all([hook, worker]);
+    const posted = api.eventPosts().flatMap((r) => (r.body as Array<{ event_id: string }>).map((e) => e.event_id));
+    expect(posted.length).toBe(new Set(posted).size);
+    expect(api.completes()).toHaveLength(1);
   });
 });

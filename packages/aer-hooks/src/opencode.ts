@@ -24,6 +24,37 @@
 
 import type { HookEvent } from './normalize.js';
 import { asRecord, asString, keysOf, responseIsError } from './normalize.js';
+import { shapesOfToolCall } from './tool-shape.js';
+import { recordableToolName } from './tool-name.js';
+
+/** Marks every opencode event, as the shell hooks mark theirs. */
+export const HARNESS_META = { harness: 'opencode' } as const;
+
+/**
+ * opencode's built-in tools, and the one argument each reduces by, mapped to
+ * the tool the shared reduction already knows. The reduction is the privacy
+ * boundary: a command line becomes its program names and hosts, a file tool
+ * its path, a fetch its host. Nothing else of the input is passed on.
+ */
+const SHAPE_ALIASES: Readonly<Record<string, (args: Record<string, unknown>) => [string, Record<string, unknown>]>> = {
+  bash: (a) => ['Bash', { command: a['command'] }],
+  read: (a) => ['Read', { file_path: a['filePath'] }],
+  write: (a) => ['Write', { file_path: a['filePath'] }],
+  edit: (a) => ['Edit', { file_path: a['filePath'] }],
+  webfetch: (a) => ['WebFetch', { url: a['url'] }],
+};
+
+function putShapes(event: HookEvent, tool: string, args: unknown): void {
+  const alias = SHAPE_ALIASES[tool];
+  const rec = asRecord(args);
+  if (alias === undefined || rec === undefined) return;
+  const [name, input] = alias(rec);
+  const shapes = shapesOfToolCall(name, input);
+  if (shapes.length > 0) {
+    event.shape = shapes[0];
+    event.shapes = shapes;
+  }
+}
 
 /** Non-negative finite number, else undefined. Token counts must be well-formed. */
 function numOf(v: unknown): number | undefined {
@@ -106,13 +137,14 @@ export function normalizeOpencodeToolBefore(
   input: OpencodeToolBeforeInput,
   output: OpencodeToolBeforeOutput,
 ): HookEvent {
-  const event: HookEvent = { kind: 'tool_start' };
+  const event: HookEvent = { kind: 'tool_start', meta: { ...HARNESS_META } };
   const tool = asString(input?.tool);
-  if (tool !== undefined) event.tool = tool;
+  if (tool !== undefined) event.tool = recordableToolName(tool);
   const sessionRef = asString(input?.sessionID);
   if (sessionRef !== undefined) event.sessionRef = sessionRef;
   const argKeys = keysOf(output?.args);
   if (argKeys !== undefined) event.argKeys = argKeys;
+  if (tool !== undefined) putShapes(event, tool, output?.args);
   return event;
 }
 
@@ -126,9 +158,9 @@ export function normalizeOpencodeToolAfter(
   input: OpencodeToolAfterInput,
   output?: OpencodeToolAfterOutput,
 ): HookEvent {
-  const event: HookEvent = { kind: 'tool_end' };
+  const event: HookEvent = { kind: 'tool_end', meta: { ...HARNESS_META } };
   const tool = asString(input?.tool);
-  if (tool !== undefined) event.tool = tool;
+  if (tool !== undefined) event.tool = recordableToolName(tool);
   const sessionRef = asString(input?.sessionID);
   if (sessionRef !== undefined) event.sessionRef = sessionRef;
   const argKeys = keysOf(input?.args);
@@ -159,6 +191,7 @@ export function normalizeOpencodeEvent(event: unknown): HookEvent {
         : 'other';
 
   const out: HookEvent = { kind };
+  if (kind !== 'other') out.meta = { ...HARNESS_META };
   if (kind !== 'other' && sessionRef !== undefined) out.sessionRef = sessionRef;
   return out;
 }

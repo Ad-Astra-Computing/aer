@@ -117,6 +117,34 @@ describe('createCollector', () => {
     });
   });
 
+  it('the final collector.report counts events that could not be delivered as events_dropped_budget', async () => {
+    const emitted: CollectorEvent[] = [];
+    let fail = true;
+    const transport: SessionTransport = {
+      async open() {},
+      async emit(events) { if (fail && events.some((e) => e.event_type === 'http.requested')) throw new Error('timed out'); emitted.push(...events); },
+      async complete() {},
+      async abort() {},
+    };
+    const collector = createCollector(resolveConfig({ env: {} }), { transport, patchInstaller: false, adapterInstaller: false });
+    collector.capture({ event_type: 'http.requested', payload: { host: 'x', method: 'GET' } });
+    await collector.session.flush();
+    fail = false;
+    await collector.complete();
+    const final = emitted.filter((e) => e.event_type === 'collector.report').pop();
+    expect(final?.payload['phase']).toBe('final');
+    expect(final?.payload['events_dropped_budget']).toBe(1);
+  });
+
+  it('leaves events_dropped_budget off a report when nothing was lost', async () => {
+    const { transport, emitted } = recordingTransport();
+    const collector = createCollector(resolveConfig({ env: {} }), { transport, patchInstaller: false, adapterInstaller: false });
+    collector.capture({ event_type: 'http.requested', payload: { host: 'x', method: 'GET' } });
+    await collector.complete();
+    const final = emitted().filter((e) => e.event_type === 'collector.report').pop();
+    expect(final?.payload).not.toHaveProperty('events_dropped_budget');
+  });
+
   it('omits adapter_activity when no adapter recorded any activity', async () => {
     const { transport, emitted } = recordingTransport();
     const collector = createCollector(resolveConfig({ env: {} }), {

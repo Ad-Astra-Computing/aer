@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2
+
+### Patch Changes
+
+- [`4829d3d`](https://github.com/Ad-Astra-Computing/aer/commit/4829d3d438ae64c98210023360d04541b3b7a4db) - `aer doctor` now reports an end-of-session hook entry with no time budget,
+  a relative `CODEX_HOME` and an Antigravity registration that records no
+  tool calls, and compares an installed `aer-hook` against the aer-hooks
+  0.6.0 checks bundled into this release instead of 0.5.1's.
+
 ## 0.4.1
 
 ### Patch Changes

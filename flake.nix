@@ -241,6 +241,9 @@
 
         checks.default = mkAerDerivation {
           name = "aer-workspace-checks";
+          # The session end tests find the hook's descendants with ps, which
+          # the build sandbox does not provide.
+          extraInputs = [ pkgs.procps ];
           buildPhaseScript = ''
             # append-only: the default TUI rewrites lines, and a failure inside
             # a sandbox is then unreadable in the build log.

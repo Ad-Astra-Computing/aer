@@ -34,7 +34,7 @@ export interface UsagePolicy {
   llm?: UsagePolicyLlm;
 }
 
-export type PolicyRule = 'model_denied' | 'model_not_allowed' | 'token_budget' | 'call_budget';
+export type PolicyRule = 'model_denied' | 'model_not_allowed' | 'token_budget' | 'call_budget' | 'policy_unavailable';
 
 export interface PolicyViolation {
   rule: PolicyRule;
@@ -91,6 +91,8 @@ function policyMessage(f: AerPolicyErrorFields): string {
       return `AER usage policy blocked call: exceeds max_calls_per_session ${f.limit} (observed ${f.observed})`;
     case 'token_budget':
       return `AER usage policy: exceeds max_tokens_per_session ${f.limit} (observed ${f.observed})`;
+    case 'policy_unavailable':
+      return `AER usage policy blocked model "${f.model ?? '(unknown)'}": the policy could not be refreshed and says fail_closed`;
   }
 }
 
@@ -119,10 +121,17 @@ function globToRegExp(pattern: string): RegExp {
  */
 export class PolicyEnforcer {
   private readonly policy: UsagePolicy | null;
+  private readonly unavailable: boolean;
   private tokens = 0;
   private calls = 0;
 
-  constructor(policy: UsagePolicy | null) {
+  /**
+   * `unavailable`: the policy is past its TTL and could not be refreshed. A
+   * block-mode policy that says `on_unavailable: fail_closed` then refuses
+   * every call; any other policy keeps being enforced as it was.
+   */
+  constructor(policy: UsagePolicy | null, opts: { unavailable?: boolean } = {}) {
+    this.unavailable = opts.unavailable === true;
     // Treat 'off' as disabled up front, so every hot-path method is a cheap
     // early-return and never allocates.
     this.policy = policy && policy.mode !== 'off' ? policy : null;
@@ -157,6 +166,12 @@ export class PolicyEnforcer {
     const action: 'report' | 'block' = policy.mode === 'block' ? 'block' : 'report';
     const llm = policy.llm ?? {};
     const violations: PolicyViolation[] = [];
+
+    if (this.unavailable && action === 'block' && policy.on_unavailable === 'fail_closed') {
+      this.calls += 1;
+      const v: PolicyViolation = { rule: 'policy_unavailable', action, ...(model !== undefined ? { model } : {}) };
+      return { violations: [v], block: v };
+    }
 
     // Model rules. Denied wins over the allowlist.
     const denied = llm.denied_models;

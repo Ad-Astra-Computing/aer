@@ -30,12 +30,21 @@ for the whole run lifecycle: SessionStart, UserPromptSubmit, PreToolUse,
 PostToolUse, Stop, SubagentStart, SubagentStop and SessionEnd. `Stop` fires
 once per assistant turn, so the record is completed at `SessionEnd` and a
 multi-turn conversation stays one record. On Claude Code the SessionEnd entry
-carries its own `timeout`, because that harness shares 1.5 seconds across
-every SessionEnd hook and completing a record takes longer than that. If `aer-hook` is not on `PATH` at install
+carries its own `timeout`, because that harness otherwise allows SessionEnd
+hooks 1.5 seconds. If `aer-hook` is not on `PATH` at install
 time, the installer writes the absolute path of the copy it is running from and
 says so, which keeps recording working but ties the config to that install
 location. `npx @adastracomputing/aer-hooks install ...` works the same way, and
 is the case that needs the absolute path, since `npx` puts nothing on `PATH`.
+
+Codex keeps its configuration in `$CODEX_HOME` when that is set, rather than
+`~/.codex`, so `aer-hooks install codex` (and `status` and `uninstall`) use
+`$CODEX_HOME/hooks.json` in that case, also with `--dir` set to your home
+directory. `CODEX_HOME` has to be an absolute path: Codex resolves a relative
+one against whatever directory it starts in, so `install` refuses it and
+`status` reports it. If AER hooks are still in `~/.codex/hooks.json` from
+before `CODEX_HOME` was set, `install` and `status` warn that they would fire
+again if it were unset, and print the command that removes them.
 
 That command is idempotent: running it again after an upgrade updates the
 existing registration in place, rather than leaving it on an older hook
@@ -62,11 +71,21 @@ npx @adastracomputing/aer-hooks uninstall claude-code
 ### Codex will not run the hook until you trust it
 
 Codex skips any hook it has not been told to trust, and skips it silently, so
-a Codex install that looks finished records nothing. After installing, run
-`/hooks` inside Codex and approve the AER entry. Trust is recorded against the
-command itself, so upgrading AER can change the command and need approving
-again. A project-local `.codex` layer also has to be a trusted project before
-its hooks load at all.
+a Codex install that looks finished records nothing. After installing, start
+Codex: its startup review lists the new hooks, and "Trust all and continue"
+approves them (or run `/hooks` inside Codex and approve the AER entries).
+Trust is recorded against the command itself, so upgrading AER can change the
+command and need approving again. A project-local `.codex` layer also has to
+be a trusted project before its hooks load at all. For automation that has
+already vetted its hooks, `codex exec --dangerously-bypass-hook-trust` runs
+them without a recorded approval, for that invocation only.
+
+The Codex TUI runs its sessions in a background app-server by default, so
+leaving the TUI with `/exit` disconnects from the session rather than ending
+it. Codex ends it, and fires the SessionEnd that completes the record, when
+the app-server unloads the idle session about a minute later. With
+`codex --no-daemon`, and with `codex exec`, the record completes as Codex
+exits.
 
 ### Keep the key out of the agent's shell
 
@@ -166,7 +185,10 @@ content, and there is no flag that changes that. A few tools carry a narrow,
 named exception instead of the bare key-name rule: a shell command is reduced
 to the programs it runs (up to 16) and the hosts its network clients were
 pointed at (up to 8), never the command line itself; a file read or write
-records the path, never the file's content; a web fetch records the target's
+records the path, never the file's content (for a Codex `apply_patch`, the
+path each file header names, joined to the session's working directory when
+it is relative, up to 16 per patch, with the number of files it named in
+`count` when that is more); a web fetch records the target's
 host and scheme, never its path or query; and a Claude Code transcript's
 assistant messages contribute `llm.completed` events carrying the model name
 and the input/output token counts, read from the transcript's `message.model`
@@ -175,21 +197,77 @@ never the prompt or completion text. Every payload, whatever tool produced it, i
 of keys AER ingest stores before it is sent, so a value the record could not
 hold never reaches the wire either.
 
-If you need evidence about the arguments themselves, use content commitments
-(ADR-011): the record carries a one-way tag you can later open against your own
+If you need evidence about the arguments themselves, use content commitments:
+the record carries a one-way tag you can later open against your own
 retained plaintext with a key that never leaves your machine.
 
 ## Fail-open, never blocking
 
 The `aer-hook` binary is designed so it can never break or slow the harness. It
-wraps everything in try/catch, caps its own runtime with a hard timeout (default
-10000ms, override with `AER_HOOK_TIMEOUT_MS`) after which it exits 0 regardless
-and never writes to stdout (some harnesses interpret hook stdout). It stops
-starting network calls shortly before the budget runs out, so what it could not
-send stays queued for the next event rather than being cut off mid-request; if
-the budget is exceeded anyway, it writes one stderr line saying so. If AER is
-unconfigured it does nothing and exits 0. Recording is always best-effort
-and never in the critical path of the tool the harness is running.
+wraps everything in try/catch, never writes to stdout (some harnesses interpret
+hook stdout) and caps its own runtime with a hard timeout (default 10000ms,
+override with `AER_HOOK_TIMEOUT_MS`), after which it exits 0 regardless. The one
+exception is the entry that ends a session: it runs for the budget it declares,
+even past `AER_HOOK_TIMEOUT_MS`, and never past 30 seconds (see below). The hook
+stops starting network calls shortly before its time runs out, so what it could
+not send stays queued for the next event rather than being cut off mid-request;
+if the time is exceeded anyway, it writes one stderr line saying so. If AER is
+unconfigured it does nothing and exits 0. Recording is always best-effort and
+never in the critical path of the tool the harness is running.
+
+### How the end of a session is delivered
+
+A harness does not wait long for the hook that ends a session. Claude Code allows a
+SessionEnd hook 1.5 seconds unless its entry sets a `timeout`, and in print mode
+(`claude -p`) cancels the hook and every process it started when that runs out.
+Codex caps its SessionEnd hooks at 3 seconds. Antigravity has no SessionEnd: its
+session ends at a `Stop` with `fullyIdle`, and its hooks run for up to 30 seconds by
+default. Against a real API, sending the closing report and completing the record
+can take several seconds.
+
+So the installer declares on the entry that ends a session how long the harness
+allows it (`--end-budget-ms`: 13.5 seconds within the 15-second `timeout` it sets on
+Claude Code's SessionEnd, 2.5 seconds for Codex, 25 seconds on Antigravity's
+`Stop`). The hook delivers for that long itself, whatever `AER_HOOK_TIMEOUT_MS`
+says, and never for more than 30 seconds. As a fallback it also starts a
+short-lived background process that outlives the harness: when the entry declares
+no budget (a hand-written or edited config), the hook delivers for at most 1.2
+seconds from its start and leaves the rest to that process. It sends whatever is
+still queued, completes the record and exits after about a minute at most. It gets only the
+variables it needs (paths, locale, proxy and certificate settings, `AER_*`), not the
+rest of the harness's environment, and reads the credential file itself. It writes
+nothing to the terminal: what it has to report goes to `drain.log` in the state
+directory, which is kept under 64 KB and never holds a token or a credential.
+
+An install from before 0.6.0 has no `--end-budget-ms` on the entry that ends
+a session. Run `aer-hooks install <harness>` again to add it; `aer-hooks
+status` and `aer doctor` report an entry without it as `no_end_budget` and
+name the harness to reinstall. On Codex, re-running install changes the
+registered command, so Codex skips the hook silently until you approve it
+again (see [Codex will not run the hook until you trust it](#codex-will-not-run-the-hook-until-you-trust-it)).
+
+Two limits. A container, CI step or sandbox that ends with the harness ends the
+background process too, so there the record completes only if the declared budget
+was enough. Codex's is the tightest: 2.5 seconds inside its 3-second cap, so against
+a slow API a Codex session end often leaves completing the record to the background
+process. On a platform without `/bin/sh` (Windows) no background process starts
+and the hook delivers within its own time as before. Either way the closing report
+stays queued however long the API is unreachable, so a resumed session completes
+the record.
+
+### Antigravity records each turn
+
+An `aer-hooks` release before 0.6.0 registered Antigravity's tool events
+in a form Antigravity loads and never runs, so those installs record turns
+and no tool calls. `aer-hooks status` and `aer doctor` report such a
+registration; `aer-hooks install antigravity` rewrites it.
+
+Antigravity has no event for the end of a conversation: it fires `Stop` at
+the end of every turn and starts the next turn afresh. The hook completes the
+record at that `Stop`, since a record left open would never be sealed, so an
+interactive conversation of several turns is recorded as one record per turn.
+The parts share the conversation's `client_ref` and can be read back as one
+run.
 
 ## Install safety
 
@@ -211,13 +289,40 @@ import { aerOpencodePlugin } from '@adastracomputing/aer-hooks';
 export const AerPlugin = aerOpencodePlugin;
 ```
 
-Then set the same env the shell hooks use (`AER_BASE_URL`, `AER_API_KEY` or
-`AER_TENANT_API_KEY`, `AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required
-but the base URL). One AER
-session is opened per opencode session and completed on `session.deleted` or plugin
-dispose. Redaction and fail-open are identical to the shell-hook path: tool names
-and argument KEY names only, never values. If emit is unconfigured the plugin is a
-total no-op.
+The import resolves from the project's own `node_modules`, so install
+`@adastracomputing/aer-hooks` in the project. Then set the same env the shell
+hooks use (`AER_BASE_URL`, `AER_API_KEY` or `AER_TENANT_API_KEY`,
+`AER_TENANT_ID`, `AER_AGENT_ID`, `AER_ENV_ID`, all required but the base URL).
+
+One AER session is opened per opencode session, declared as the `aer-hooks`
+collector recording a harness, with every event marked `harness: opencode`. It
+is completed on `session.deleted` or when opencode disposes its plugins, which
+is how `opencode run` ends; dispose writes a `session_end` marker first and
+waits at most 3 seconds for the AER API, so an API that never answers cannot
+hold opencode's exit.
+
+Tool calls are reduced the way the shell hooks reduce them: tool names and
+argument KEY names, never values, with the same narrow exceptions. A `bash` call
+is reduced to the programs it runs and the hosts its network clients were
+pointed at, a `read`, `write` or `edit` records the file path and a `webfetch`
+the target's host. A tool name is recorded only when it is a string of at
+most 200 UTF-16 code units with no control characters; any other name, such as
+an oversized MCP tool name, is recorded as `(unrecordable tool name)`, and each
+such call adds one `collector.report` marker with phase `tool_name_replaced`.
+If emit is unconfigured the plugin is a total no-op.
+
+The plugin sends events straight from opencode's process as they happen. It
+does not have the shell hooks' on-disk queue and retry, so events it cannot
+deliver while the API is unreachable are lost rather than sent later. It also
+does not open idempotently with `client_ref`, number events with `seq`, write
+checkpoint or `events_registered` evidence, or attach subagent sessions to their
+lead.
+
+opencode installs `@opencode-ai/plugin` into `.opencode` when it starts and
+finds a plugin there. On a machine that has never reached the npm registry, or
+sits behind a proxy that blocks it, that install retries for about a minute
+before opencode goes on, so an offline first run is slow once. Later runs reuse
+the installed package.
 
 Beyond tools, the opencode plugin also records LLM usage. Each assistant
 `message.updated` carries the model, provider and token counts, so the plugin emits

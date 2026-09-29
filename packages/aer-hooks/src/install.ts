@@ -153,13 +153,28 @@ const LIFECYCLE_FLAG = '--lifecycle v2';
 // found empty against Claude Code 2.1.281, so cli.ts reads the harness's
 // own CLAUDE_CODE_SESSION_ID env var instead. --root-session still exists
 // as an explicit override for a caller that sets it itself.
-function harnessCommand(harness: Harness, event?: string, envFile?: string): string {
+function harnessCommand(harness: Harness, event?: string, envFile?: string, endBudgetMs?: number): string {
   let cmd = `${hookInvocation()} --harness ${harness} ${LIFECYCLE_FLAG}`;
   // Antigravity omits the event name from the payload, so each registration
   // has to carry it.
   if (event !== undefined) cmd += ` --event ${event}`;
   if (envFile !== undefined) cmd += ` --env-file ${shellSingleQuote(envFile)}`;
+  if (endBudgetMs !== undefined) cmd += ` --end-budget-ms ${endBudgetMs}`;
   return cmd;
+}
+
+/**
+ * How long the harness lets the entry that ends a session run, in ms, with a
+ * margin, when that is known: the timeout this installer sets on Claude
+ * Code's SessionEnd, Codex's fixed 3 s cap, Antigravity's 30 s default on the
+ * Stop that ends its sessions. The hook delivers inline for that long, so a
+ * record completes even where its background worker dies with the harness.
+ */
+function endBudgetMs(harness: Harness, event: string): number | undefined {
+  if (harness === 'claude-code' && event === 'SessionEnd') return CLAUDE_HEADROOM_TIMEOUT_S * 1000 - 1500;
+  if (harness === 'codex' && event === 'SessionEnd') return 2500;
+  if (harness === 'antigravity' && event === 'Stop') return 25_000;
+  return undefined;
 }
 
 const ENV_FILE_IN_COMMAND = / --env-file '((?:[^']|'\\'')*)'/;
@@ -176,26 +191,24 @@ function existingEnvFile(config: unknown): string | undefined {
   return undefined;
 }
 
-/** One Antigravity entry: the command sits on the entry itself. */
-interface AntigravityEntry {
-  matcher?: string;
-  command: string;
-}
-
 /**
  * The hook group AER installs into an Antigravity config.
  *
- * Antigravity differs from the other two at both levels: named groups at the
- * root with no `hooks` wrapper, and the command directly on the entry. The
- * nested typed-object form the others use is rejected outright, with
- * `command hook must specify 'command'` in the CLI log and nothing loaded.
+ * Antigravity has named groups at the root with no `hooks` wrapper, and two
+ * kinds of entry inside one. The tool events take a matcher group with the
+ * command in a nested `hooks` array, as Claude Code does; the invocation
+ * events and Stop take the command directly on the entry. Each form is wrong
+ * for the other kind: a nested invocation entry is rejected with `command
+ * hook must specify 'command'` and none of the group loads, and a flat tool
+ * entry loads and never fires. Both seen against agy 1.2.6.
  */
 function antigravityGroup(envFile?: string): Record<string, unknown> {
   const group: Record<string, unknown> = { enabled: true };
   for (const ev of ANTIGRAVITY_EVENTS) {
-    const entry: AntigravityEntry = { command: harnessCommand('antigravity', ev, envFile) };
-    if (ANTIGRAVITY_MATCHED.has(ev)) entry.matcher = '*';
-    group[ev] = [entry];
+    const command = harnessCommand('antigravity', ev, envFile, endBudgetMs('antigravity', ev));
+    group[ev] = ANTIGRAVITY_MATCHED.has(ev)
+      ? [{ matcher: '*', hooks: [{ type: 'command', command }] }]
+      : [{ command }];
   }
   return group;
 }
@@ -238,6 +251,33 @@ export function configPathFor(harness: Harness, base: string): string {
 
 function baseDir(opts: InstallOptions): string {
   return opts.dir ?? os.homedir();
+}
+
+/**
+ * Why CODEX_HOME cannot be used, or undefined. Codex resolves a relative
+ * value against its own working directory, which differs from run to run and
+ * from the installer's, so there is no one file to install into. Empty is
+ * unset.
+ */
+export function relativeCodexHome(): string | undefined {
+  const v = process.env['CODEX_HOME'];
+  return v !== undefined && v.length > 0 && !path.isAbsolute(v) ? v : undefined;
+}
+
+/**
+ * The config file this command reads and writes. Codex keeps its user-level
+ * config in $CODEX_HOME when that is set, not ~/.codex, so for the user's own
+ * home that is where its hooks.json is. A relative CODEX_HOME is refused by
+ * install and flagged by the doctor (see relativeCodexHome); here it falls
+ * back to ~/.codex so that status and uninstall still read something.
+ */
+function configFile(harness: Harness, opts: InstallOptions): string {
+  const base = baseDir(opts);
+  if (harness === 'codex' && path.resolve(base) === path.resolve(os.homedir())) {
+    const codexHome = process.env['CODEX_HOME'];
+    if (codexHome !== undefined && path.isAbsolute(codexHome)) return path.join(codexHome, 'hooks.json');
+  }
+  return configPathFor(harness, base);
 }
 
 async function readJsonOrAbort(file: string): Promise<Record<string, unknown>> {
@@ -339,8 +379,14 @@ export interface InstallResult {
 
 /** Wire AER hooks into the harness config. Conservative read-modify-write. */
 export async function install(harness: Harness, opts: InstallOptions = {}): Promise<InstallResult> {
-  const base = baseDir(opts);
-  const file = configPathFor(harness, base);
+  const rel = harness === 'codex' ? relativeCodexHome() : undefined;
+  if (rel !== undefined && path.resolve(baseDir(opts)) === path.resolve(os.homedir())) {
+    throw new Error(
+      `refusing to install: CODEX_HOME is set to a relative path (${rel}), which Codex resolves against whatever directory it starts in, ` +
+        'so no one hooks.json would be read. Set CODEX_HOME to an absolute path, or unset it, and run the install again.',
+    );
+  }
+  const file = configFile(harness, opts);
   const config = await readJsonOrAbort(file);
   if (opts.envFile !== undefined && !isSafeToPin(opts.envFile)) throw new Error('refusing an --env-file path with control characters');
   const envFile = opts.envFile ?? existingEnvFile(config);
@@ -351,7 +397,6 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
       ? ({ ...(config['hooks'] as Record<string, unknown>) } as HooksMap)
       : ({} as HooksMap);
 
-  const command = harnessCommand(harness, undefined, envFile);
   const events = harness === 'claude-code' ? CLAUDE_EVENTS : CODEX_EVENTS;
   const added: string[] = [];
   const alreadyPresent: string[] = [];
@@ -364,6 +409,7 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
     const timeout = harness === 'claude-code' && (ev === 'SessionEnd' || ev === 'SessionStart')
       ? CLAUDE_HEADROOM_TIMEOUT_S
       : undefined;
+    const command = harnessCommand(harness, undefined, envFile, endBudgetMs(harness, ev));
     const { groups, added: didAdd, upgraded: didUpgrade } = mergeEvent(existingHooks[ev], command, timeout);
     existingHooks[ev] = groups;
     if (didAdd) added.push(ev);
@@ -469,8 +515,7 @@ async function installAntigravity(
 
 /** Remove only AER's hook entries. Leaves every other hook intact. */
 export async function uninstall(harness: Harness, opts: InstallOptions = {}): Promise<UninstallResult> {
-  const base = baseDir(opts);
-  const file = configPathFor(harness, base);
+  const file = configFile(harness, opts);
   const config = await readJsonOrAbort(file);
 
   if (harness === 'antigravity') {
@@ -530,14 +575,57 @@ export interface StatusEntry {
   resolves: boolean;
   /** The exact AER commands found wired in, deduplicated. Feeds `aer doctor`'s staleness checks. */
   commands: string[];
+  /** The AER commands on the entry that ends a session (SessionEnd, or Antigravity's Stop). */
+  endCommands?: string[];
+  /**
+   * Antigravity tool events whose AER entry has the command on the entry
+   * itself, as 0.5.1 wrote them. agy loads that form for a tool event and
+   * never runs it, so those events record nothing.
+   */
+  flatToolEvents?: string[];
+}
+
+/** The event whose entry ends a session in each harness. */
+export function endEventOf(harness: Harness): string {
+  return harness === 'antigravity' ? 'Stop' : 'SessionEnd';
+}
+
+/**
+ * The ~/.codex/hooks.json that still carries AER entries while CODEX_HOME
+ * points Codex elsewhere, or undefined. Codex does not read it now, so the
+ * entries are invisible to status and uninstall; and should CODEX_HOME be
+ * unset they fire again, alongside the registration under CODEX_HOME.
+ */
+/** Whether two directories are the same one, following links; either may not exist yet. */
+async function sameDirectory(a: string, b: string): Promise<boolean> {
+  const real = async (p: string): Promise<string> => {
+    try { return await fs.realpath(p); } catch { return path.resolve(p); }
+  };
+  return (await real(a)) === (await real(b));
+}
+
+export async function strandedCodexRegistration(): Promise<string | undefined> {
+  const active = configFile('codex', {});
+  const legacy = configPathFor('codex', os.homedir());
+  // The same file under two names is not a stray: a dotfile manager often
+  // links ~/.codex to CODEX_HOME or the other way round, and calling it a
+  // stray would point the user at an uninstall of the live registration.
+  if (await sameDirectory(path.dirname(active), path.dirname(legacy))) return undefined;
+  try {
+    const hooks = (await readJsonOrAbort(legacy))['hooks'];
+    if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return undefined;
+    const wired = Object.values(hooks as HooksMap).some((groups) => Array.isArray(groups) && groups.some(groupHasAer));
+    return wired ? legacy : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Report which events currently carry an AER hook entry, per harness. */
 export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> {
-  const base = baseDir(opts);
   const out: StatusEntry[] = [];
   for (const harness of ['claude-code', 'codex', 'antigravity'] as const) {
-    const file = configPathFor(harness, base);
+    const file = configFile(harness, opts);
     let exists = false;
     let wiredEvents: string[] = [];
     let resolves = true;
@@ -549,6 +637,8 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
       continue;
     }
     let commands: string[] = [];
+    const endCommands: string[] = [];
+    const flatToolEvents: string[] = [];
     try {
       const config = await readJsonOrAbort(file);
       // Antigravity's groups sit at the root under our own key, with no wrapper.
@@ -557,9 +647,15 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
         for (const [ev, groups] of Object.entries(hooks as HooksMap)) {
           if (!Array.isArray(groups) || !groups.some(groupHasAer)) continue;
           wiredEvents.push(ev);
+          if (harness === 'antigravity' && ANTIGRAVITY_MATCHED.has(ev) && groups.some((g) => isAerEntry(g))) flatToolEvents.push(ev);
           for (const g of groups) {
-            for (const h of g.hooks ?? []) {
-              if (isAerEntry(h)) commands.push((h as HookCommandEntry).command.trim());
+            // Antigravity puts the command on the entry itself, the others nest it.
+            const entries = [...(g.hooks ?? []), ...(harness === 'antigravity' ? [g] : [])];
+            for (const h of entries) {
+              if (!isAerEntry(h)) continue;
+              const command = (h as HookCommandEntry).command.trim();
+              commands.push(command);
+              if (ev === endEventOf(harness)) endCommands.push(command);
             }
           }
         }
@@ -570,7 +666,7 @@ export async function status(opts: InstallOptions = {}): Promise<StatusEntry[]> 
       // Malformed config: the file exists but yields no readable AER wiring.
       wiredEvents = [];
     }
-    out.push({ harness, path: file, exists, wiredEvents, resolves, commands });
+    out.push({ harness, path: file, exists, wiredEvents, resolves, commands, endCommands, ...(flatToolEvents.length > 0 ? { flatToolEvents } : {}) });
   }
   return out;
 }

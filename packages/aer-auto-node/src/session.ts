@@ -37,12 +37,22 @@ export interface SessionTransport {
 
 export type SessionState = 'idle' | 'opening' | 'open' | 'closing' | 'closed';
 
+/** What the session knows about its own delivery, for the closing report. */
+export interface SessionDeliveryStats {
+  /**
+   * Events in batches the transport did not confirm (it threw or timed out).
+   * A batch that timed out may still have reached the API, so this is an
+   * upper bound on what the record lacks.
+   */
+  eventsDropped: number;
+}
+
 export interface SessionManagerDeps {
   transport: SessionTransport;
   /** Events emitted immediately after open, before any captured event. */
   preamble?: () => CollectorEvent[];
   /** Optional final coverage event emitted just before complete(). */
-  closingReport?: () => CollectorEvent | null;
+  closingReport?: (stats: SessionDeliveryStats) => CollectorEvent | null;
   /** Open on construction instead of on first event. */
   eager?: boolean;
   /** Internal-failure sink. Defaults to a no-op (never throws into the host). */
@@ -91,6 +101,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   const queue: CollectorEvent[] = [];
   let openPromise: Promise<void> | null = null;
   let draining: Promise<void> | null = null;
+  let eventsDropped = 0;
 
   // Attestation token cache + concurrent-mint dedupe, per audience (2b).
   interface CachedToken { token: string; expiresAtMs: number; mintedAtMs: number }
@@ -117,10 +128,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       queue.length = 0;
       return;
     }
+    let pre: CollectorEvent[] = [];
     try {
-      const pre = preamble();
+      pre = preamble();
       if (pre.length > 0) await transport.emit(pre);
     } catch (err) {
+      eventsDropped += pre.length;
       fail(err, 'preamble');
     }
     state = 'open';
@@ -161,7 +174,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         try {
           await transport.emit(batch);
         } catch (err) {
-          // Never-throw: drop the batch rather than requeue-and-loop.
+          // Never-throw: drop the batch rather than requeue-and-loop, and
+          // count it so the closing report says the record is short.
+          eventsDropped += batch.length;
           fail(err, 'emit');
         }
       }
@@ -201,7 +216,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     await settleBeforeClose();
     state = 'closing';
     try {
-      const closing = deps.closingReport?.();
+      const closing = deps.closingReport?.({ eventsDropped });
       if (closing) {
         try { await transport.emit([closing]); } catch (err) { fail(err, 'closing-report'); }
       }
