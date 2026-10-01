@@ -17,7 +17,7 @@
     "@adastracomputing/aer-mcp-recorder": "workspace:*",
     "@aer/schemas": "workspace:*",
     "@ai-sdk/anthropic": "^4.0.58",
-    "@ai-sdk/openai": "^4.0.71",
+    "@ai-sdk/openai": "^4.0.78",
     "@anthropic-ai/sdk": "^0.127.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@opencode-ai/plugin": "^1.18.31",
