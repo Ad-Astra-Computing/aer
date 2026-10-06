@@ -49,7 +49,7 @@
           inherit pnpmWorkspaces;
           pnpm = pkgs.pnpm;
           fetcherVersion = 4;
-          hash = "sha256-vc4jJk8Rii/lLCJOzURSEI1pLa2FBkTVs4H2OQLM8q8=";
+          hash = "sha256-vtxP6N/7C01InlDD5fKI1fZ3kwzH2UuqgWJBs01ZxqM=";
         };
 
         # Common offline build environment shared by every package/check
