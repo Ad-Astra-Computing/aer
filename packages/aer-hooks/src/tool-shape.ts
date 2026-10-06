@@ -6,7 +6,8 @@
 // cleanly is dropped rather than approximated.
 
 import { UNKNOWN_COMMAND } from './shared/shell-reduce.js';
-import { reduceShellLine } from './shell-line.js';
+import { reduceShellLine, type ProgramLabel } from './shell-line.js';
+import { classifyPathMirror } from './shared/path-class-mirror.js';
 import { isAbsolute, join } from 'node:path';
 
 /** Local copies: importing them from the normalizer would be a cycle. */
@@ -41,6 +42,21 @@ const SHELL_TOOLS = new Set(['Bash', 'BashOutput', 'shell', 'run_command', 'run_
 const READ_TOOLS = new Set(['Read', 'NotebookRead', 'read_file', 'view_file']);
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'write_file', 'edit_file', 'write_to_file', 'replace_file_content']);
 const FETCH_TOOLS = new Set(['WebFetch', 'web_fetch', 'read_url_content']);
+// Grep/Glob previously emitted no typed event (visibility research gap).
+// Claude Code's own names; other harnesses that expose an equivalent search
+// tool are not yet known, so only these are listed (a known simplification).
+const GREP_TOOLS = new Set(['Grep']);
+const GLOB_TOOLS = new Set(['Glob']);
+/** Credential-shaped substrings a search pattern is checked against (T2).
+ *  The pattern text itself is never sent, only which class (if any) one of
+ *  these matched. */
+const SEARCH_CLASS_PATTERNS: ReadonlyArray<[RegExp, string]> = [
+  [/id_rsa/i, 'ssh_key'],
+  [/\.env\b/i, 'env_file'],
+  [/token/i, 'token_cache'],
+  [/secret/i, 'secrets_dir'],
+  [/wallet/i, 'wallet'],
+];
 // Codex writes every file through this one tool, whose only argument is the
 // patch text.
 const PATCH_TOOL = 'apply_patch';
@@ -59,6 +75,7 @@ function firstOf(args: Record<string, unknown>, keys: readonly string[]): unknow
 const COMMAND_KEYS = ['command', 'CommandLine'] as const;
 const PATH_KEYS = ['file_path', 'notebook_path', 'path', 'absolute_path', 'AbsolutePath', 'TargetFile'] as const;
 const URL_KEYS = ['url', 'Url'] as const;
+const PATTERN_KEYS = ['pattern'] as const;
 
 /**
  * Every distinct file a patch adds, updates, deletes or moves to, in order,
@@ -131,12 +148,21 @@ export function shapeOfToolCall(tool: string, input: unknown): ToolShape | undef
   return shapesOfToolCall(tool, input)[0];
 }
 
-function exec(command: string): ToolShape {
+/** A ProgramLabel's fields as sent on the wire, one more key than the
+ *  closed-set payload keys below allow through: `ai_cli` carries an object,
+ *  the sanitizer validates its shape server-side (sanitizeAiCli). */
+function labelPayload(label: ProgramLabel | undefined): Record<string, unknown> {
+  return label === undefined ? {} : { ...label };
+}
+
+function exec(command: string, label?: ProgramLabel): ToolShape {
   // A refusal is recorded as a refusal, so it stays countable and is never
   // mistaken for a program called `unknown`.
   return {
     eventType: 'process.exec',
-    payload: command === UNKNOWN_COMMAND ? { command: UNKNOWN_COMMAND, command_known: false } : { command, command_known: true },
+    payload: command === UNKNOWN_COMMAND
+      ? { command: UNKNOWN_COMMAND, command_known: false }
+      : { command, command_known: true, ...labelPayload(label) },
   };
 }
 
@@ -161,7 +187,7 @@ export function shapesOfToolCall(tool: string, input: unknown, opts: { cwd?: str
     const command = firstOf(args, COMMAND_KEYS);
     if (asString(command) === undefined) return [];
     const line = reduceShellLine(command);
-    const shapes = line.programs.map(exec);
+    const shapes = line.programs.map((p) => exec(p, line.labels[p]));
     if (line.unknown) shapes.push(exec(UNKNOWN_COMMAND));
     for (const host of line.hosts) {
       const h = bounded(host);
@@ -176,6 +202,22 @@ export function shapesOfToolCall(tool: string, input: unknown, opts: { cwd?: str
   }
 
   if (tool === PATCH_TOOL) return patchedFiles(args['command'], opts.cwd !== undefined && isAbsolute(opts.cwd) ? opts.cwd : undefined);
+
+  if (GREP_TOOLS.has(tool) || GLOB_TOOLS.has(tool)) {
+    const payload: Record<string, unknown> = {};
+    const searchPath = asString(firstOf(args, PATH_KEYS));
+    if (searchPath !== undefined) {
+      const cls = classifyPathMirror(searchPath);
+      if (cls !== null) payload['path_class'] = cls;
+    }
+    const pattern = asString(firstOf(args, PATTERN_KEYS));
+    if (pattern !== undefined) {
+      for (const [re, cls] of SEARCH_CLASS_PATTERNS) {
+        if (re.test(pattern)) { payload['search_class'] = cls; break; }
+      }
+    }
+    return [{ eventType: 'file.searched', payload }];
+  }
 
   const path = bounded(firstOf(args, PATH_KEYS));
   if (path !== undefined && READ_TOOLS.has(tool)) return [{ eventType: 'file.opened', payload: { path } }];
