@@ -662,15 +662,24 @@ const TARGET_CLASS_RANK: ReadonlyMap<string, number> = new Map([
 
 /** Classify every positional and keep the highest-ranked class, rather than
  *  only the last one. */
+const UNKNOWN_RANK = TARGET_CLASS_RANK.get('unknown')!;
+
 function classifyTargetArgs(positionals: readonly Word[]): string | undefined {
   let best: string | undefined;
   let bestRank = -1;
+  let anyUnsafe = false;
   for (const w of positionals) {
-    if (w.unsafe) continue;
+    if (w.unsafe) { anyUnsafe = true; continue; }
     const cls = classifyTargetArg(w.text);
     const rank = TARGET_CLASS_RANK.get(cls) ?? -1;
     if (rank > bestRank) { best = cls; bestRank = rank; }
   }
+  // An unreadable positional (an expansion the reducer cannot resolve, e.g.
+  // "$DIR") must not let a low-risk target (build_dir/dep_dir/unknown)
+  // silently clear the finding: the real target could be anything (security
+  // review F2). A target that already ranks above `unknown` still wins,
+  // since nothing the unsafe word could resolve to lowers that risk.
+  if (anyUnsafe && bestRank <= UNKNOWN_RANK) return undefined;
   return best;
 }
 
@@ -1034,7 +1043,11 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
           ...(wrapperFlags.length > 0 ? { wrapper_flags: wrapperFlags } : {}),
         });
       }
-      readProgram(args[at]!, args.slice(at + 1), acc, depth + 1, elevates);
+      // Elevation inherited from an outer wrapper must survive passing
+      // through a non-elevating launcher (security review F1): `sudo
+      // xargs rm -rf /` still runs `rm` as root even though `xargs` itself
+      // never elevates.
+      readProgram(args[at]!, args.slice(at + 1), acc, depth + 1, elevated || elevates);
       return;
     }
   }

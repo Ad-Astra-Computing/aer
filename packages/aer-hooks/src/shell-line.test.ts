@@ -130,6 +130,21 @@ describe('the hosts a network client was pointed at', () => {
     expect(reduceShellLine('rm -fR /repo-root-shaped').labels['rm']?.flags).toEqual(expect.arrayContaining(['recursive', 'force']));
   });
 
+  it('an unreadable positional does not let a low-risk target_class clear the finding (security review F2)', () => {
+    expect(reduceShellLine('rm -rf node_modules "$DIR"').labels['rm']?.target_class).toBeUndefined();
+    expect(reduceShellLine('rm -rf "$DIR" node_modules').labels['rm']?.target_class).toBeUndefined();
+    // A target that already ranks above unknown still wins even with an
+    // unsafe word present alongside it.
+    expect(reduceShellLine('rm -rf / "$DIR"').labels['rm']?.target_class).toBe('root');
+  });
+
+  it('elevation inherited from an outer wrapper survives passing through a non-elevating launcher (security review F1)', () => {
+    expect(reduceShellLine('sudo xargs rm -rf /').labels['rm']?.elevated).toBe(true);
+    const r = reduceShellLine('sudo env FOO=1 make install');
+    expect(r.labels['make']?.elevated).toBe(true);
+    expect(r.labels['make']?.gtfobin_elevation).toBe(true);
+  });
+
   it('runs a $() substitution program once, as its own program, labels included', () => {
     // sh -c recursion: a program NAME inside -c is real (the shell would
     // run it), so it is correctly recorded as a program; it is the only
