@@ -335,6 +335,15 @@ const WRAPPER_LABEL_NAMES: ReadonlySet<string> = new Set([
   'sudo', 'sudoedit', 'doas', 'su', 'pkexec', 'run0', 'systemd-run', 'machinectl', 'mdo', 'env', 'nice', 'timeout', 'xargs',
 ]);
 
+/** The subset of WRAPPER_LABEL_NAMES that actually elevate privilege.
+ *  env, nice, timeout and xargs are plain process launchers: `timeout 30
+ *  make test` or `xargs rm` is routine, not an escalation, so they carry
+ *  the `wrapper` label but never `elevated` or `gtfobin_elevation`, and
+ *  never mark their wrapped program elevated either (security review R2). */
+const ELEVATING_WRAPPER_NAMES: ReadonlySet<string> = new Set([
+  'sudo', 'sudoedit', 'doas', 'su', 'pkexec', 'run0', 'systemd-run', 'machinectl', 'mdo',
+]);
+
 /** The closed subset of each wrapper's own flags this slice reports
  *  (event.ts's WRAPPER_FLAGS_SET). Anything else the wrapper took is simply
  *  not reported, never approximated. */
@@ -643,6 +652,28 @@ function classifyTargetArg(text: string): string {
   return 'unknown';
 }
 
+/** Highest-risk first: when a command names several targets (`rm -rf /
+ *  node_modules`), the riskiest one must win, not whichever happens to be
+ *  last in argv (security review R7). */
+const TARGET_CLASS_RANK: ReadonlyMap<string, number> = new Map([
+  ['root', 9], ['home', 8], ['parent_of_cwd', 7], ['vcs_dir', 6], ['device', 5],
+  ['outside_cwd', 4], ['unknown', 3], ['in_cwd', 2], ['build_dir', 1], ['dep_dir', 0],
+]);
+
+/** Classify every positional and keep the highest-ranked class, rather than
+ *  only the last one. */
+function classifyTargetArgs(positionals: readonly Word[]): string | undefined {
+  let best: string | undefined;
+  let bestRank = -1;
+  for (const w of positionals) {
+    if (w.unsafe) continue;
+    const cls = classifyTargetArg(w.text);
+    const rank = TARGET_CLASS_RANK.get(cls) ?? -1;
+    if (rank > bestRank) { best = cls; bestRank = rank; }
+  }
+  return best;
+}
+
 /** The non-flag (positional) arguments of a simple, already-parsed command,
  *  plus whether any of them is unsafe (an expansion), which makes every
  *  label below unreliable for this command. */
@@ -664,14 +695,20 @@ function hasFlag(args: Word[], ...flags: string[]): boolean {
 /** `rm`/`find -delete`: the destructive-file-op signature (T1). */
 function labelRm(args: Word[]): ProgramLabel {
   const flags: string[] = [];
-  if (hasFlag(args, '-r', '-R', '--recursive', '-rf', '-fr')) flags.push('recursive');
-  if (hasFlag(args, '-f', '--force', '-rf', '-fr')) flags.push('force');
+  // -Rf/-fR (security review R7): a capitalized -R combined with -f is the
+  // same flag-cluster shape as -rf/-fr, just with the recursive flag's
+  // other valid spelling.
+  if (hasFlag(args, '-r', '-R', '--recursive', '-rf', '-fr', '-Rf', '-fR')) flags.push('recursive');
+  if (hasFlag(args, '-f', '--force', '-rf', '-fr', '-Rf', '-fR')) flags.push('force');
   if (hasFlag(args, '--no-preserve-root')) flags.push('no_preserve_root');
   const { positionals } = plainPositionals(args);
   const label: ProgramLabel = { verb: 'rm', flags, path_count: positionals.length };
   if (positionals.some((w) => !w.unsafe && /[*?]/.test(w.text))) label.glob = true;
-  const last = positionals[positionals.length - 1];
-  if (last !== undefined && !last.unsafe) label.target_class = classifyTargetArg(last.text);
+  // Every positional is classified and the highest-risk class wins, not
+  // whichever argument happens to be last (security review R7): `rm -rf /
+  // node_modules` must not read as a dep_dir delete.
+  const targetClass = classifyTargetArgs(positionals);
+  if (targetClass !== undefined) label.target_class = targetClass;
   return label;
 }
 
@@ -988,15 +1025,16 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
   if (WRAPPERS.has(program) && depth < MAX_DEPTH) {
     const at = wrappedProgramIndex(program, args);
     if (at !== -1) {
+      const elevates = ELEVATING_WRAPPER_NAMES.has(program);
       if (WRAPPER_LABEL_NAMES.has(program)) {
         const wrapperFlags = args.filter((w) => !w.unsafe && WRAPPER_FLAG_LABELS.has(w.text)).map((w) => w.text);
         recordLabel(acc, program, {
           wrapper: program,
-          elevated: true,
+          ...(elevates ? { elevated: true } : {}),
           ...(wrapperFlags.length > 0 ? { wrapper_flags: wrapperFlags } : {}),
         });
       }
-      readProgram(args[at]!, args.slice(at + 1), acc, depth + 1, true);
+      readProgram(args[at]!, args.slice(at + 1), acc, depth + 1, elevates);
       return;
     }
   }

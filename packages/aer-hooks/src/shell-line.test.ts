@@ -123,6 +123,13 @@ describe('the hosts a network client was pointed at', () => {
     expect(JSON.stringify(r)).not.toMatch(/CANARY/);
   });
 
+  it('classifies every positional and keeps the highest-risk target_class, not just the last argument (security review R7)', () => {
+    expect(reduceShellLine('rm -rf / node_modules').labels['rm']?.target_class).toBe('root');
+    expect(reduceShellLine('rm -rf .git dist').labels['rm']?.target_class).toBe('vcs_dir');
+    expect(reduceShellLine('rm -Rf /repo-root-shaped').labels['rm']?.flags).toEqual(expect.arrayContaining(['recursive', 'force']));
+    expect(reduceShellLine('rm -fR /repo-root-shaped').labels['rm']?.flags).toEqual(expect.arrayContaining(['recursive', 'force']));
+  });
+
   it('runs a $() substitution program once, as its own program, labels included', () => {
     // sh -c recursion: a program NAME inside -c is real (the shell would
     // run it), so it is correctly recorded as a program; it is the only
@@ -163,6 +170,16 @@ describe('malicious-behaviour detection slice 1: benign developer corpus', () =>
   it('rm -rf node_modules dist build labels every target as build/dep, never destructive at high severity', () => {
     const r = reduceShellLine('rm -rf node_modules dist build');
     expect(r.labels['rm']?.target_class).toBe('build_dir');
+  });
+
+  it('env, nice, timeout and xargs never mark themselves or their wrapped program elevated (security review R2)', () => {
+    for (const line of ['timeout 30 make test', 'xargs rm', 'env FOO=1 python x.py', 'nice -n 10 make']) {
+      const r = reduceShellLine(line);
+      for (const label of Object.values(r.labels)) {
+        expect(label.elevated).toBeUndefined();
+        expect(label.gtfobin_elevation).toBeUndefined();
+      }
+    }
   });
 });
 
