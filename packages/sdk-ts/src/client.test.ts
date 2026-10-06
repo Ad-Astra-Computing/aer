@@ -42,10 +42,22 @@ beforeEach(() => {
   respondWith = () => HttpResponse.json({ accepted: 0, rejected: 0, errors: [] }, { status: 202 });
 });
 
+// Every client's background flush timer keeps firing (unref'd, so it never
+// blocks the process, but nothing else stops it either) until close() is
+// called. A test that asserts on a thrown flush() and skips close() leaves
+// a live interval retrying its own unflushed chunk against whatever handler
+// a LATER test installs, corrupting that test's own call count. Track and
+// close every client created via makeClient() so no test has to remember to.
+const createdClients: AerClient[] = [];
+afterEach(async () => {
+  await Promise.allSettled(createdClients.map((c) => c.close()));
+  createdClients.length = 0;
+});
+
 const sessionId = newUuidV7();
 
 function makeClient(overrides: Partial<Parameters<typeof createAerClient>[0]> = {}): AerClient {
-  return createAerClient({
+  const c = createAerClient({
     baseUrl: 'http://localhost:4000',
     sessionId,
     ingestToken: 'test-token-12char-plus-more',
@@ -53,6 +65,8 @@ function makeClient(overrides: Partial<Parameters<typeof createAerClient>[0]> = 
     flushIntervalMs: 50,
     ...overrides,
   });
+  createdClients.push(c);
+  return c;
 }
 
 describe('createAerClient.emit', () => {
@@ -98,16 +112,15 @@ describe('createAerClient.emit', () => {
   });
 
   it('flushes periodically on the configured interval', async () => {
-    vi.useFakeTimers();
-    try {
-      const c = makeClient({ batchSize: 100, flushIntervalMs: 1000 });
-      await c.emit('session.started', {});
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(receivedBatches).toHaveLength(1);
-      await c.close();
-    } finally {
-      vi.useRealTimers();
-    }
+    // Real timers, not fake ones: advancing fake timers only flushes
+    // timer-driven microtasks, not the extra hop msw's fetch interception
+    // adds, so the batch can still be in flight when the assertion runs.
+    // The 207-rejection test below uses this same real-timer pattern.
+    const c = makeClient({ batchSize: 100, flushIntervalMs: 20 });
+    await c.emit('session.started', {});
+    await new Promise((r) => setTimeout(r, 60));
+    expect(receivedBatches).toHaveLength(1);
+    await c.close();
   });
 
   it('retries on 5xx with backoff', async () => {
