@@ -133,3 +133,50 @@ describe('the hosts a network client was pointed at', () => {
     expect(JSON.stringify(r)).not.toMatch(/CANARYDIR/);
   });
 });
+
+describe('malicious-behaviour detection slice 1: benign developer corpus', () => {
+  it('produces no high-severity-shaped signal for everyday commands', () => {
+    // sudo vim legitimately sets gtfobin_elevation (the design doc scores
+    // that alone as info, see risk.test.ts's privilege_wrapper fixtures in
+    // the server repo); what this corpus must never produce is a
+    // destructive target_class or a critical capability/path class.
+    const cases = [
+      'sudo apt install ripgrep',
+      'sudo vim /etc/hosts',
+      'sudo make install',
+      'rm -rf node_modules dist build',
+      'git push origin feature/x',
+      'docker login',
+      'gh auth status',
+      'usermod -aG docker $USER',
+    ];
+    for (const line of cases) {
+      const r = reduceShellLine(line);
+      for (const label of Object.values(r.labels)) {
+        expect(['repo_root', 'home', 'root'].includes(label.target_class ?? '')).toBe(false);
+        expect(label.cap_class).toBeUndefined();
+        expect(label.group_class === 'sudo' || label.group_class === 'wheel' || label.group_class === 'root').toBe(false);
+      }
+    }
+  });
+
+  it('rm -rf node_modules dist build labels every target as build/dep, never destructive at high severity', () => {
+    const r = reduceShellLine('rm -rf node_modules dist build');
+    expect(r.labels['rm']?.target_class).toBe('build_dir');
+  });
+});
+
+describe('malicious-behaviour detection slice 1: incident corpus', () => {
+  it('s1ngularity shape: a bypass-flagged AI CLI piping into gh repo create', () => {
+    const r = reduceShellLine('claude --dangerously-skip-permissions -p "inventory" && gh repo create --public leak');
+    expect(r.labels['claude']?.ai_cli?.bypass_flags).toContain('--dangerously-skip-permissions');
+    expect(r.labels['gh']?.verb).toBe('gh repo create');
+    expect(r.labels['gh']?.flags).toContain('public');
+  });
+
+  it('Palisade shape: setuid chmod on a script, then pkill of the harness', () => {
+    const r = reduceShellLine('chmod u+s /opt/shutdown.sh && pkill claude');
+    expect(r.labels['chmod']?.cap_class).toBe('setuid');
+    expect(r.labels['pkill']?.target_process_class).toBe('harness');
+  });
+});
