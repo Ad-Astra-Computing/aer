@@ -113,7 +113,7 @@ describe('the hosts a network client was pointed at', () => {
     const line = [
       `cd /home/CANARYDIR && curl -u ${userPass} -d CANARYBODY`,
       '"https://CANARYUSER2:CANARYPASS2@api.example.com/CANARYPATH?q=CANARYQUERY#CANARYFRAG"',
-      '| sh -c CANARYSCRIPT; git clone https://CANARYTOKEN@git.example.com/CANARYORG/r.git',
+      '; git clone https://CANARYTOKEN@git.example.com/CANARYORG/r.git',
       '&& ssh -o CANARYOPT=1 CANARYSSHUSER@ssh.example.com CANARYREMOTECMD',
       '&& scp CANARYLOCAL CANARYSCPUSER@scp.example.com:/CANARYREMOTEPATH',
       '&& wget --header=CANARYHDR http://w.example.com/CANARYWPATH',
@@ -121,5 +121,15 @@ describe('the hosts a network client was pointed at', () => {
     const r = reduceShellLine(line);
     expect(r.hosts).toEqual(['api.example.com', 'git.example.com', 'ssh.example.com', 'scp.example.com', 'w.example.com']);
     expect(JSON.stringify(r)).not.toMatch(/CANARY/);
+  });
+
+  it('runs a $() substitution program once, as its own program, labels included', () => {
+    // sh -c recursion: a program NAME inside -c is real (the shell would
+    // run it), so it is correctly recorded as a program; it is the only
+    // thing from the string that escapes. A quoted string that is not a
+    // bare program name (has a space) is not mistaken for one.
+    const r = reduceShellLine('sudo sh -c "rm -rf /CANARYDIR"');
+    expect(r.programs).toEqual(['sudo', 'sh', 'rm']);
+    expect(JSON.stringify(r)).not.toMatch(/CANARYDIR/);
   });
 });
