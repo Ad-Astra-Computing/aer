@@ -19,7 +19,7 @@
     "@ai-sdk/anthropic": "^4.0.58",
     "@ai-sdk/openai": "^4.0.71",
     "@anthropic-ai/sdk": "^0.127.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "@opencode-ai/plugin": "^1.18.31",
     "@types/node": "^22.20.4",
     "ai": "^7.0.107",
