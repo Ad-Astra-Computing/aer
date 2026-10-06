@@ -7,7 +7,7 @@
 
 import { UNKNOWN_COMMAND } from './shared/shell-reduce.js';
 import { reduceShellLine, type ProgramLabel } from './shell-line.js';
-import { classifyPathMirror } from './shared/path-class-mirror.js';
+import { classifyPath } from './shared/path-class-mirror.js';
 import { isAbsolute, join } from 'node:path';
 
 /** Local copies: importing them from the normalizer would be a cycle. */
@@ -207,7 +207,7 @@ export function shapesOfToolCall(tool: string, input: unknown, opts: { cwd?: str
     const payload: Record<string, unknown> = {};
     const searchPath = asString(firstOf(args, PATH_KEYS));
     if (searchPath !== undefined) {
-      const cls = classifyPathMirror(searchPath);
+      const cls = classifyPath(searchPath);
       if (cls !== null) payload['path_class'] = cls;
     }
     const pattern = asString(firstOf(args, PATTERN_KEYS));
