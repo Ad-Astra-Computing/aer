@@ -68,6 +68,33 @@ export interface SessionState {
   droppedBudget: number;
   /** Network targets a shell line named that could not be reduced to a host. Local only. */
   hostsUnreduced?: number;
+  /**
+   * Oversight markers (P0-1): calls PreToolUse opened, not yet closed by
+   * tool_end, keyed by tool_use_id. callDigest lets a later PermissionRequest
+   * (which drops tool_use_id on this build) be matched back to the call it
+   * belongs to by content, never by queue position. Local only: the digest
+   * never rides an emitted event.
+   */
+  openCalls?: Record<string, { callDigest: string; openedAt: number }>;
+  /**
+   * Open permission requests, oldest first, not yet resolved by a tool_end.
+   * Each entry is a REAL tool_use_id recovered via openCalls, or (only when
+   * no open call's digest matches) a synthetic `unid:<n>`. Cleared at every
+   * turn_end: an entry orphaned in one turn must never be resolved by an
+   * unrelated call several turns later.
+   */
+  pendingApprovals?: string[];
+  /** Per-session counter for synthesizing the next `unid:<n>` placeholder. */
+  pendingApprovalSeq?: number;
+  /**
+   * Permission requests this collector could not determine the outcome of:
+   * still pending at turn_end, resolved through a path these hooks do not
+   * observe, or a resolved entry whose PostToolUseFailure outcome this
+   * revision declines to guess at. Denied or unanswered, indistinguishable
+   * on this build. Reported once, on the closing collector.report, the same
+   * way droppedBudget already accumulates across a session.
+   */
+  approvalsUnresolved: number;
   outbox: OutboxEvent[];
   /**
    * The most events sent in one request since a batch ran its full request
@@ -79,6 +106,9 @@ export interface SessionState {
 
 /** Most events held for the server at once. Past this the oldest are dropped and counted. */
 export const MAX_OUTBOX_EVENTS = 1000;
+
+/** Most entries kept in openCalls or pendingApprovals at once; oldest dropped first. */
+export const MAX_APPROVAL_TRACKING_ENTRIES = 64;
 
 /** State untouched this long is presumed left by a harness that went away. */
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -163,11 +193,48 @@ function writeAtomic(file: string, data: unknown): void {
 // ── state ───────────────────────────────────────────────────────────────────
 
 export function freshState(now: number): SessionState {
-  return { v: 2, createdAt: now, lastActivityAt: now, seq: 0, segmentStartSeq: 1, segmentStartedAt: now, toolsOpen: 0, droppedBudget: 0, outbox: [] };
+  return { v: 2, createdAt: now, lastActivityAt: now, seq: 0, segmentStartSeq: 1, segmentStartedAt: now, toolsOpen: 0, droppedBudget: 0, approvalsUnresolved: 0, outbox: [] };
 }
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+// A content digest (toolCallDigest in normalize.ts): lowercase hex, fixed width.
+const CALL_DIGEST_RE = /^[0-9a-f]{32}$/;
+// A harness-assigned tool_use_id (opaque) or our own synthetic placeholder.
+// Bounded the same as every other identifier-shaped field this store holds.
+const PENDING_APPROVAL_MAX_LEN = 256;
+const isPendingApprovalId = (v: unknown): v is string =>
+  typeof v === 'string' && v.length > 0 && v.length <= PENDING_APPROVAL_MAX_LEN;
+
+/**
+ * Keep at most MAX_APPROVAL_TRACKING_ENTRIES of a parsed openCalls map,
+ * dropping all but the most recently opened when a corrupt or oversized
+ * file carries more (defence in depth; saveState already caps this on write).
+ */
+function validOpenCalls(v: unknown): Record<string, { callDigest: string; openedAt: number }> | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const entries: Array<[string, { callDigest: string; openedAt: number }]> = [];
+  for (const [id, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!isPendingApprovalId(id)) continue;
+    const rec = raw as Record<string, unknown> | null;
+    if (typeof rec !== 'object' || rec === null) continue;
+    const digest = rec['callDigest'];
+    const openedAt = rec['openedAt'];
+    if (typeof digest !== 'string' || !CALL_DIGEST_RE.test(digest)) continue;
+    if (!isInt(openedAt)) continue;
+    entries.push([id, { callDigest: digest, openedAt }]);
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((a, b) => a[1].openedAt - b[1].openedAt);
+  const kept = entries.slice(-MAX_APPROVAL_TRACKING_ENTRIES);
+  return Object.fromEntries(kept);
+}
+
+function validPendingApprovals(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const kept = v.filter(isPendingApprovalId);
+  return kept.length === 0 ? undefined : kept.slice(-MAX_APPROVAL_TRACKING_ENTRIES);
+}
 
 function validOutbox(v: unknown): OutboxEvent[] {
   if (!Array.isArray(v)) return [];
@@ -212,7 +279,13 @@ function parseState(p: Record<string, unknown>): SessionState | null {
   s.segmentStartedAt = isInt(p['segmentStartedAt']) ? p['segmentStartedAt'] : s.createdAt;
   s.toolsOpen = isInt(p['toolsOpen']) ? p['toolsOpen'] : 0;
   s.droppedBudget = isInt(p['droppedBudget']) ? p['droppedBudget'] : 0;
+  s.approvalsUnresolved = isInt(p['approvalsUnresolved']) ? p['approvalsUnresolved'] : 0;
   if (isInt(p['hostsUnreduced'])) s.hostsUnreduced = p['hostsUnreduced'];
+  const openCalls = validOpenCalls(p['openCalls']);
+  if (openCalls !== undefined) s.openCalls = openCalls;
+  const pendingApprovals = validPendingApprovals(p['pendingApprovals']);
+  if (pendingApprovals !== undefined) s.pendingApprovals = pendingApprovals;
+  if (isInt(p['pendingApprovalSeq'])) s.pendingApprovalSeq = p['pendingApprovalSeq'];
   copyTranscript(p, s);
   const reg = p['eventsRegistered'];
   if (Array.isArray(reg) && reg.every((x) => typeof x === 'string')) s.eventsRegistered = reg as string[];
