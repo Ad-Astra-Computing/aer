@@ -25,6 +25,7 @@
 // old AER_HOOK_RECORD_ARGS flag put raw arguments on the wire and recorded
 // nothing; see shared/ingest-allowlist.ts.
 
+import { createHash } from 'node:crypto';
 import { shapesOfToolCall, patchFileCount, PATCH_FILE_CAP, type ToolShape } from './tool-shape.js';
 
 export type HookKind =
@@ -87,6 +88,23 @@ export interface HookEvent {
    * that the ingest allowlist stores ever land here; see `identifier`.
    */
   meta?: Record<string, unknown> | undefined;
+  /**
+   * Oversight markers (P0-1), local correlation only: a content digest over
+   * this call's tool_name + tool_input, set on `tool_start` (to record in
+   * openCalls) and `permission` (to match PermissionRequest back to the
+   * open call it belongs to by content, since this harness build drops
+   * tool_use_id from that payload). Computed from the raw tool_input this
+   * module already holds in full; NEVER placed on an emitted payload, and
+   * no raw tool_input value is ever exposed outside this function.
+   */
+  callDigest?: string | undefined;
+  /**
+   * Which permission hook fired, for `kind === 'permission'` only.
+   * `PermissionDenied` is specified from the harness docs and has never
+   * been observed firing on a live probe (see core.ts's correlation
+   * comments); `PermissionRequest` is the probed, common case.
+   */
+  permissionHook?: 'request' | 'denied' | undefined;
 }
 
 export type Harness = 'claude-code' | 'codex' | 'antigravity';
@@ -136,6 +154,38 @@ export function keysOf(v: unknown): string[] | undefined {
 
 function put(meta: Record<string, unknown>, key: string, value: unknown): void {
   if (value !== undefined) meta[key] = value;
+}
+
+/** Deterministic JSON serialisation: object keys sorted, array order kept. */
+function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+  const rec = v as Record<string, unknown>;
+  const keys = Object.keys(rec).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(rec[k])}`).join(',')}}`;
+}
+
+/**
+ * Local-only content digest correlating a PreToolUse call with the
+ * PermissionRequest that immediately follows it (same tool_name + tool_input,
+ * byte for byte, per the probe log): sha256 of the name, a NUL separator and
+ * canonical JSON of the input, truncated to 16 bytes. Computed and consumed
+ * entirely inside this process and the 0600 state file; never placed on an
+ * emitted payload, and the raw tool_input itself never leaves this function.
+ */
+export function toolCallDigest(toolName: string, toolInput: unknown): string {
+  return createHash('sha256')
+    .update(toolName)
+    .update('\u0000')
+    .update(stableStringify(toolInput ?? null))
+    .digest('hex')
+    .slice(0, 32);
+}
+
+/** Set callDigest from raw tool_name/tool_input when a name is present. Raw values never escape this call. */
+function putCallDigest(event: HookEvent, tool: unknown, args: unknown): void {
+  const name = asString(tool);
+  if (name !== undefined) event.callDigest = toolCallDigest(name, args);
 }
 
 /**
@@ -208,11 +258,24 @@ function commonMeta(p: Record<string, unknown>, harness: Harness, kind: HookKind
   // No harness documents this today. Recorded only where one sends it: it is
   // what attributes a subagent's work back to the call that spawned it.
   put(meta, 'parent_tool_use_id', identifier(p['parent_tool_use_id']));
-  if (kind === 'tool_start' || kind === 'tool_end') {
+  // `permission` is included so a harness that DOES carry tool_use_id on
+  // PermissionRequest/PermissionDenied (Codex, per its docs; possibly a
+  // future Claude Code build) has it captured. On this Claude Code build the
+  // field is absent here (see the probe log), which is why core.ts's
+  // identity-first digest match exists: this extension fixes the pipe but is
+  // not what carries correlation for Claude Code today.
+  if (kind === 'tool_start' || kind === 'tool_end' || kind === 'permission') {
     put(meta, 'tool_use_id', identifier(p['tool_use_id']));
     if (typeof p['duration_ms'] === 'number') meta['duration_ms'] = p['duration_ms'];
   }
   return meta;
+}
+
+/** 'PermissionRequest' | 'PermissionDenied' -> HookEvent.permissionHook, for kind === 'permission' only. */
+function permissionHookOf(eventName: string): 'request' | 'denied' | undefined {
+  if (eventName === 'PermissionRequest') return 'request';
+  if (eventName === 'PermissionDenied') return 'denied';
+  return undefined;
 }
 
 /** Tool name plus argument key names, never argument values. */
@@ -270,6 +333,11 @@ export function normalizeClaudeCode(payload: unknown, lifecycle: Lifecycle = 1):
   if (kind === 'tool_start' || kind === 'tool_end') {
     putToolFields(event, p['tool_name'], p['tool_input']);
   }
+  if (kind === 'tool_start') putCallDigest(event, p['tool_name'], p['tool_input']);
+  if (kind === 'permission') {
+    event.permissionHook = permissionHookOf(eventName);
+    putCallDigest(event, p['tool_name'], p['tool_input']);
+  }
 
   if (kind === 'tool_end') {
     if (eventName === 'PostToolUseFailure') {
@@ -306,6 +374,11 @@ export function normalizeCodex(payload: unknown, lifecycle: Lifecycle = 1): Hook
     // Codex additionally may carry tool args under `arguments` for some tools;
     // prefer tool_input and fall back to arguments.
     putToolFields(event, p['tool_name'], p['tool_input'] !== undefined ? p['tool_input'] : p['arguments']);
+  }
+  if (kind === 'tool_start') putCallDigest(event, p['tool_name'], p['tool_input'] !== undefined ? p['tool_input'] : p['arguments']);
+  if (kind === 'permission') {
+    event.permissionHook = permissionHookOf(eventName);
+    putCallDigest(event, p['tool_name'], p['tool_input'] !== undefined ? p['tool_input'] : p['arguments']);
   }
 
   if (kind === 'tool_end') {
