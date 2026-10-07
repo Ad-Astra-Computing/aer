@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { EventSink } from '@adastracomputing/aer-emit';
 import { emitHookEvent } from './core.js';
+import { normalize } from './normalize.js';
 import type { HookEvent } from './normalize.js';
 
 interface Captured {
@@ -112,6 +113,144 @@ describe('emitHookEvent mapping', () => {
     // deliberately bypass the type to feed garbage
     expect(() => emitHookEvent({ kind: 'nope' } as never, sink, { env: {} })).not.toThrow();
     expect(() => emitHookEvent(null as never, sink, { env: {} })).not.toThrow();
+  });
+});
+
+// Oversight markers (P0-1): the identity-first approval correlation, driven
+// through real normalize() output against a shared, mutable correlation
+// state, the same shape cli.ts threads across hook invocations of one
+// harness session. Fixtures are written from the probe log cited in
+// scratchpad/reviews/aer-oversight-design.md, not from the harness docs: do
+// not weaken them to make an implementation easier.
+describe('oversight-markers approval correlation', () => {
+  // 'Approve' is not a tool name tool-shape.ts recognises, so these fixtures
+  // never produce a shape event (process.exec/file.opened/etc) alongside
+  // tool.started/tool.completed: the assertions below can hold the event list
+  // to exactly what the correlation logic itself produces.
+  function drive() {
+    const { sink, events } = fakeSink();
+    const state: import('./core.js').ApprovalCorrelationState = {};
+    let now = 1_700_000_000_000;
+    const fire = (payload: Record<string, unknown>) => {
+      // lifecycle 2: Stop is a turn boundary (what the installer stamps on
+      // every current registration), not the session end.
+      const e = normalize(payload, 'claude-code', undefined, 2);
+      now += 1000;
+      emitHookEvent(e, sink, state, now);
+    };
+    return { events, state, fire };
+  }
+
+  function decided(events: ReturnType<typeof fakeSink>['events']) {
+    return events.filter((e) => e.eventType === 'approval.decided');
+  }
+
+  it('request matched by digest, then PostToolUse: one decided allowed/prompted', () => {
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 }, tool_response: {} });
+    expect(decided(events)).toEqual([
+      { eventType: 'approval.decided', payload: { harness: 'claude-code', session_ref: 's', tool_use_id: 'tu-1', decision: 'allowed', decided_by: 'prompted' } },
+    ]);
+    expect(state.pendingApprovals).toEqual([]);
+    expect(state.approvalsUnresolved ?? 0).toBe(0);
+  });
+
+  it('request matched, then PostToolUseFailure: unresolved, never allowed', () => {
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PostToolUseFailure', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    expect(decided(events)).toEqual([]);
+    expect(state.pendingApprovals).toEqual([]);
+    expect(state.approvalsUnresolved).toBe(1);
+  });
+
+  it('two concurrent calls: a denied-via-TUI request is never mispaired onto an unrelated later call', () => {
+    // D is gated and (per the review's blocking scenario) denied in a real
+    // interactive dialog this build cannot probe: no PermissionDenied, no
+    // tool_end for D at all. The turn continues with an unrelated ungated
+    // call C. Before the fix this FIFO-popped D's pending entry onto C and
+    // reported "allowed". After it: nothing is mispaired.
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-D', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 } });
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 }, tool_response: {} });
+    expect(decided(events)).toEqual([]);
+    fire({ session_id: 's', hook_event_name: 'Stop' });
+    expect(decided(events)).toEqual([]);
+    expect(state.approvalsUnresolved).toBe(1);
+  });
+
+  it('digest-matched request, single open call, upstream rewrite before PermissionRequest: the narrow FIFO fallback resolves it', () => {
+    // Case (a) from the confirmation-pass review: an upstream PreToolUse hook
+    // rewrote tool_input between PreToolUse and PermissionRequest, so the
+    // digest no longer matches. With exactly one call open there is nothing
+    // else the resulting unid: entry could belong to.
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 'original' } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 'rewritten-by-upstream-hook' } });
+    expect(state.pendingApprovals).toEqual(['unid:1']);
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 'original' }, tool_response: {} });
+    expect(decided(events)).toEqual([
+      { eventType: 'approval.decided', payload: { harness: 'claude-code', session_ref: 's', tool_use_id: 'tu-1', decision: 'allowed', decided_by: 'prompted' } },
+    ]);
+  });
+
+  it('ungated call: PreToolUse straight to PostToolUse, nothing approval-shaped emitted', () => {
+    const { events, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 }, tool_response: {} });
+    expect(decided(events)).toEqual([]);
+    expect(events.map((e) => e.eventType)).toEqual(['tool.started', 'tool.completed']);
+  });
+
+  it('PreToolUse-level denial: no PermissionRequest ever fires, nothing is emitted (the stated blind spot)', () => {
+    // A static permissions.deny rule, or a PreToolUse hook's own
+    // permissionDecision:"deny", both skip PermissionRequest entirely per the
+    // probe. tool.started still fires (unconditionally, from PreToolUse);
+    // nothing says the attempt was gated, and nothing should pretend to.
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'Stop' });
+    expect(decided(events)).toEqual([]);
+    expect(events.map((e) => e.eventType)).toEqual(['tool.started', 'collector.report']);
+    expect(state.approvalsUnresolved ?? 0).toBe(0);
+  });
+
+  it('PermissionDenied resolved by exact id (specified from docs, never observed in the probe)', () => {
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionDenied', tool_use_id: 'tu-1' });
+    expect(decided(events)).toEqual([
+      { eventType: 'approval.decided', payload: { harness: 'claude-code', session_ref: 's', tool_use_id: 'tu-1', decision: 'denied', decided_by: 'policy' } },
+    ]);
+    expect(state.pendingApprovals).toEqual([]);
+  });
+
+  it('PermissionDenied with no identifying id resolves nothing; the entry ages at turn_end', () => {
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionDenied' });
+    fire({ session_id: 's', hook_event_name: 'Stop' });
+    expect(decided(events)).toEqual([]);
+    expect(state.approvalsUnresolved).toBe(1);
+  });
+
+  it('turn_start emits human.input{kind:prompt}, not a collector.report phase', () => {
+    const { events, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'UserPromptSubmit' });
+    expect(events).toEqual([{ eventType: 'human.input', payload: { harness: 'claude-code', session_ref: 's', kind: 'prompt' } }]);
+  });
+
+  it('human.input carries turn_id when the harness sends one', () => {
+    const { events, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'UserPromptSubmit', prompt_id: 'pr_1' });
+    expect(events[0]!.payload['turn_id']).toBe('pr_1');
   });
 });
 

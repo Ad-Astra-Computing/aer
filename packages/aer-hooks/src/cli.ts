@@ -374,6 +374,12 @@ function withReportEvidence(
   if (drops.subagentEventsUnattached > 0) out['subagent_events_unattached'] = drops.subagentEventsUnattached;
   const droppedBudget = drops.eventsDroppedBudget + state.droppedBudget;
   if (droppedBudget > 0) out['events_dropped_budget'] = droppedBudget;
+  // Oversight markers (P0-1): denied or unanswered, indistinguishable on this
+  // build (a request still pending at turn end, one resolved through a path
+  // these hooks do not observe, or a resolved entry whose PostToolUseFailure
+  // outcome this collector declines to guess at). Accumulates across the
+  // session and rides the closing report, same as events_dropped_budget.
+  if (state.approvalsUnresolved > 0) out['approvals_unresolved'] = state.approvalsUnresolved;
   if (phaseHead !== undefined) out['repo_head'] = phaseHead;
   return stripToIngestPayload(out).payload;
 }
@@ -406,7 +412,7 @@ function buildQueuedEvents(
   const sink = captureSink(captured);
   const scan = numbered ? scanTranscriptForLlmUsage(event, transcriptStateOf(state)) : { events: [], state: {} };
   state.toolsOpen = nextToolsOpen(state.toolsOpen, event.kind);
-  emitHookEvent(event, sink);
+  emitHookEvent(event, sink, state, now);
   emitLlmUsageEvents(scan.events, sink, event.sessionRef);
   if (scan.state.transcriptPath !== undefined) state.transcriptPath = scan.state.transcriptPath;
   if (scan.state.transcriptOffset !== undefined) state.transcriptOffset = scan.state.transcriptOffset;
