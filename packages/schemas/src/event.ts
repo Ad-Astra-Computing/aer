@@ -36,6 +36,10 @@ export const EVENT_TYPES = [
   // behavior - excluded from baseline training/detection. See ADR-008.
   'dependency.snapshot',
   'collector.report',
+  // Oversight markers (P0-1, aer-hooks only). Agent-behavior signal, so
+  // unlike collector.report these are NOT excluded from baseline work.
+  'human.input',
+  'approval.decided',
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -106,6 +110,13 @@ const variants = {
   'impact.mapped': z.object({ classes: z.array(Field).min(1) }).passthrough(),
   'dependency.snapshot': z.object({ runtime: Field }).passthrough(),
   'collector.report': z.object({ collector: Field }).passthrough(),
+  'human.input': z.object({ turn_id: Field.optional(), kind: z.literal('prompt') }).passthrough(),
+  'approval.decided': z.object({
+    tool_use_id: Field,
+    turn_id: Field.optional(),
+    decision: z.enum(['allowed', 'denied', 'timed_out']),
+    decided_by: z.enum(['prompted', 'policy']),
+  }).passthrough(),
 } as const satisfies Record<EventType, z.ZodType>;
 
 function variant<T extends EventType>(t: T) {
@@ -141,6 +152,8 @@ export const EventSchema = z.discriminatedUnion('event_type', [
   variant('impact.mapped'),
   variant('dependency.snapshot'),
   variant('collector.report'),
+  variant('human.input'),
+  variant('approval.decided'),
 ]);
 
 export type Event = z.infer<typeof EventSchema>;
