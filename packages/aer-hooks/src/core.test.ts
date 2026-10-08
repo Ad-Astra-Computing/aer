@@ -167,6 +167,42 @@ describe('oversight-markers approval correlation', () => {
     expect(state.approvalsUnresolved).toBe(1);
   });
 
+  it('a FIFO-eligible tool_end carrying no tool_use_id leaves the entry pending, never silently drops it (confirmation-pass fix A)', () => {
+    // The FIFO arm would match (one unid: entry, one open call, timing ok),
+    // but approval.decided requires a tool_use_id and this tool_end has
+    // none. The entry must stay in the queue rather than be consumed and
+    // counted nowhere.
+    const { events, state, fire } = drive();
+    // The open call's input differs from the request's (an upstream rewrite,
+    // as in the fix-4 fixture above) so the digest cannot match and the
+    // request becomes unid: despite one real call being open.
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 'original' } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 'rewritten' } });
+    expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['unid:1']);
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_input: { x: 'original' }, tool_response: {} });
+    expect(decided(events)).toEqual([]);
+    expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['unid:1']);
+    fire({ session_id: 's', hook_event_name: 'Stop' });
+    expect(state.approvalsUnresolved).toBe(1);
+  });
+
+  it('a session with a known dropped event never lets the FIFO arm pair a concurrently open call (confirmation-pass fix B)', () => {
+    // D's PreToolUse never ran; its PermissionRequest pushes unid:1. C is
+    // ALREADY open when the drop happened and stays open across D's
+    // request, so the timing guard alone would pass (C opened before the
+    // push). Passing openCallsMayBeIncomplete:true must refuse the arm
+    // regardless.
+    const { sink, events } = fakeSink();
+    const state: import('./core.js').ApprovalCorrelationState = {};
+    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 } }, 'claude-code', undefined, 2), sink, state, 1, false);
+    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } }, 'claude-code', undefined, 2), sink, state, 2, true);
+    expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['unid:1']);
+    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 }, tool_response: {} }, 'claude-code', undefined, 2), sink, state, 3, true);
+    expect(events.filter((e) => e.eventType === 'approval.decided')).toEqual([]);
+    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'Stop' }, 'claude-code', undefined, 2), sink, state, 4, true);
+    expect(state.approvalsUnresolved).toBe(1);
+  });
+
   it('request matched, then an ordinary PostToolUse with an error-shaped response: still allowed/prompted (build-review fix 1)', () => {
     // The call ran and returned an error RESULT (an MCP-level failure, or a
     // Codex response carrying an error field), that is a call outcome, not

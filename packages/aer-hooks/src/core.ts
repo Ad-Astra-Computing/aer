@@ -153,32 +153,18 @@ function resolvePermissionDenied(state: ApprovalCorrelationState, toolUseId: str
 
 type ToolEndResolution = 'allowed' | 'unresolved' | 'none';
 
-/**
- * tool_end: resolve by exact tool_use_id match first (the common case, since
- * PermissionRequest already recovered the real id via digest match). The FIFO
- * arm fires only when the pending entry is a synthetic `unid:` (never
- * `ambig:` — that prefix means two or more real open calls shared the
- * request's digest, which stays unresolvable no matter how many later close
- * and leave only one open), exactly one call is open (no ambiguity left to
- * resolve incorrectly), AND that open
- * call was opened no later than the pending entry was pushed (build-review
- * fix 4 — a request always follows its own PreToolUse, so an open call that
- * started AFTER this request cannot be the call it belongs to; this closes
- * the route where a PreToolUse dropped on lock timeout left openCalls
- * incomplete and a later, unrelated single open call would otherwise be
- * paired with a stale unid: entry). Otherwise nothing resolves; the entry
- * ages into approvalsUnresolved at turn_end.
- *
- * `toolEndHook` (build-review fix 1), not `isError`, decides the hedge: an
- * ordinary PostToolUse with an error-shaped response still means the call
- * was let through the gate (ok/is_error describe the CALL's outcome, a
- * separate concern from whether it was approved); only a genuine
- * PostToolUseFailure invocation is the unprobed, possibly-a-denial shape.
- */
-function resolveToolEnd(state: ApprovalCorrelationState, toolUseId: string | undefined, toolEndHook: 'completed' | 'failure' | undefined): ToolEndResolution {
+// tool_end: exact tool_use_id match, else the narrow single-open-call
+// `unid:` FIFO fallback (never `ambig:`), gated by request timing and by
+// `openCallsMayBeIncomplete`; `toolEndHook` decides the unresolved hedge.
+function resolveToolEnd(
+  state: ApprovalCorrelationState,
+  toolUseId: string | undefined,
+  toolEndHook: 'completed' | 'failure' | undefined,
+  openCallsMayBeIncomplete: boolean,
+): ToolEndResolution {
   const pending = state.pendingApprovals ?? [];
   let idx = toolUseId !== undefined ? pending.findIndex((e) => e.id === toolUseId) : -1;
-  if (idx === -1) {
+  if (idx === -1 && !openCallsMayBeIncomplete) {
     const openEntries = Object.values(state.openCalls ?? {});
     const unidIdx = pending.findIndex((e) => e.id.startsWith('unid:'));
     if (unidIdx !== -1 && openEntries.length === 1 && openEntries[0]!.openedAt <= pending[unidIdx]!.pushedAt) {
@@ -186,6 +172,10 @@ function resolveToolEnd(state: ApprovalCorrelationState, toolUseId: string | und
     }
   }
   if (idx === -1) return 'none';
+  // A FIFO match with no tool_use_id on this tool_end must not consume the
+  // entry (fix A): approval.decided requires the id, and consuming it here
+  // would count it nowhere. Leave it pending for the next sweep instead.
+  if (toolUseId === undefined) return 'none';
   state.pendingApprovals = [...pending.slice(0, idx), ...pending.slice(idx + 1)];
   if (toolEndHook === 'failure') {
     // From PostToolUseFailure: [docs, not probed]. The probe never observed a
@@ -195,12 +185,6 @@ function resolveToolEnd(state: ApprovalCorrelationState, toolUseId: string | und
     state.approvalsUnresolved = (state.approvalsUnresolved ?? 0) + 1;
     return 'unresolved';
   }
-  // Recommended fix from the build review: approval.decided requires
-  // tool_use_id, which rides via this tool_end event's own meta, never from
-  // the resolved pending entry. A harness whose tool_end carries none (the
-  // FIFO arm does not require one at the call site) would otherwise send a
-  // payload the server rejects per-event; guard the send instead.
-  if (toolUseId === undefined) return 'none';
   return 'allowed';
 }
 
@@ -234,6 +218,8 @@ export function emitHookEvent(
   sink: EventSink,
   state: ApprovalCorrelationState = {},
   now: number = Date.now(),
+  /** True when this harness session has dropped an event for budget reasons at some point, so openCalls may be missing an entry (confirmation-pass fix B). */
+  openCallsMayBeIncomplete = false,
 ): number {
   try {
     if (event.kind === 'other') return 0;
@@ -271,7 +257,7 @@ export function emitHookEvent(
         // Resolve BEFORE evicting: the single-open-call FIFO fallback needs
         // to see this call still counted among the open ones to judge
         // whether it was the only one.
-        const resolution = resolveToolEnd(state, toolUseId, event.toolEndHook);
+        const resolution = resolveToolEnd(state, toolUseId, event.toolEndHook, openCallsMayBeIncomplete);
         closeOpenCall(state, toolUseId);
         if (resolution === 'allowed') {
           // tool_use_id/turn_id already ride via `common` (commonMeta already
