@@ -69,7 +69,7 @@ export function classifyPath(p: string): PathClass | null {
   }
   if (has('.config') && has('gcloud') && has('configurations')) return 'cloud_config';
   if (ENV_PLACEHOLDER_BASENAMES.has(basename)) return null;
-  if (basename === '.env' || basename.startsWith('.env.')) return 'env_file';
+  if (basename === '.env' || basename.startsWith('.env.') || basename.endsWith('.env')) return 'env_file';
   if (basename === '.git-credentials') return 'git_credentials';
   if (basename === '.npmrc' || basename === '.pypirc') return 'package_registry_auth';
   if (has('.cargo') && basename === 'credentials') return 'package_registry_auth';
@@ -120,4 +120,22 @@ export function classifyPath(p: string): PathClass | null {
  *  version-control plumbing, not source a dispute would be about. */
 export function hasGitSegment(p: string): boolean {
   return segmentsOf(p).includes('.git');
+}
+
+/** The hashing gate must not trust case or forward-slash-only parsing: macOS
+ *  and Windows filesystems are case-insensitive by default, and a backslash
+ *  path (Windows) never splits on segmentsOf's '/' separator, so a literal
+ *  comparison would wave through '.ENV', '.GIT/config' or 'C:\ws\.env' as
+ *  unclassified. classifyPath/hasGitSegment stay case-sensitive (this repo
+ *  has no detection rule to protect from new false positives, but matching
+ *  the server's split keeps the two mirrors comparable); this is a
+ *  hashing-only predicate (security review F3). Must stay in step with the
+ *  matching pair in the API repo's risk.ts. */
+export function classifyPathForHashing(p: string): PathClass | null {
+  if (p.includes('\\')) return 'secret_material';
+  return classifyPath(p.toLowerCase());
+}
+
+export function hasGitSegmentForHashing(p: string): boolean {
+  return hasGitSegment(p.toLowerCase());
 }

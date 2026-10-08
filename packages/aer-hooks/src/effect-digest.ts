@@ -9,7 +9,12 @@ import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { hashFileDigest } from '@adastracomputing/aer-emit';
-import { classifyPath, hasGitSegment, HASHABLE_PATH_CLASSES, type PathClass } from './shared/path-class-mirror.js';
+import {
+  classifyPathForHashing,
+  hasGitSegmentForHashing,
+  HASHABLE_PATH_CLASSES,
+  type PathClass,
+} from './shared/path-class-mirror.js';
 
 /** Per-file cap: SHA-256 of 10 MiB is tens of milliseconds even un-accelerated. */
 export const MAX_FILE_DIGEST_BYTES = 10 * 1024 * 1024;
@@ -60,10 +65,10 @@ export function gateDecision(filePath: string, workspaceRoot: string | undefined
   if (workspaceRoot === undefined || !path.isAbsolute(filePath) || !isInsideWorkspace(filePath, workspaceRoot)) {
     return { hashable: false, pathClass: null, status: 'outside_workspace' };
   }
-  if (hasGitSegment(filePath)) {
+  if (hasGitSegmentForHashing(filePath)) {
     return { hashable: false, pathClass: null, status: 'outside_workspace' };
   }
-  const pathClass = classifyPath(filePath);
+  const pathClass = classifyPathForHashing(filePath);
   if (!HASHABLE_PATH_CLASSES.has(pathClass)) {
     return { hashable: false, pathClass, status: 'credential_class' };
   }
@@ -87,12 +92,43 @@ async function missing(filePath: string): Promise<boolean> {
 }
 
 /**
+ * Security review F1: lstat on the final component only sees whether THAT
+ * segment is a symlink; a symlinked ANCESTOR directory (`<ws>/link ->
+ * ~/.ssh`, so `<ws>/link/id_rsa` is a real path inside the workspace that
+ * resolves outside it) is invisible to it and to gateDecision's lexical
+ * check. realpath the file's parent directory and the workspace root once
+ * each, and require the resolved parent to sit under the resolved root.
+ * Resolved against `workspaceRoot`, never `filePath` itself: resolving the
+ * full path would follow a symlink AT the leaf too, which the O_NOFOLLOW
+ * open below is the one place allowed to reject.
+ */
+async function parentEscapesWorkspace(filePath: string, workspaceRoot: string): Promise<boolean> {
+  try {
+    const [realParent, realRoot] = await Promise.all([
+      fsp.realpath(path.dirname(filePath)),
+      fsp.realpath(workspaceRoot),
+    ]);
+    return !isInsideWorkspace(path.join(realParent, path.basename(filePath)), realRoot) && realParent !== realRoot;
+  } catch {
+    return true;
+  }
+}
+
+const O_NOFOLLOW_NONBLOCK = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+
+/**
  * Hash one file for the effects-recording digest. `budget` is mutated and
  * SHARED across every file one tool_start/tool_end names, so the aggregate
  * cap is enforced across all of them, never per file alone. Returns
  * `{ status: 'unreadable' }` (never an error state meaning "new file") for a
  * missing path; the caller decides whether a missing BEFORE-read is a new
  * file (fine) or a missing AFTER-read is a failed write (not fine).
+ *
+ * Security review F1: the open, the regular-file/hard-link check and the
+ * hash all run against the SAME file descriptor, opened with O_NOFOLLOW. An
+ * lstat-then-reopen-by-path sequence (the previous shape) lets the file
+ * system swap what the path resolves to between the two steps; there is no
+ * such gap here because nothing after the open ever touches the path again.
  */
 export async function hashFileForEffectDigest(
   filePath: string,
@@ -103,19 +139,40 @@ export async function hashFileForEffectDigest(
   if (key === null) return { status: 'no_key' };
   const gate = gateDecision(filePath, workspaceRoot);
   if (!gate.hashable) return { status: gate.status! };
+  if (await parentEscapesWorkspace(filePath, workspaceRoot!)) return { status: 'outside_workspace' };
+
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, O_NOFOLLOW_NONBLOCK);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP') return { status: 'symlink' };
+    return { status: 'unreadable' };
+  }
 
   let st: fs.Stats;
   try {
-    st = await fsp.lstat(filePath);
+    st = fs.fstatSync(fd);
   } catch {
+    fs.closeSync(fd);
     return { status: 'unreadable' };
   }
-  if (st.isSymbolicLink()) return { status: 'symlink' };
-  if (!st.isFile()) return { status: 'not_regular_file' };
-  if (st.size > MAX_FILE_DIGEST_BYTES || st.size > budget.remainingBytes) return { status: 'size' };
+  // nlink > 1: a hard link to the same inode under a different, possibly
+  // secret-classified, name. The path the client reports is not the only
+  // name this content answers to, so it is treated like any other escape.
+  if (!st.isFile() || st.nlink > 1) {
+    fs.closeSync(fd);
+    return { status: 'not_regular_file' };
+  }
+  if (st.size > MAX_FILE_DIGEST_BYTES || st.size > budget.remainingBytes) {
+    fs.closeSync(fd);
+    return { status: 'size' };
+  }
 
   try {
-    const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    // autoClose (default true) closes fd once the stream ends or errors;
+    // the path argument is required by the type but ignored when fd is set.
+    const stream = fs.createReadStream(filePath, { fd, highWaterMark: 64 * 1024 });
     const { hex, bytes } = await hashFileDigest(key, stream);
     budget.remainingBytes -= bytes;
     return { status: 'ok', sha256: hex, bytes };

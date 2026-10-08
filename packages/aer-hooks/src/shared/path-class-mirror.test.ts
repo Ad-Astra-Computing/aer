@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { PATH_CLASSES, HASHABLE_PATH_CLASSES, classifyPath, hasGitSegment } from './path-class-mirror.js';
+import {
+  PATH_CLASSES, HASHABLE_PATH_CLASSES, classifyPath, hasGitSegment,
+  classifyPathForHashing, hasGitSegmentForHashing,
+} from './path-class-mirror.js';
 
 // Pinned against PATH_CLASSES in the API repo's packages/schemas/src/risk.ts.
 // A change on either side that drops/adds/renames a class turns both red.
@@ -91,5 +94,33 @@ describe('hasGitSegment', () => {
 
   it('does not flag an ordinary path', () => {
     expect(hasGitSegment('/repo/src/index.ts')).toBe(false);
+  });
+});
+
+describe('classifyPath *.env suffix form (security review F2 regression)', () => {
+  it('classifies prod.env and docker.env as env_file', () => {
+    expect(classifyPath('/srv/prod.env')).toBe('env_file');
+    expect(classifyPath('/srv/docker.env')).toBe('env_file');
+  });
+});
+
+describe('classifyPathForHashing / hasGitSegmentForHashing (security review F3)', () => {
+  it('refuses case-variant secret spellings a case-insensitive filesystem would resolve to the real file', () => {
+    expect(HASHABLE_PATH_CLASSES.has(classifyPathForHashing('/home/user/.ENV'))).toBe(false);
+    expect(HASHABLE_PATH_CLASSES.has(classifyPathForHashing('/repo/Server.PEM'))).toBe(false);
+  });
+
+  it('flags a case-variant .git segment', () => {
+    expect(hasGitSegment('/repo/.GIT/config')).toBe(false); // the plain predicate misses it
+    expect(hasGitSegmentForHashing('/repo/.GIT/config')).toBe(true);
+  });
+
+  it('refuses any path carrying a backslash (Windows)', () => {
+    expect(HASHABLE_PATH_CLASSES.has(classifyPathForHashing('C:\\ws\\notes.txt'))).toBe(false);
+  });
+
+  it('still allows an ordinary lowercase workspace path', () => {
+    expect(HASHABLE_PATH_CLASSES.has(classifyPathForHashing('/repo/src/index.ts'))).toBe(true);
+    expect(hasGitSegmentForHashing('/repo/src/index.ts')).toBe(false);
   });
 });

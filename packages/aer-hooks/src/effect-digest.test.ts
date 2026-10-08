@@ -136,6 +136,35 @@ describe('hashFileForEffectDigest', () => {
     const r = await hashFileForEffectDigest(file, dir, KEY, { remainingBytes: 50 });
     expect(r).toEqual({ status: 'size' });
   });
+
+  // Security review F1, reproduced then fixed: a symlinked ANCESTOR
+  // directory is invisible to lstat on the final component and to
+  // gateDecision's lexical path check, since the literal path string still
+  // reads as inside the workspace. Before the fix this returned 'ok' with a
+  // real digest of the file outside the workspace.
+  it('refuses a file reached through a symlinked ancestor directory, even though the literal path is inside the workspace', async () => {
+    const secretDir = fs.mkdtempSync(path.join(SCRATCH_ROOT, 'outside-'));
+    const secret = path.join(secretDir, 'id_rsa');
+    fs.writeFileSync(secret, 'not-really-a-private-key-just-test-content');
+    const link = path.join(dir, 'link');
+    fs.symlinkSync(secretDir, link);
+    const viaLink = path.join(link, 'id_rsa');
+    const r = await hashFileForEffectDigest(viaLink, dir, KEY, { remainingBytes: MAX_AGGREGATE_DIGEST_BYTES });
+    expect(r.status).not.toBe('ok');
+  });
+
+  // Security review F1, reproduced then fixed: a hard link gives the same
+  // inode a second, workspace-local name that lstat and classifyPath see as
+  // an ordinary file with no reason to think it is also ~/.ssh/id_rsa.
+  it('refuses a hard link to a file outside the workspace', async () => {
+    const secretDir = fs.mkdtempSync(path.join(SCRATCH_ROOT, 'outside-'));
+    const secret = path.join(secretDir, 'id_rsa');
+    fs.writeFileSync(secret, 'not-really-a-private-key-just-test-content');
+    const insideLink = path.join(dir, 'notes.txt');
+    fs.linkSync(secret, insideLink);
+    const r = await hashFileForEffectDigest(insideLink, dir, KEY, { remainingBytes: MAX_AGGREGATE_DIGEST_BYTES });
+    expect(r).toEqual({ status: 'not_regular_file' });
+  });
 });
 
 describe('hashBeforeDigest', () => {
