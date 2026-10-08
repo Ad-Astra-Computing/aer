@@ -22,9 +22,13 @@ export const AER_HOOK_MARKER = 'aer-hook';
 
 // Stop is a TURN boundary on both harnesses; SessionEnd is the run ending.
 // Registering only Stop is what split one conversation across several records.
+// PermissionRequest/PermissionDenied (P0-1 oversight markers) feed
+// approval.decided; without them the collector cannot see a gated call's
+// outcome at all. Antigravity has no permission hook, so it is not here.
 const LIFECYCLE_EVENTS = [
   'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
   'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd',
+  'PermissionRequest', 'PermissionDenied',
 ] as const;
 const CLAUDE_EVENTS = LIFECYCLE_EVENTS;
 const CODEX_EVENTS = LIFECYCLE_EVENTS;

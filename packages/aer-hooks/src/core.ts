@@ -10,6 +10,28 @@ import type { EventSink } from '@adastracomputing/aer-emit';
 import type { HookEvent } from './normalize.js';
 import type { ToolShape } from './tool-shape.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
+import { MAX_APPROVAL_TRACKING_ENTRIES } from './session-store.js';
+
+/**
+ * The subset of SessionState emitHookEvent needs for the oversight-markers
+ * correlation (P0-1): read/write access to the open-call digests and the
+ * pending-approval queue. A plain object literal satisfies this for tests
+ * that do not care about persistence; the real caller (cli.ts) passes the
+ * actual SessionState, which structurally satisfies it.
+ */
+export interface ApprovalCorrelationState {
+  openCalls?: Record<string, { callDigest: string; openedAt: number }>;
+  /**
+   * Each entry carries `pushedAt` (build-review fix 4) so the FIFO fallback
+   * can require the single open call to have been opened no later than the
+   * request was pushed: a request always follows its own PreToolUse, so an
+   * open call that started AFTER this pending entry cannot be the call it
+   * belongs to, and must not be paired with it.
+   */
+  pendingApprovals?: Array<{ id: string; pushedAt: number }>;
+  pendingApprovalSeq?: number;
+  approvalsUnresolved?: number;
+}
 
 /**
  * A tool event with no tool name is rejected by ingest, because the name is
@@ -37,6 +59,137 @@ function emitFiltered(sink: EventSink, type: string, payload: Record<string, unk
   void sink.emit(type, safe);
 }
 
+// Oversight markers (P0-1): identity-first approval correlation (see
+// scratchpad/reviews/aer-oversight-design.md, "Correlation, revised").
+// PermissionRequest drops tool_use_id on this build but carries the same
+// tool_name + tool_input as the preceding PreToolUse, so a digest match
+// recovers the real id rather than a queue-position guess; a narrow
+// single-open-call FIFO fallback covers only an upstream hook rewrite.
+
+function evictOldest<T extends { openedAt: number }>(map: Record<string, T>, cap: number): Record<string, T> {
+  const entries = Object.entries(map);
+  if (entries.length <= cap) return map;
+  entries.sort((a, b) => a[1].openedAt - b[1].openedAt);
+  return Object.fromEntries(entries.slice(entries.length - cap));
+}
+
+/** PreToolUse: remember this call's digest so a later PermissionRequest can recover its real id. */
+function recordOpenCall(state: ApprovalCorrelationState, toolUseId: string | undefined, digest: string | undefined, now: number): void {
+  if (toolUseId === undefined || digest === undefined) return;
+  const openCalls = { ...(state.openCalls ?? {}), [toolUseId]: { callDigest: digest, openedAt: now } };
+  state.openCalls = evictOldest(openCalls, MAX_APPROVAL_TRACKING_ENTRIES);
+}
+
+/** tool_end (any outcome): the call closed, its digest is no longer needed. */
+function closeOpenCall(state: ApprovalCorrelationState, toolUseId: string | undefined): void {
+  if (toolUseId === undefined || state.openCalls === undefined) return;
+  if (!(toolUseId in state.openCalls)) return;
+  const { [toolUseId]: _removed, ...rest } = state.openCalls;
+  state.openCalls = rest;
+}
+
+function pushPendingApproval(state: ApprovalCorrelationState, id: string, now: number): void {
+  const next = [...(state.pendingApprovals ?? []), { id, pushedAt: now }];
+  state.pendingApprovals = next.length > MAX_APPROVAL_TRACKING_ENTRIES
+    ? next.slice(next.length - MAX_APPROVAL_TRACKING_ENTRIES)
+    : next;
+}
+
+/**
+ * PermissionRequest: prefer a harness-supplied tool_use_id when the payload
+ * carries one (build-review fix 3 — Codex's docs say it can; using it
+ * directly, rather than falling through to digest recovery, avoids a false
+ * `unid:` whenever Codex's PermissionRequest and tool_start shapes diverge
+ * enough that the digest would not match even though the real id is right
+ * there). Otherwise recover the real id by digest match against openCalls
+ * (exactly one match), or push a synthetic placeholder when zero or more
+ * than one call shares that digest — but NOT the same placeholder for both:
+ * a zero-match (`unid:<n>`) means no PreToolUse was ever seen for this
+ * call at all, which is the only shape the narrow single-open-call FIFO
+ * fallback is sound for; a multi-match (`ambig:<n>`) means two or more real
+ * open calls share this exact content, and must never become eligible for
+ * that fallback, even after enough of them close that only one remains —
+ * discovered while testing fix 4: without this split, two calls sharing a
+ * digest would resolve correctly only while both stayed open, then
+ * silently start guessing the moment the first one closed.
+ */
+function handlePermissionRequest(state: ApprovalCorrelationState, toolUseId: string | undefined, digest: string | undefined, now: number): void {
+  if (toolUseId !== undefined) {
+    pushPendingApproval(state, toolUseId, now);
+    return;
+  }
+  if (digest !== undefined) {
+    const matches = Object.entries(state.openCalls ?? {}).filter(([, v]) => v.callDigest === digest);
+    if (matches.length === 1) {
+      pushPendingApproval(state, matches[0]![0], now);
+      return;
+    }
+    if (matches.length > 1) {
+      state.pendingApprovalSeq = (state.pendingApprovalSeq ?? 0) + 1;
+      pushPendingApproval(state, `ambig:${state.pendingApprovalSeq}`, now);
+      return;
+    }
+  }
+  state.pendingApprovalSeq = (state.pendingApprovalSeq ?? 0) + 1;
+  pushPendingApproval(state, `unid:${state.pendingApprovalSeq}`, now);
+}
+
+/**
+ * PermissionDenied: resolve the matching pending entry by EXACT tool_use_id
+ * ONLY if this payload happens to carry one (never observed firing on Claude
+ * Code's probe; specified from Codex's docs). No digest recovery here: a
+ * denial payload was never captured with enough shared fields to test. When
+ * it cannot be identified, the entry is left for the turn_end sweep rather
+ * than guessed at.
+ */
+function resolvePermissionDenied(state: ApprovalCorrelationState, toolUseId: string | undefined): boolean {
+  if (toolUseId === undefined) return false;
+  const pending = state.pendingApprovals ?? [];
+  const idx = pending.findIndex((e) => e.id === toolUseId);
+  if (idx === -1) return false;
+  state.pendingApprovals = [...pending.slice(0, idx), ...pending.slice(idx + 1)];
+  return true;
+}
+
+type ToolEndResolution = 'allowed' | 'unresolved' | 'none';
+
+// tool_end: exact tool_use_id match only. A prior build carried a narrow
+// single-open-call `unid:` FIFO fallback meant for an upstream hook rewrite
+// (the same call's own PreToolUse seen, but its digest no longer matches);
+// removed because nothing here can actually tell that case apart from a
+// LOST PreToolUse for a DIFFERENT call (a crash, timeout or killed process
+// before the hook ever fired) - in the second case the only other call open
+// at tool_end can get this one's approval paired onto it, a false "allowed,
+// prompted" on the wrong tool_use_id. An unmatched `unid:` entry now falls
+// through to the next sweep and is counted unresolved instead.
+function resolveToolEnd(
+  state: ApprovalCorrelationState,
+  toolUseId: string | undefined,
+  toolEndHook: 'completed' | 'failure' | undefined,
+): ToolEndResolution {
+  const pending = state.pendingApprovals ?? [];
+  const idx = toolUseId !== undefined ? pending.findIndex((e) => e.id === toolUseId) : -1;
+  if (idx === -1) return 'none';
+  state.pendingApprovals = [...pending.slice(0, idx), ...pending.slice(idx + 1)];
+  if (toolEndHook === 'failure') {
+    // From PostToolUseFailure: [docs, not probed]. The probe never observed a
+    // resolved pending entry followed by PostToolUseFailure; this is
+    // plausibly the exact shape a real interactive human denial produces, so
+    // it is counted unresolved rather than asserted allowed.
+    state.approvalsUnresolved = (state.approvalsUnresolved ?? 0) + 1;
+    return 'unresolved';
+  }
+  return 'allowed';
+}
+
+/** turn_end: anything still pending was never resolved. Clear per-turn, not only at session end. */
+function sweepTurnEnd(state: ApprovalCorrelationState): void {
+  const pending = state.pendingApprovals ?? [];
+  if (pending.length > 0) state.approvalsUnresolved = (state.approvalsUnresolved ?? 0) + pending.length;
+  state.pendingApprovals = [];
+  state.openCalls = {};
+}
+
 /**
  * Emit one normalized hook event through the sink. Maps:
  *   tool_start -> tool.started   { tool, arg_keys, tool_use_id }
@@ -54,7 +207,12 @@ function emitFiltered(sink: EventSink, type: string, payload: Record<string, unk
  * can tell which harness, model and permission mode produced the run without
  * inferring it. Any failure inside the sink is swallowed; this never throws.
  */
-export function emitHookEvent(event: HookEvent, sink: EventSink): number {
+export function emitHookEvent(
+  event: HookEvent,
+  sink: EventSink,
+  state: ApprovalCorrelationState = {},
+  now: number = Date.now(),
+): number {
   try {
     if (event.kind === 'other') return 0;
 
@@ -75,6 +233,7 @@ export function emitHookEvent(event: HookEvent, sink: EventSink): number {
 
     switch (event.kind) {
       case 'tool_start': {
+        recordOpenCall(state, event.meta?.['tool_use_id'] as string | undefined, event.callDigest, now);
         if (event.tool === undefined) return unnamedTool(send);
         const fields: Record<string, unknown> = { tool: event.tool };
         if (event.argKeys !== undefined) fields['arg_keys'] = event.argKeys;
@@ -86,11 +245,53 @@ export function emitHookEvent(event: HookEvent, sink: EventSink): number {
         return sent;
       }
       case 'tool_end': {
+        const toolUseId = event.meta?.['tool_use_id'] as string | undefined;
+        const resolution = resolveToolEnd(state, toolUseId, event.toolEndHook);
+        closeOpenCall(state, toolUseId);
+        if (resolution === 'allowed') {
+          // tool_use_id/turn_id already ride via `common` (commonMeta already
+          // carries both for kind tool_end); `decided_by` is the only new key.
+          send('approval.decided', { decision: 'allowed', decided_by: 'prompted' });
+        }
         if (event.tool === undefined) return unnamedTool(send);
         const fields: Record<string, unknown> = { tool: event.tool };
         if (event.ok !== undefined) fields['ok'] = event.ok;
         if (event.isError !== undefined) fields['is_error'] = event.isError;
         send('tool.completed', fields);
+        return sent;
+      }
+      case 'permission': {
+        if (event.permissionHook === 'request') {
+          handlePermissionRequest(state, event.meta?.['tool_use_id'] as string | undefined, event.callDigest, now);
+          return sent; // no decision yet
+        }
+        if (event.permissionHook === 'denied') {
+          const toolUseId = event.meta?.['tool_use_id'] as string | undefined;
+          // decided_by is 'policy' here, never 'human': see core.ts's module
+          // comment and the design doc: [docs, not probed on Claude Code].
+          if (resolvePermissionDenied(state, toolUseId)) {
+            send('approval.decided', { decision: 'denied', decided_by: 'policy' });
+          }
+        }
+        return sent;
+      }
+      case 'turn_start': {
+        send('human.input', { kind: 'prompt' });
+        return sent;
+      }
+      case 'turn_end': {
+        sweepTurnEnd(state);
+        send('collector.report', { collector: 'aer-hooks', phase: event.kind });
+        return sent;
+      }
+      case 'session_end': {
+        // Build-review fix 2: a pending request open when the session ends
+        // (a human quitting at the dialog with no Stop, or any lifecycle-1
+        // registration where Stop maps to session_end and no turn_end ever
+        // sweeps) must not be silently lost, and must not persist to be
+        // wrongly FIFO-paired against a later, unrelated session.
+        sweepTurnEnd(state);
+        send('collector.report', { collector: 'aer-hooks', phase: event.kind });
         return sent;
       }
       default: {

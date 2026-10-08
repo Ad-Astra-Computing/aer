@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   diagnoseCommand,
   diagnoseRegistrations,
+  diagnoseOversightMarkers,
   diagnoseVersion,
   diagnoseNixShadow,
   isOlderVersion,
@@ -45,9 +46,35 @@ describe('diagnoseRegistrations', () => {
 
   it('is clean for a fully current registration', () => {
     const findings = diagnoseRegistrations([
-      entry({ commands: ['aer-hook --harness claude-code --lifecycle v2'] }),
+      entry({
+        wiredEvents: ['PreToolUse', 'PermissionRequest', 'PermissionDenied'],
+        commands: ['aer-hook --harness claude-code --lifecycle v2'],
+      }),
     ]);
     expect(findings).toEqual([]);
+  });
+});
+
+describe('diagnoseOversightMarkers', () => {
+  it('is clean when both hooks are wired', () => {
+    expect(diagnoseOversightMarkers('claude-code', ['PreToolUse', 'PermissionRequest', 'PermissionDenied'])).toEqual([]);
+  });
+
+  it('flags a wired harness missing both oversight-marker hooks', () => {
+    const findings = diagnoseOversightMarkers('claude-code', ['PreToolUse', 'PostToolUse']);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.reason).toBe('missing_oversight_markers');
+    expect(findings[0]!.detail).toContain('PermissionRequest and PermissionDenied are not');
+    expect(findings[0]!.fix).toBe('aer-hooks install claude-code');
+  });
+
+  it('flags only the one missing hook, singular', () => {
+    const findings = diagnoseOversightMarkers('codex', ['PreToolUse', 'PermissionRequest']);
+    expect(findings[0]!.detail).toContain('PermissionDenied is not');
+  });
+
+  it('never flags antigravity, which has no permission hook', () => {
+    expect(diagnoseOversightMarkers('antigravity', ['PreToolUse', 'PostToolUse'])).toEqual([]);
   });
 });
 

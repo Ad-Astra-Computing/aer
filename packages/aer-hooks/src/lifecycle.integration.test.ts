@@ -254,7 +254,7 @@ describe('the record says how complete it is', () => {
     // The opening marker names the collector and the events the harness will
     // call it for, read from the harness's own config rather than asserted.
     expect(all).toContain('"collector":"aer-hooks"');
-    expect(all).toContain('"events_registered":["PostToolUse","PreToolUse","SessionEnd","SessionStart","Stop","SubagentStart","SubagentStop","UserPromptSubmit"]');
+    expect(all).toContain('"events_registered":["PermissionDenied","PermissionRequest","PostToolUse","PreToolUse","SessionEnd","SessionStart","Stop","SubagentStart","SubagentStop","UserPromptSubmit"]');
     // The closing marker counts what arrived and what never resolved.
     expect(all).toContain('"events_emitted":7');
     expect(all).toContain('"tools_unresolved":1');

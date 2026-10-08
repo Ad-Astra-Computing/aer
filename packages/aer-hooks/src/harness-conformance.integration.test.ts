@@ -154,8 +154,9 @@ describe('a real Antigravity run', () => {
     const all = posted.map((p) => p.body).join('\n');
     expect(all).toContain('"model":"gemini-3.8-flash-high"');
     expect(all).toContain('"reason":"NO_TOOL_CALL"');
-    // The second invocation is a turn, not another session.
-    expect(all).toContain('"phase":"turn_start"');
+    // The second invocation is a turn, not another session: the oversight
+    // marker human.input, not a collector.report phase.
+    expect(all).toContain('"event_type":"human.input"');
   }, 60_000);
 });
 
