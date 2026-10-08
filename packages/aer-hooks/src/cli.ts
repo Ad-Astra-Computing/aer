@@ -418,7 +418,13 @@ function buildQueuedEvents(
   const sink = captureSink(captured);
   const scan = numbered ? scanTranscriptForLlmUsage(event, transcriptStateOf(state)) : { events: [], state: {} };
   state.toolsOpen = nextToolsOpen(state.toolsOpen, event.kind);
-  emitHookEvent(event, sink, state, now);
+  // Read before emitting (confirmation-pass fix B): a drop recorded anywhere
+  // in this harness session means openCalls may be missing an entry a
+  // concurrent invocation never got to record, so the oversight correlation's
+  // single-open-call FIFO fallback must sit out this call entirely.
+  const dropsBeforeEmit = readDropCounters(storeKey, env);
+  const openCallsMayBeIncomplete = dropsBeforeEmit.eventsDroppedBudget > 0 || state.droppedBudget > 0;
+  emitHookEvent(event, sink, state, now, openCallsMayBeIncomplete);
   emitLlmUsageEvents(scan.events, sink, event.sessionRef);
   if (scan.state.transcriptPath !== undefined) state.transcriptPath = scan.state.transcriptPath;
   if (scan.state.transcriptOffset !== undefined) state.transcriptOffset = scan.state.transcriptOffset;
