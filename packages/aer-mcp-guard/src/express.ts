@@ -5,12 +5,11 @@ import { guardMcpRequest, type GuardOptions, type JsonRpcId } from './index.js';
 export interface ExpressGuardOptions {
   /**
    * Trusted external origin (e.g. `https://mcp.example.com`) used to build the
-   * DPoP `htu` the proof must match. STRONGLY recommended when `requireDpop` is
-   * set: without it the origin is derived from the request `Host` header and
-   * `req.protocol`, both client-influenced. An attacker can then set `Host` to
-   * match a proof captured for a different endpoint, weakening htu binding.
-   * Set this to your real public origin (or configure Express `trust proxy` and
-   * a proxy that overwrites Host). Ignored unless `requireDpop` is used.
+   * DPoP `htu` the proof must match. REQUIRED when `requireDpop` is set: the
+   * request `Host` header and `req.protocol` are both client-influenced, so
+   * deriving the origin from them lets an attacker holding a captured proof
+   * replay it across deployments by spoofing `Host` to match the proof's real
+   * origin. Set this to your real public origin.
    */
   trustedOrigin?: string;
 }
@@ -23,9 +22,18 @@ export interface ExpressGuardOptions {
  * The JSON-RPC id is echoed ONLY when a body parser has already buffered the body
  * (`req.body`); the guard never consumes the stream itself, so SSE / streaming
  * Streamable-HTTP requests are left intact.
+ *
+ * Throws synchronously at setup if `opts.requireDpop` is set without
+ * `adapterOpts.trustedOrigin` pinned - see `ExpressGuardOptions.trustedOrigin`.
  */
 export function expressMcpGuard(opts: GuardOptions, adapterOpts: ExpressGuardOptions = {}): RequestHandler {
   const trustedOrigin = adapterOpts.trustedOrigin?.replace(/\/+$/, '');
+  if (opts.requireDpop && !trustedOrigin) {
+    throw new Error(
+      'expressMcpGuard: requireDpop needs adapterOpts.trustedOrigin pinned to your real public origin. ' +
+        'Deriving the DPoP htu from the Host header lets a client replay a captured proof across deployments by spoofing Host.',
+    );
+  }
   return (req, res, next) => {
     const body = (req as { body?: unknown }).body;
     const rpcId: JsonRpcId =
@@ -49,6 +57,6 @@ export function expressMcpGuard(opts: GuardOptions, adapterOpts: ExpressGuardOpt
         return;
       }
       res.status(result.status).json(result.jsonRpcError);
-    })();
+    })().catch(next);
   };
 }

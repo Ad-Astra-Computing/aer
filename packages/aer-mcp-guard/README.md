@@ -65,6 +65,10 @@ if (!result.ok) {
 // result.claims.agent_id / agent_session_id / tenant_id …
 ```
 
+This core has no setup-time check: with `requireDpop`, build `opts.url` from
+your own pinned origin, never from the request's `Host` header. Only the
+Express and Hono adapters enforce `trustedOrigin` for you.
+
 By default the guard reads the token from `X-AER-Attestation` only. Pass
 `allowBearer: true` to also accept `Authorization: Bearer`, for a client that
 cannot set a custom header:
@@ -116,7 +120,19 @@ denied with a `401` DPoP challenge.
 
 Resolve the thumbprint from your TLS terminator (a verified peer cert, or a
 forwarded header your trusted proxy sets and strips from client input), never
-from a header a client can set.
+from a header a client can set. `thumbprintFromForwardedClientCert` reads
+exactly the header name you pass it: it does not verify that a proxy, rather
+than the client, set it. Behind anything that doesn't strip and overwrite that
+header before your app sees it, a client can forge its own cert thumbprint and
+pass mTLS binding outright.
+
+`requireDpop` similarly needs the resource's real public origin pinned, not
+derived from the request: both adapters throw at setup unless you pass
+`trustedOrigin` alongside `requireDpop` (Express: second argument; Hono: same).
+Without it, the DPoP `htu` origin would come from the client-controlled `Host`
+header, and an attacker holding a proof captured against your real origin
+could replay it against any deployment sharing the same audience and replay
+store by spoofing `Host` to match.
 
 Note that `audience` binds a token to the resource, so a resource that serves
 more than one AER tenant should also check `claims.tenant_id` (available on the

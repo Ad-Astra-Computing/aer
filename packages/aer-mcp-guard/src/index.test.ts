@@ -221,6 +221,17 @@ describe('guardMcpRequest mTLS (RFC 8705)', () => {
     if (!r.ok) { expect(r.status).toBe(401); expect(r.jsonRpcError.error.data.reason).toBe('mtls_invalid'); }
   });
 
+  // A resolver that throws (e.g. a hand-written forwarded-cert parser fed a
+  // malformed header) must deny, not raise an unhandled rejection: it runs
+  // inside guardMcpRequest's own try/catch, same as verifyAttestation itself.
+  it('denies (401) rather than throwing when resolveMtlsThumbprint itself throws', async () => {
+    const { token, jwk } = await mint({ cnf: { 'x5t#S256': X5T } });
+    const throwingResolver = () => { throw new Error('malformed forwarded-cert header'); };
+    const r = await guardMcpRequest(hdrM(token, X5T), opts(jwk, jwksFetch([jwk]), { requireMtls: true, resolveMtlsThumbprint: throwingResolver }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(401);
+  });
+
   it('maps mtls_* reasons to 401', () => {
     expect(statusForReason('mtls_required')).toBe(401);
     expect(statusForReason('mtls_invalid')).toBe(401);

@@ -59,6 +59,64 @@ describe('honoMcpGuard', () => {
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe(-32001);
   });
+
+  describe('DPoP htu origin (Host header is spoofable)', () => {
+    const RPC_ORIGIN = 'https://mcp.example.com';
+    const RPC_PATH = '/rpc';
+    const freshStore = () => {
+      const seen = new Map<string, number>();
+      return { checkAndRecord: (jti: string, exp: number) => { if (seen.has(jti)) return true; seen.set(jti, exp); return false; } };
+    };
+
+    async function boundToRealOrigin() {
+      const dpopSigner = createInMemorySigner();
+      const jkt = jwkThumbprintFromPublicKey(dpopSigner.publicKey());
+      const signer = createInMemoryAttestationSigner();
+      const kid = signingKeyIdFromPublicKey(signer.publicKey());
+      const jwk: Jwk = { kty: 'OKP', crv: 'Ed25519', use: 'sig', alg: 'EdDSA', kid, x: Buffer.from(signer.publicKey()).toString('base64url') };
+      const c: AttestationClaims = { iss: ISS, aud: AUD, sub: 'agent:a', tenant_id: 't', agent_id: 'a', agent_session_id: 's', environment_id: 'e', iat: NOW_MS / 1000, nbf: NOW_MS / 1000, exp: NOW_MS / 1000 + 300, jti: 'j', cnf: { jkt } };
+      const token = await signAttestationJwt(signer, kid, c);
+      const proof = await signDpopProof(dpopSigner, { htm: 'POST', htu: `${RPC_ORIGIN}${RPC_PATH}`, iat: NOW_MS / 1000, jti: 'p-origin-hono', ath: attestationThumbprint(token) });
+      return { token, jwk, proof };
+    }
+    // c.req.url built from a SPOOFED Host, like Hono would on Node/Bun/Deno.
+    function dpopCtx(token: string, proof: string, spoofedHost: string) {
+      let body: unknown; let status = 0;
+      return {
+        status: () => status,
+        body: () => body,
+        c: {
+          req: {
+            method: 'POST',
+            url: `https://${spoofedHost}${RPC_PATH}`,
+            header: (n: string) => {
+              const k = n.toLowerCase();
+              if (k === 'x-aer-attestation') return token;
+              if (k === 'dpop') return proof;
+              return undefined;
+            },
+          },
+          set: () => {},
+          json: (b: unknown, s: number) => { body = b; status = s; return { body: b, status: s }; },
+        },
+      };
+    }
+    const dpopOpts = (jwk: Jwk): GuardOptions => opts(jwk, { requireDpop: true, replayStore: freshStore() } as Partial<GuardOptions>);
+
+    it('throws at setup when requireDpop is set without trustedOrigin', async () => {
+      const { jwk } = await mint();
+      expect(() => honoMcpGuard(dpopOpts(jwk))).toThrow(/trustedOrigin/);
+    });
+
+    it('admits the request when trustedOrigin is pinned (spoofed Host ignored)', async () => {
+      const { token, jwk, proof } = await boundToRealOrigin();
+      const t = dpopCtx(token, proof, 'evil.local');
+      let nexted = false;
+      await honoMcpGuard(dpopOpts(jwk), { trustedOrigin: RPC_ORIGIN })(t.c as never, (async () => { nexted = true; }) as never);
+      expect(nexted).toBe(true);
+      expect(t.status()).toBe(0);
+    });
+  });
 });
 
 describe('expressMcpGuard', () => {
@@ -164,18 +222,14 @@ describe('expressMcpGuard', () => {
       expect(statusCode).toBe(0);
     });
 
-    it('denies the request without trustedOrigin when the Host does not match the proof', async () => {
-      const { token, jwk, proof } = await boundToRealOrigin();
-      let statusCode = 0; let jsonBody: unknown; let nexted = false;
-      const res = { status: (s: number) => { statusCode = s; return res; }, json: (b: unknown) => { jsonBody = b; return res; } };
-      // No trustedOrigin → origin derived from the spoofed Host → htu mismatch.
-      expressMcpGuard(dpopOpts(jwk))(
-        req(token, proof, 'evil.local') as never, res as never, (() => { nexted = true; }) as never,
-      );
-      await waitFor(() => statusCode !== 0);
-      expect(nexted).toBe(false);
-      expect(statusCode).toBe(401);
-      expect((jsonBody as { error: { data: { reason: string } } }).error.data.reason).toBe('dpop_invalid');
+    // Without a pinned origin, the htu would be derived from the (client-
+    // controlled) Host header. An attacker who spoofs Host to the proof's
+    // REAL origin (not a mismatch) would then be admitted on any deployment
+    // sharing the audience and replay store, a cross-deployment replay. The
+    // guard refuses to construct at all rather than silently degrade to that.
+    it('throws at setup when requireDpop is set without trustedOrigin', async () => {
+      const { jwk } = await mint();
+      expect(() => expressMcpGuard(dpopOpts(jwk))).toThrow(/trustedOrigin/);
     });
   });
 });
