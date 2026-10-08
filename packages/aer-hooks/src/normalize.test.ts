@@ -4,6 +4,7 @@ import {
   normalizeCodex,
   detectHarness,
   normalize,
+  toolCallDigest,
 } from './normalize.js';
 
 // Real Claude Code payload shapes (https://code.claude.com/docs/en/hooks).
@@ -211,6 +212,65 @@ describe('detectHarness', () => {
   it('defaults to claude-code on garbage', () => {
     expect(detectHarness(null)).toBe('claude-code');
     expect(detectHarness({})).toBe('claude-code');
+  });
+});
+
+// Oversight markers (P0-1): the local content digest that lets PermissionRequest
+// (which drops tool_use_id on this Claude Code build, per the probe log) be
+// matched back to the PreToolUse call it belongs to, by content, never by
+// queue position.
+describe('toolCallDigest / callDigest', () => {
+  it('is the same digest for byte-identical tool_name + tool_input (PreToolUse then PermissionRequest)', () => {
+    const preToolUse = normalizeClaudeCode({ ...ccPreToolUse, hook_event_name: 'PreToolUse' });
+    const permissionRequest = normalizeClaudeCode({
+      session_id: 'abc123', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'npm test' },
+    });
+    expect(preToolUse.callDigest).toBeDefined();
+    expect(permissionRequest.callDigest).toBe(preToolUse.callDigest);
+  });
+
+  it('differs when tool_input differs', () => {
+    const a = normalizeClaudeCode({ ...ccPreToolUse, tool_input: { command: 'npm test' } });
+    const b = normalizeClaudeCode({ ...ccPreToolUse, tool_input: { command: 'npm run build' } });
+    expect(a.callDigest).not.toBe(b.callDigest);
+  });
+
+  it('is independent of key order (canonical JSON, not raw bytes)', () => {
+    const a = toolCallDigest('Edit', { a: 1, b: 2 });
+    const b = toolCallDigest('Edit', { b: 2, a: 1 });
+    expect(a).toBe(b);
+  });
+
+  it('differs by tool name alone', () => {
+    expect(toolCallDigest('Bash', { x: 1 })).not.toBe(toolCallDigest('Read', { x: 1 }));
+  });
+
+  it('is absent when the payload names no tool (nothing to digest)', () => {
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'PermissionRequest' }).callDigest).toBeUndefined();
+  });
+});
+
+describe('permissionHook', () => {
+  it('maps PermissionRequest and PermissionDenied distinctly, nothing else', () => {
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: {} }).permissionHook).toBe('request');
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'PermissionDenied', tool_name: 'Bash', tool_input: {} }).permissionHook).toBe('denied');
+    expect(normalizeClaudeCode(ccPreToolUse).permissionHook).toBeUndefined();
+  });
+
+  it('is set the same way for Codex', () => {
+    expect(normalizeCodex({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: {} }).permissionHook).toBe('request');
+  });
+});
+
+describe("commonMeta carries tool_use_id on kind === 'permission' when the harness sends one", () => {
+  it('Codex PermissionRequest with tool_use_id', () => {
+    const e = normalizeCodex({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_use_id: 'tu-9', tool_input: {} });
+    expect(e.meta?.['tool_use_id']).toBe('tu-9');
+  });
+
+  it("Claude Code's PermissionRequest carries no tool_use_id on this build (probed): meta omits it", () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: {} });
+    expect(e.meta?.['tool_use_id']).toBeUndefined();
   });
 });
 

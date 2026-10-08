@@ -18,7 +18,7 @@ import type { EventSink } from '@adastracomputing/aer-emit';
 // harness_agent_id, subagent_events_unattached and events_dropped_budget
 // widen this ahead of the server (ADR-023 B2/B3): see the comment on
 // INGEST_PAYLOAD_KEYS.
-const ALLOWLIST_SHA256 = '1938490fe74766711128f1f28f4d4b34b174c5b2d131895fdb29acaca81d638b';
+const ALLOWLIST_SHA256 = 'e1c3e2e0367abe7705e666a3e7a1e8671253fdda268698b7dfd0281d68aa552d';
 
 function collectingSink(): { sink: EventSink; seen: Array<{ type: string; payload: Record<string, unknown> }> } {
   const seen: Array<{ type: string; payload: Record<string, unknown> }> = [];

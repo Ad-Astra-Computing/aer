@@ -6,6 +6,9 @@
 // harness_agent_id, subagent_events_unattached and events_dropped_budget are
 // listed ahead of the server allowlist, which strips and counts them until it
 // accepts them; listing them now avoids a second client release.
+//
+// decided_by and approvals_unresolved (P0-1 oversight markers) are aer-hooks
+// only; a key this package never sends is harmless.
 
 export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'provider', 'model', 'agent', 'name', 'source', 'status', 'streaming', 'tools_available',
@@ -26,7 +29,8 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'coverage', 'harness', 'permission_mode', 'effort', 'repo_head', 'seq', 'turn_id',
   'tool_use_id', 'parent_tool_use_id', 'agent_type', 'events_registered', 'events_emitted', 'tools_unresolved',
   'run_id', 'thread_id', 'main_thread', 'harness_agent_id',
-  'subagent_events_unattached', 'events_dropped_budget'
+  'subagent_events_unattached', 'events_dropped_budget',
+  'decided_by', 'approvals_unresolved',
 ]);
 
 export interface StripResult {

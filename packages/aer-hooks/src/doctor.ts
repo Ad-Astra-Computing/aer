@@ -8,7 +8,7 @@
 import type { Harness } from './install.js';
 import type { StatusEntry } from './install.js';
 
-export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env' | 'no_end_budget' | 'relative_codex_home' | 'antigravity_flat_tool_entry';
+export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env' | 'no_end_budget' | 'relative_codex_home' | 'antigravity_flat_tool_entry' | 'missing_oversight_markers';
 
 export interface StaleRegistration {
   harness: Harness | 'any';
@@ -56,12 +56,31 @@ export function diagnoseEndCommands(harness: Harness, endCommands: string[]): St
   ];
 }
 
+// P0-1 oversight markers: approval.decided needs both hooks registered.
+// Antigravity has no permission hook at all, so it is never checked.
+const OVERSIGHT_MARKER_EVENTS = ['PermissionRequest', 'PermissionDenied'] as const;
+
+/** A wired claude-code/codex entry missing one or both oversight-marker hooks. */
+export function diagnoseOversightMarkers(harness: Harness, wiredEvents: string[]): StaleRegistration[] {
+  if (harness === 'antigravity') return [];
+  const missing = OVERSIGHT_MARKER_EVENTS.filter((ev) => !wiredEvents.includes(ev));
+  if (missing.length === 0) return [];
+  const verb = missing.length > 1 ? 'are' : 'is';
+  return [{
+    harness,
+    reason: 'missing_oversight_markers',
+    detail: `the ${harness} entry is wired but ${missing.join(' and ')} ${verb} not, so approval.decided oversight markers are never emitted`,
+    fix: `aer-hooks install ${harness}`,
+  }];
+}
+
 /** Every stale-command finding across a `status()` listing, deduplicated per harness+reason. */
 export function diagnoseRegistrations(entries: StatusEntry[]): StaleRegistration[] {
   const out: StaleRegistration[] = [];
   const seen = new Set<string>();
   for (const entry of entries) {
     if (entry.wiredEvents.length === 0) continue;
+    for (const finding of diagnoseOversightMarkers(entry.harness, entry.wiredEvents)) out.push(finding);
     if ((entry.flatToolEvents ?? []).length > 0) {
       out.push({
         harness: entry.harness,

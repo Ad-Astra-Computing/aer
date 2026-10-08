@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { INGEST_PAYLOAD_KEYS } from './shared/ingest-allowlist.js';
 import { McpRecorder } from './recorder.js';
 
-const ALLOWLIST_SHA256 = '1938490fe74766711128f1f28f4d4b34b174c5b2d131895fdb29acaca81d638b';
+const ALLOWLIST_SHA256 = 'e1c3e2e0367abe7705e666a3e7a1e8671253fdda268698b7dfd0281d68aa552d';
 
 interface Seen { eventType: string; payload: Record<string, unknown> }
 

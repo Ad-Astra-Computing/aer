@@ -29,11 +29,11 @@ function codexPath() {
 describe('install (claude-code)', () => {
   it('creates a fresh settings file with the whole lifecycle wired', async () => {
     const r = await install('claude-code', { dir });
-    expect(r.added.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
+    expect(r.added.sort()).toEqual(['PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
     expect(r.backupPath).toBeNull(); // no prior file to back up
     const cfg = await readJson(ccPath());
     const hooks = cfg['hooks'] as Record<string, unknown[]>;
-    for (const ev of ['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd']) {
+    for (const ev of ['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd', 'PermissionRequest', 'PermissionDenied']) {
       const groups = hooks[ev] as Array<{ hooks: Array<{ command: string }> }>;
       expect(groups[0]!.hooks[0]!.command).toContain(AER_HOOK_MARKER);
       expect(groups[0]!.hooks[0]!.command).toContain('claude-code');
@@ -73,6 +73,8 @@ describe('install (claude-code)', () => {
     const r2 = await install('claude-code', { dir });
     expect(r2.added).toEqual([]);
     expect(r2.alreadyPresent.sort()).toEqual([
+      'PermissionDenied',
+      'PermissionRequest',
       'PostToolUse',
       'PreToolUse',
       'SessionEnd',
@@ -230,7 +232,7 @@ describe('uninstall', () => {
     );
     await install('claude-code', { dir });
     const r = await uninstall('claude-code', { dir });
-    expect(r.removed.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
+    expect(r.removed.sort()).toEqual(['PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
     const cfg = await readJson(ccPath());
     const hooks = cfg['hooks'] as Record<string, unknown[]>;
     // the user's guard survives; AER-only events are gone
@@ -268,7 +270,7 @@ describe('status', () => {
     const after = await status({ dir });
     const cc2 = after.find((e) => e.harness === 'claude-code')!;
     expect(cc2.exists).toBe(true);
-    expect(cc2.wiredEvents.sort()).toEqual(['PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
+    expect(cc2.wiredEvents.sort()).toEqual(['PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
   });
 
   it('reports config present but no AER hooks for an unrelated config', async () => {
@@ -355,13 +357,13 @@ describe('CODEX_HOME', () => {
     await install('codex');
     const st = (await status()).find((e) => e.harness === 'codex')!;
     expect(st.path).toBe(path.join(codexHome, 'hooks.json'));
-    expect(st.wiredEvents.length).toBe(8);
+    expect(st.wiredEvents.length).toBe(10);
     // The home passed explicitly, as the hook's evidence does, is still the user home.
     const again = (await status({ dir: home })).find((e) => e.harness === 'codex')!;
-    expect(again.wiredEvents.length).toBe(8);
+    expect(again.wiredEvents.length).toBe(10);
     const u = await uninstall('codex');
     expect(u.path).toBe(path.join(codexHome, 'hooks.json'));
-    expect(u.removed.length).toBe(8);
+    expect(u.removed.length).toBe(10);
   });
 
   it('leaves an explicit --dir alone, and every other harness', async () => {
