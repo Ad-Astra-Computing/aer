@@ -263,7 +263,8 @@ describe('a long interactive session', () => {
     const [a, b] = [...api.sessions.values()];
     expect(a!.status).toBe('completed');
     expect(b!.clientRef).toBe(a!.clientRef);
-    expect(b!.events.map((e) => e.payload['phase'])).toEqual(['turn_start']);
+    // turn_start is the oversight marker human.input, not a collector.report phase.
+    expect(b!.events.map((e) => e.event_type)).toEqual(['human.input']);
     // Numbering carries on across records, so a reader can join them.
     expect(b!.events[0]!.payload['seq']).toBe(a!.events.length + 1);
   });
@@ -284,7 +285,7 @@ describe('a long interactive session', () => {
     expect(api.completes()).toHaveLength(1);
     const [a, b] = [...api.sessions.values()];
     expect(a!.events.map((e) => e.payload['phase'])).toEqual(['session_start', 'turn_end']);
-    expect(b!.events.map((e) => e.payload['phase'])).toEqual(['turn_start']);
+    expect(b!.events.map((e) => e.event_type)).toEqual(['human.input']);
   });
 
   it('a session end right after a checkpoint opens no one-event record', async () => {

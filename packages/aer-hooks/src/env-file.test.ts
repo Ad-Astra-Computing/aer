@@ -145,7 +145,7 @@ describe('installing with a credential file', () => {
       const cfg = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
       return Object.values(cfg.hooks).flatMap((g) => g.flatMap((x) => x.hooks.map((h) => h.command)));
     };
-    expect(cmds().length).toBe(8);
+    expect(cmds().length).toBe(10);
     for (const c of cmds()) expect(c).toContain(`--env-file '${p}'`);
     await install('claude-code', { dir: home });
     for (const c of cmds()) expect(c).toContain(`--env-file '${p}'`);
