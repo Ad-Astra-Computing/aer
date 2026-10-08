@@ -232,6 +232,14 @@ describe('guardMcpRequest mTLS (RFC 8705)', () => {
     if (!r.ok) expect(r.status).toBe(401);
   });
 
+  it('denies (401) rather than throwing when resolveMtlsThumbprint returns a rejected promise', async () => {
+    const { token, jwk } = await mint({ cnf: { 'x5t#S256': X5T } });
+    const rejectingResolver = () => Promise.reject(new Error('cert store unavailable'));
+    const r = await guardMcpRequest(hdrM(token, X5T), opts(jwk, jwksFetch([jwk]), { requireMtls: true, resolveMtlsThumbprint: rejectingResolver }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(401);
+  });
+
   it('maps mtls_* reasons to 401', () => {
     expect(statusForReason('mtls_required')).toBe(401);
     expect(statusForReason('mtls_invalid')).toBe(401);

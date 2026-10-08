@@ -46,7 +46,12 @@ export function expressMcpGuard(opts: GuardOptions, adapterOpts: ExpressGuardOpt
     // header + req.protocol - safe only when htu binding isn't relied upon or a
     // trusted proxy fixes the Host.
     const getHeader = (n: string): string | null => req.header(n) ?? null;
-    const path = (req as { originalUrl?: string; url?: string }).originalUrl ?? (req as { url?: string }).url ?? '/';
+    const rawPath = (req as { originalUrl?: string; url?: string }).originalUrl ?? (req as { url?: string }).url ?? '/';
+    // Parsed, not string-joined: a request-target that is itself an absolute
+    // URL (Node/Express will still route it) could otherwise smuggle its own
+    // scheme/host past a pinned trustedOrigin. new URL(..., 'http://x') drops
+    // anything but the real path when the first argument is already absolute.
+    const path = new URL(rawPath, 'http://x').pathname;
     const origin = trustedOrigin ?? `${req.protocol || 'https'}://${getHeader('host') ?? 'localhost'}`;
     const url = `${origin}${path}`;
     void (async () => {

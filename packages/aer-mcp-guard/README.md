@@ -100,8 +100,8 @@ On denial the guard returns an HTTP status plus a JSON-RPC 2.0 error
 
 | status | when |
 | --- | --- |
-| **401** | no token / malformed / bad signature / expired / wrong audience or issuer |
-| **403** | token valid but revoked (introspection reports inactive) |
+| **401** | no token / malformed / bad signature / expired / wrong audience or issuer / DPoP or mTLS proof missing or invalid |
+| **403** | token valid but revoked (introspection reports inactive), or `insufficient_scope` |
 | **503** | introspection unreachable and fail-closed (token liveness unknown), or the JWKS unreachable (`jwks_unavailable`) |
 
 The request **body is never consumed**, so SSE and streaming Streamable-HTTP
@@ -116,7 +116,8 @@ for least-privilege, plus DPoP (`requireDpop`) and mTLS (`requireMtls`) holder
 binding. When you enable DPoP the guard reads the `DPoP` header for you; for mTLS
 you resolve the client-cert thumbprint from your handler and pass it via
 `resolveMtlsThumbprint`. A bound token that arrives without a valid proof is
-denied with a `401` DPoP challenge.
+denied with a `401` and a `dpop_*` or `mtls_*` reason in `data.reason` - this
+guard does not send a `WWW-Authenticate` challenge header.
 
 Resolve the thumbprint from your TLS terminator (a verified peer cert, or a
 forwarded header your trusted proxy sets and strips from client input), never

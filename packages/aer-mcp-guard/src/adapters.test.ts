@@ -116,6 +116,23 @@ describe('honoMcpGuard', () => {
       expect(nexted).toBe(true);
       expect(t.status()).toBe(0);
     });
+
+    // The attack this whole fallback-removal protects against: a proof
+    // captured against this deployment's real origin, replayed at a
+    // DIFFERENT deployment sharing the same audience and replay store, Host
+    // spoofed to the real origin so an unpinned guard would have been fooled.
+    // A guard correctly pinned to ITS OWN (different) origin must deny it.
+    it('denies a proof captured for a different origin, even with Host spoofed to match it', async () => {
+      const { token, jwk, proof } = await boundToRealOrigin();
+      const t = dpopCtx(token, proof, new URL(RPC_ORIGIN).host);
+      let nexted = false;
+      const res = await honoMcpGuard(dpopOpts(jwk), { trustedOrigin: 'https://mcp.other-deployment.example' })(
+        t.c as never, (async () => { nexted = true; }) as never,
+      ) as { body: { error: { data: { reason: string } } } ; status: number };
+      expect(nexted).toBe(false);
+      expect(res.status).toBe(401);
+      expect(res.body.error.data.reason).toBe('dpop_invalid');
+    });
   });
 });
 
@@ -220,6 +237,24 @@ describe('expressMcpGuard', () => {
       await waitFor(() => nexted || statusCode !== 0);
       expect(nexted).toBe(true);
       expect(statusCode).toBe(0);
+    });
+
+    // The attack this whole fallback-removal protects against: a proof
+    // captured against this deployment's real origin, replayed at a
+    // DIFFERENT deployment sharing the same audience and replay store, Host
+    // spoofed to the real origin so an unpinned guard would have been fooled.
+    // A guard correctly pinned to ITS OWN (different) origin must deny it.
+    it('denies a proof captured for a different origin, even with Host spoofed to match it', async () => {
+      const { token, jwk, proof } = await boundToRealOrigin();
+      let statusCode = 0; let jsonBody: unknown; let nexted = false;
+      const res = { status: (s: number) => { statusCode = s; return res; }, json: (b: unknown) => { jsonBody = b; return res; } };
+      expressMcpGuard(dpopOpts(jwk), { trustedOrigin: 'https://mcp.other-deployment.example' })(
+        req(token, proof, new URL(RPC_ORIGIN).host) as never, res as never, (() => { nexted = true; }) as never,
+      );
+      await waitFor(() => statusCode !== 0);
+      expect(nexted).toBe(false);
+      expect(statusCode).toBe(401);
+      expect((jsonBody as { error: { data: { reason: string } } }).error.data.reason).toBe('dpop_invalid');
     });
 
     // Without a pinned origin, the htu would be derived from the (client-
