@@ -110,5 +110,5 @@ export function applyEffectDigestPlan(event: HookEvent, state: SessionState, pla
     if (Object.keys(next).length === 0) delete state.effectStash;
     else state.effectStash = next;
   }
-  if (plan.appendShapes.length > 0) event.shapes = [...(event.shapes ?? []), ...plan.appendShapes];
+  if (plan.appendShapes.length > 0) event.effectShapes = plan.appendShapes;
 }

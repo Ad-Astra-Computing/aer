@@ -108,6 +108,15 @@ export interface HookEvent {
    */
   callDigest?: string | undefined;
   /**
+   * Effects recording (P0-2): the combined before/after file.written shape
+   * (or shapes, for a multi-file call) the tool_use_id stash pairing
+   * produced at tool_end. Distinct from `shapes`, which already carries
+   * this call's ORDINARY shapes at both tool_start and tool_end but is only
+   * ever sent at tool_start — core.ts's tool_end case sends only this field,
+   * never `shapes`, so a write is never double-reported.
+   */
+  effectShapes?: ToolShape[] | undefined;
+  /**
    * Which permission hook fired, for `kind === 'permission'` only.
    * `PermissionDenied` is specified from the harness docs and has never
    * been observed firing on a live probe (see core.ts's correlation

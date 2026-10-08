@@ -38,6 +38,7 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'subagent_events_unattached', 'events_dropped_budget',
   'decided_by', 'approvals_unresolved',
   'path_class', 'hash_status', 'sha256_before', 'sha256_after', 'bytes',
+  'effect_stashes_unattached',
 ]);
 
 export interface StripResult {

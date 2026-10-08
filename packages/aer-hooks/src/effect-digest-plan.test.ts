@@ -105,7 +105,7 @@ describe('computeEffectDigestPlan + applyEffectDigestPlan: tool_end', () => {
     const state: SessionState = { ...freshState(T), effectStash: stashSnapshot };
     applyEffectDigestPlan(event, state, plan, T + 1000);
     expect(state.effectStash).toBeUndefined();
-    expect(event.shapes).toEqual(plan.appendShapes);
+    expect(event.effectShapes).toEqual(plan.appendShapes);
   });
 
   it('reports a failure status (no digest fields) when the after-read fails, e.g. a symlink swapped in', async () => {
