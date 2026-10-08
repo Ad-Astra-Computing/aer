@@ -258,6 +258,9 @@ export function emitHookEvent(
         if (event.ok !== undefined) fields['ok'] = event.ok;
         if (event.isError !== undefined) fields['is_error'] = event.isError;
         send('tool.completed', fields);
+        // Effects recording (P0-2): the combined before/after file.written
+        // the pairing module appended, when a stash matched this call.
+        for (const shape of shapesOf(event)) send(shape.eventType, { ...fields, ...shape.payload });
         return sent;
       }
       case 'permission': {
