@@ -185,7 +185,8 @@ content, and there is no flag that changes that. A few tools carry a narrow,
 named exception instead of the bare key-name rule: a shell command is reduced
 to the programs it runs (up to 16) and the hosts its network clients were
 pointed at (up to 8), never the command line itself; a file read or write
-records the path, never the file's content (for a Codex `apply_patch`, the
+records the path, and the path alone unless effects recording (below)
+computes a keyed digest of the content too (for a Codex `apply_patch`, the
 path each file header names, joined to the session's working directory when
 it is relative, up to 16 per patch, with the number of files it named in
 `count` when that is more); a web fetch records the target's
@@ -201,6 +202,37 @@ If you need evidence about the arguments themselves, use content commitments:
 the record carries a one-way tag you can later open against your own
 retained plaintext with a key that never leaves your machine.
 
+## Effects recording (file content digests)
+
+Set `AER_COMMITMENT_KEY` and a `Write`/`Edit`/`MultiEdit`/`apply_patch` call
+inside the detected workspace (the repo root, walked up from `cwd` by `.git`;
+else `cwd` itself) also carries a keyed digest, when the path is unclassified
+source or one of a short allowlist of classes (`package_manifest`,
+`ci_workflow`, a test/grader path): the hook reads the file to compute the
+digest, and the bytes never leave the machine, only the resulting HMAC tag
+(plus a byte count and a key id) is sent. The record then states "the hook
+observed this exact content immediately before, and immediately after, the
+tool call that touched this path." Not an atomic snapshot, and not a claim
+that this call produced the difference: a concurrent process or a retried
+call could have touched the file in between, undetected.
+
+Without a configured key, no digest is computed or stored for any file,
+regardless of path or classification; there is no weaker fallback hash. A
+digest can only be verified by someone holding the same key used to produce
+it, the same as every other AER content commitment. A path outside the
+workspace or under `.git`, or shaped like a credential (an SSH key, an
+`.env*` file, a certificate or a cloud credential dump) is never hashed,
+even with a key configured, and a symlink is refused via `lstat` rather than
+followed. Per-harness support for the before/after pairing (it needs a
+stable call id): Claude Code and Codex, yes; Antigravity and opencode, not
+yet (no id wired into the record for either on this build). The write still
+records its path, just with no digest.
+
+This does not claim coverage of every file write an agent makes: only writes
+through a tool shape this package recognises, inside the detected workspace,
+through an allowlisted class. It does not detect or block a credential file
+being written, only decline to digest it. It does not cover file deletion.
+
 ## Fail-open, never blocking
 
 The `aer-hook` binary is designed so it can never break or slow the harness. It
@@ -212,8 +244,10 @@ even past `AER_HOOK_TIMEOUT_MS`, and never past 30 seconds (see below). The hook
 stops starting network calls shortly before its time runs out, so what it could
 not send stays queued for the next event rather than being cut off mid-request;
 if the time is exceeded anyway, it writes one stderr line saying so. If AER is
-unconfigured it does nothing and exits 0. Recording is always best-effort and
-never in the critical path of the tool the harness is running.
+unconfigured it does nothing and exits 0. Recording is always best-effort.
+Network calls are never in the critical path of the tool the harness is
+running; a file-content digest (below) is the one exception, since it must
+read the file before the tool call it is about to witness can complete.
 
 ### How the end of a session is delivered
 
