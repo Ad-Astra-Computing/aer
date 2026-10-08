@@ -28,7 +28,10 @@ export const HASHABLE_PATH_CLASSES: ReadonlySet<PathClass | null> = new Set([
 const SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa', 'identity']);
 const ENV_PLACEHOLDER_BASENAMES = new Set(['.env.example', '.env.sample', '.env.dist', '.env.template']);
 const SECRET_MATERIAL_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx', '.tfstate']);
-const SECRET_MATERIAL_BASENAMES = new Set(['.pgpass', '.my.cnf', '.htpasswd', 'credentials.json', 'secrets.yaml', 'secrets.yml']);
+const SECRET_MATERIAL_BASENAMES = new Set([
+  '.pgpass', '.my.cnf', '.htpasswd', 'credentials.json', 'secrets.yaml', 'secrets.yml',
+  '.envrc', '.vault-token', 'secrets.json', 'kubeconfig',
+]);
 const AGENT_CONFIG_SEGMENT_BASENAME: ReadonlyArray<[string, string]> = [
   ['.claude', 'settings.json'],
   ['.cursor', 'mcp.json'],
@@ -40,6 +43,8 @@ const AGENT_CONFIG_BASENAMES = new Set(['claude_desktop_config.json']);
 function isSecretMaterialPath(basename: string): boolean {
   if (SECRET_MATERIAL_BASENAMES.has(basename)) return true;
   if (basename.startsWith('service-account') && basename.endsWith('.json')) return true;
+  if (basename.endsWith('.tfvars')) return true;
+  if (SSH_KEY_BASENAMES.has(basename)) return true;
   const dot = basename.lastIndexOf('.');
   if (dot <= 0) return false;
   return SECRET_MATERIAL_EXTENSIONS.has(basename.slice(dot));

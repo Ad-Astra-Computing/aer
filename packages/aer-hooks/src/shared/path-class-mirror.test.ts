@@ -104,6 +104,17 @@ describe('classifyPath *.env suffix form (security review F2 regression)', () =>
   });
 });
 
+describe('classifyPath additional secret shapes (security review F10)', () => {
+  it('classifies them as secret_material', () => {
+    const paths = [
+      '/repo/.envrc', '/repo/infra/terraform.tfvars', '/repo/prod.tfvars',
+      '/home/x/.vault-token', '/repo/secrets.json', '/home/x/kubeconfig',
+      '/home/x/id_rsa', '/home/x/id_ed25519',
+    ];
+    for (const p of paths) expect(classifyPath(p)).toBe('secret_material');
+  });
+});
+
 describe('classifyPathForHashing / hasGitSegmentForHashing (security review F3)', () => {
   it('refuses case-variant secret spellings a case-insensitive filesystem would resolve to the real file', () => {
     expect(HASHABLE_PATH_CLASSES.has(classifyPathForHashing('/home/user/.ENV'))).toBe(false);

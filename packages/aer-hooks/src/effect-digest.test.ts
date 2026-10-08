@@ -79,6 +79,18 @@ describe('gateDecision', () => {
   it('refuses with no workspace root at all', () => {
     expect(gateDecision('/repo/src/index.ts', undefined)).toEqual({ hashable: false, pathClass: null, status: 'outside_workspace' });
   });
+
+  // Security review F9: findWorkspaceRoot falls back to cwd with no .git
+  // found above it, so a harness started in $HOME (or a dotfiles repo) would
+  // otherwise make everything under the home directory hashable.
+  it('refuses a workspace root equal to the home directory', () => {
+    const home = os.homedir();
+    expect(gateDecision(path.join(home, 'notes.txt'), home)).toEqual({ hashable: false, pathClass: null, status: 'outside_workspace' });
+  });
+
+  it('refuses a workspace root equal to the filesystem root', () => {
+    expect(gateDecision('/notes.txt', '/')).toEqual({ hashable: false, pathClass: null, status: 'outside_workspace' });
+  });
 });
 
 describe('hashFileForEffectDigest', () => {
@@ -101,6 +113,18 @@ describe('hashFileForEffectDigest', () => {
     expect(r).toEqual({ status: 'ok', sha256: '46b5cdf815859bf739f6d07509de297df65d5444ea08193bb933e2c22492e7ed', bytes: 11 });
     expect(budget.remainingBytes).toBe(MAX_AGGREGATE_DIGEST_BYTES - 11);
   });
+
+  it('hashes a zero-byte file without ever opening a read stream on it', async () => {
+    const file = path.join(dir, 'empty.txt');
+    fs.writeFileSync(file, '');
+    const r = await hashFileForEffectDigest(file, dir, KEY, { remainingBytes: MAX_AGGREGATE_DIGEST_BYTES });
+    expect(r.status).toBe('ok');
+    expect(r.bytes).toBe(0);
+  });
+
+  // Security review F5: the read is bounded to [0, fstat'd size), not "until
+  // EOF", so bytes appended mid-read can't inflate `bytes` past that value.
+  // Every passing 'ok' case above already proves this (bytes == size).
 
   it('refuses a symlink via lstat, never following it', async () => {
     const target = path.join(dir, 'real.txt');
@@ -164,6 +188,20 @@ describe('hashFileForEffectDigest', () => {
     fs.linkSync(secret, insideLink);
     const r = await hashFileForEffectDigest(insideLink, dir, KEY, { remainingBytes: MAX_AGGREGATE_DIGEST_BYTES });
     expect(r).toEqual({ status: 'not_regular_file' });
+  });
+
+  // Security review F1-R1, reproduced then fixed: a symlinked directory
+  // alias stays INSIDE the workspace (so the escape check alone passes it)
+  // while resolving to .git, the exact directory the git exclusion exists
+  // to protect. Before this fix the literal path "g/config" carried no .git
+  // segment and classified as null (hashable).
+  it('refuses a .git path reached through a workspace-internal symlinked alias', async () => {
+    fs.mkdirSync(path.join(dir, '.git'));
+    fs.writeFileSync(path.join(dir, '.git', 'config'), '[core]\n');
+    const alias = path.join(dir, 'g');
+    fs.symlinkSync(path.join(dir, '.git'), alias);
+    const r = await hashFileForEffectDigest(path.join(alias, 'config'), dir, KEY, { remainingBytes: MAX_AGGREGATE_DIGEST_BYTES });
+    expect(r.status).not.toBe('ok');
   });
 });
 

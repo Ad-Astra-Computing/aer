@@ -7,6 +7,7 @@
 
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { hashFileDigest } from '@adastracomputing/aer-emit';
 import {
@@ -61,8 +62,20 @@ export interface GateResult {
  * the hashable-class allowlist. Mirrors (never replaces) the server's
  * independent check.
  */
+// Security review F9: refuse a degenerate root ($HOME or /) here, the
+// enforcement point, rather than changing findWorkspaceRoot's own fallback.
+function isDegenerateRoot(root: string): boolean {
+  const resolved = path.resolve(root);
+  return resolved === os.homedir() || resolved === path.parse(resolved).root;
+}
+
 export function gateDecision(filePath: string, workspaceRoot: string | undefined): GateResult {
-  if (workspaceRoot === undefined || !path.isAbsolute(filePath) || !isInsideWorkspace(filePath, workspaceRoot)) {
+  if (
+    workspaceRoot === undefined ||
+    !path.isAbsolute(filePath) ||
+    isDegenerateRoot(workspaceRoot) ||
+    !isInsideWorkspace(filePath, workspaceRoot)
+  ) {
     return { hashable: false, pathClass: null, status: 'outside_workspace' };
   }
   if (hasGitSegmentForHashing(filePath)) {
@@ -91,26 +104,24 @@ async function missing(filePath: string): Promise<boolean> {
   }
 }
 
-/**
- * Security review F1: lstat on the final component only sees whether THAT
- * segment is a symlink; a symlinked ANCESTOR directory (`<ws>/link ->
- * ~/.ssh`, so `<ws>/link/id_rsa` is a real path inside the workspace that
- * resolves outside it) is invisible to it and to gateDecision's lexical
- * check. realpath the file's parent directory and the workspace root once
- * each, and require the resolved parent to sit under the resolved root.
- * Resolved against `workspaceRoot`, never `filePath` itself: resolving the
- * full path would follow a symlink AT the leaf too, which the O_NOFOLLOW
- * open below is the one place allowed to reject.
- */
-async function parentEscapesWorkspace(filePath: string, workspaceRoot: string): Promise<boolean> {
+// Security review F1: a symlinked ancestor directory is invisible to lstat
+// on the final component and to the lexical workspace check; realpath the
+// parent and the root to catch it (see the commit message for F1/F1-R1).
+type WorkspaceResolution = { escapes: true } | { escapes: false; resolvedPath: string };
+
+// F1-R1: an alias can stay inside the workspace while resolving to .git;
+// return the resolved path so the caller re-checks git-segment/class too.
+async function resolveAgainstWorkspace(filePath: string, workspaceRoot: string): Promise<WorkspaceResolution> {
   try {
     const [realParent, realRoot] = await Promise.all([
       fsp.realpath(path.dirname(filePath)),
       fsp.realpath(workspaceRoot),
     ]);
-    return !isInsideWorkspace(path.join(realParent, path.basename(filePath)), realRoot) && realParent !== realRoot;
+    const resolvedPath = path.join(realParent, path.basename(filePath));
+    if (!isInsideWorkspace(resolvedPath, realRoot) && realParent !== realRoot) return { escapes: true };
+    return { escapes: false, resolvedPath };
   } catch {
-    return true;
+    return { escapes: true };
   }
 }
 
@@ -124,11 +135,9 @@ const O_NOFOLLOW_NONBLOCK = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 
  * missing path; the caller decides whether a missing BEFORE-read is a new
  * file (fine) or a missing AFTER-read is a failed write (not fine).
  *
- * Security review F1: the open, the regular-file/hard-link check and the
- * hash all run against the SAME file descriptor, opened with O_NOFOLLOW. An
- * lstat-then-reopen-by-path sequence (the previous shape) lets the file
- * system swap what the path resolves to between the two steps; there is no
- * such gap here because nothing after the open ever touches the path again.
+ * Security review F1: open, stat and hash all share one fd (O_NOFOLLOW), so
+ * nothing re-resolves the path after the open. F1-R2 (low, accepted): the
+ * realpath checks above still run before that open; see the commit message.
  */
 export async function hashFileForEffectDigest(
   filePath: string,
@@ -139,7 +148,15 @@ export async function hashFileForEffectDigest(
   if (key === null) return { status: 'no_key' };
   const gate = gateDecision(filePath, workspaceRoot);
   if (!gate.hashable) return { status: gate.status! };
-  if (await parentEscapesWorkspace(filePath, workspaceRoot!)) return { status: 'outside_workspace' };
+  const resolution = await resolveAgainstWorkspace(filePath, workspaceRoot!);
+  if (resolution.escapes) return { status: 'outside_workspace' };
+  // Security review F1-R1: re-run the same two checks gateDecision already
+  // ran, but against what the path actually resolves to. A symlinked
+  // directory alias can make the literal path and the resolved path name
+  // two different classes (or git-ness) while neither individual realpath
+  // call above looked like an escape.
+  if (hasGitSegmentForHashing(resolution.resolvedPath)) return { status: 'outside_workspace' };
+  if (!HASHABLE_PATH_CLASSES.has(classifyPathForHashing(resolution.resolvedPath))) return { status: 'credential_class' };
 
   let fd: number;
   try {
@@ -170,10 +187,17 @@ export async function hashFileForEffectDigest(
   }
 
   try {
+    // Security review F5: bound the read to the fstat'd size (end is
+    // inclusive) so an append mid-read can never inflate `bytes` past it.
     // autoClose (default true) closes fd once the stream ends or errors;
     // the path argument is required by the type but ignored when fd is set.
-    const stream = fs.createReadStream(filePath, { fd, highWaterMark: 64 * 1024 });
-    const { hex, bytes } = await hashFileDigest(key, stream);
+    const source: AsyncIterable<Uint8Array> =
+      st.size === 0
+        ? (async function* () {
+            fs.closeSync(fd); // nothing to stream; createReadStream never opens it
+          })()
+        : fs.createReadStream(filePath, { fd, start: 0, end: st.size - 1, highWaterMark: 64 * 1024 });
+    const { hex, bytes } = await hashFileDigest(key, source);
     budget.remainingBytes -= bytes;
     return { status: 'ok', sha256: hex, bytes };
   } catch {
