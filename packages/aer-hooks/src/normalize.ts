@@ -47,6 +47,15 @@ export interface HookEvent {
   argKeys?: string[] | undefined;
   ok?: boolean | undefined;
   isError?: boolean | undefined;
+  /**
+   * Oversight markers (P0-1, build-review fix 1): which hook actually closed
+   * this call, set only on `tool_end`. `isError` reflects the TOOL'S outcome
+   * (ran, then failed) and is NOT a safe proxy for "the approval could not be
+   * resolved" — a PostToolUse with an error-shaped response still means the
+   * gate was passed. Only a genuine PostToolUseFailure invocation is the
+   * unprobed, possibly-a-denial shape the oversight hedge is for.
+   */
+  toolEndHook?: 'completed' | 'failure' | undefined;
   sessionRef?: string | undefined;
   /**
    * Position of this event within its harness session, assigned by the
@@ -343,10 +352,12 @@ export function normalizeClaudeCode(payload: unknown, lifecycle: Lifecycle = 1):
     if (eventName === 'PostToolUseFailure') {
       // A dedicated failure event is the outcome; its `error` text is not read.
       putOutcome(event, true);
+      event.toolEndHook = 'failure';
     } else {
       const isError = responseIsError(p['tool_response']);
       // A response with no error signal is treated as success.
       putOutcome(event, isError ?? (p['tool_response'] !== undefined ? false : undefined));
+      event.toolEndHook = 'completed';
     }
   }
 
@@ -382,8 +393,14 @@ export function normalizeCodex(payload: unknown, lifecycle: Lifecycle = 1): Hook
   }
 
   if (kind === 'tool_end') {
-    const isError = responseIsError(p['tool_response']);
-    putOutcome(event, isError ?? (p['tool_response'] !== undefined ? false : undefined));
+    if (eventName === 'PostToolUseFailure') {
+      putOutcome(event, true);
+      event.toolEndHook = 'failure';
+    } else {
+      const isError = responseIsError(p['tool_response']);
+      putOutcome(event, isError ?? (p['tool_response'] !== undefined ? false : undefined));
+      event.toolEndHook = 'completed';
+    }
   }
 
   return event;

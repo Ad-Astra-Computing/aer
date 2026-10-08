@@ -167,6 +167,69 @@ describe('oversight-markers approval correlation', () => {
     expect(state.approvalsUnresolved).toBe(1);
   });
 
+  it('request matched, then an ordinary PostToolUse with an error-shaped response: still allowed/prompted (build-review fix 1)', () => {
+    // The call ran and returned an error RESULT (an MCP-level failure, or a
+    // Codex response carrying an error field), that is a call outcome, not
+    // an undetermined approval. Only a genuine PostToolUseFailure invocation
+    // is the unprobed, possibly-a-denial shape the hedge exists for.
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 }, tool_response: { is_error: true } });
+    expect(decided(events)).toEqual([
+      { eventType: 'approval.decided', payload: { harness: 'claude-code', session_ref: 's', tool_use_id: 'tu-1', decision: 'allowed', decided_by: 'prompted' } },
+    ]);
+    expect(state.approvalsUnresolved ?? 0).toBe(0);
+  });
+
+  it('a pending request open when the session ends with no Stop is counted, not lost (build-review fix 2)', () => {
+    // A human sitting at the permission dialog who quits: SessionEnd fires,
+    // Stop never does. Also the shape of every lifecycle-1 registration,
+    // where Stop itself maps to session_end and no turn_end ever sweeps.
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'SessionEnd' });
+    expect(decided(events)).toEqual([]);
+    expect(state.approvalsUnresolved).toBe(1);
+    expect(state.pendingApprovals).toEqual([]);
+    expect(state.openCalls).toEqual({});
+  });
+
+  it('a harness-supplied tool_use_id on PermissionRequest is used directly, even when the digest would not have matched (build-review fix 3)', () => {
+    // Codex's docs say PermissionRequest can carry tool_use_id; use it
+    // directly rather than falling through to digest recovery, so a shape
+    // difference between Codex's PreToolUse and PermissionRequest payloads
+    // (here: PermissionRequest omits tool_input entirely) cannot produce a
+    // false unid: when the real id was sitting right there.
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 } });
+    const req = normalize({ session_id: 's', hook_event_name: 'PermissionRequest', tool_use_id: 'tu-1' }, 'codex', undefined, 2);
+    emitHookEvent(req, { emit: (t, p) => events.push({ eventType: t, payload: p }), async close() {} }, state, 2);
+    expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['tu-1']);
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 1 }, tool_response: {} });
+    expect(decided(events)).toEqual([
+      { eventType: 'approval.decided', payload: { harness: 'claude-code', session_ref: 's', tool_use_id: 'tu-1', decision: 'allowed', decided_by: 'prompted' } },
+    ]);
+  });
+
+  it('a request whose PreToolUse was dropped cannot be FIFO-paired onto a call opened afterward (build-review fix 4)', () => {
+    // D's PreToolUse never ran (lock timeout; recordOpenCall never fires),
+    // so its PermissionRequest cannot digest-match and becomes unid:1. The
+    // human denies D in the TUI (unprobed; no further event for D at all).
+    // The model then opens an unrelated, ungated call C, but C was opened
+    // AFTER the unid: entry was pushed, so the timing guard must refuse the
+    // pairing even though exactly one call (C) is open at C's tool_end.
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['unid:1']);
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 } });
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 }, tool_response: {} });
+    expect(decided(events)).toEqual([]);
+    fire({ session_id: 's', hook_event_name: 'Stop' });
+    expect(state.approvalsUnresolved).toBe(1);
+  });
+
   it('two concurrent calls: a denied-via-TUI request is never mispaired onto an unrelated later call', () => {
     // D is gated and (per the review's blocking scenario) denied in a real
     // interactive dialog this build cannot probe: no PermissionDenied, no
@@ -192,11 +255,31 @@ describe('oversight-markers approval correlation', () => {
     const { events, state, fire } = drive();
     fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 'original' } });
     fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 'rewritten-by-upstream-hook' } });
-    expect(state.pendingApprovals).toEqual(['unid:1']);
+    expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['unid:1']);
     fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 'original' }, tool_response: {} });
     expect(decided(events)).toEqual([
       { eventType: 'approval.decided', payload: { harness: 'claude-code', session_ref: 's', tool_use_id: 'tu-1', decision: 'allowed', decided_by: 'prompted' } },
     ]);
+  });
+
+  it('two open calls sharing one digest: the request resolves to ambig, never guessed at either call even after one closes', () => {
+    // Two concurrent calls (a retry, or parallel subagents) share a digest,
+    // so the match is ambiguous and must never resolve to either one.
+    // Marked `ambig:`, distinct from a true zero-match `unid:`, so it stays
+    // ineligible for the single-open-call FIFO fallback even once tu-A
+    // closes and only tu-B remains open.
+    const { events, state, fire } = drive();
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-A', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-B', tool_input: { x: 1 } });
+    fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } });
+    expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['ambig:1']);
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-A', tool_input: { x: 1 }, tool_response: {} });
+    // Only tu-B is open now. A true unid: entry would be FIFO-eligible here,
+    // but ambig: never is.
+    fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-B', tool_input: { x: 1 }, tool_response: {} });
+    expect(decided(events)).toEqual([]);
+    fire({ session_id: 's', hook_event_name: 'Stop' });
+    expect(state.approvalsUnresolved).toBe(1);
   });
 
   it('ungated call: PreToolUse straight to PostToolUse, nothing approval-shaped emitted', () => {

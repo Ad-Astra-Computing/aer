@@ -323,14 +323,14 @@ describe('oversight-marker correlation state', () => {
     const st: SessionState = {
       ...freshState(T),
       openCalls: { toolu_1: { callDigest: 'a'.repeat(32), openedAt: T } },
-      pendingApprovals: ['toolu_0', 'unid:1'],
+      pendingApprovals: [{ id: 'toolu_0', pushedAt: T }, { id: 'unid:1', pushedAt: T + 1 }],
       pendingApprovalSeq: 1,
       approvalsUnresolved: 3,
     };
     saveState('ovm-1', st, env);
     const loaded = loadState('ovm-1', env, T)!;
     expect(loaded.openCalls).toEqual({ toolu_1: { callDigest: 'a'.repeat(32), openedAt: T } });
-    expect(loaded.pendingApprovals).toEqual(['toolu_0', 'unid:1']);
+    expect(loaded.pendingApprovals).toEqual([{ id: 'toolu_0', pushedAt: T }, { id: 'unid:1', pushedAt: T + 1 }]);
     expect(loaded.pendingApprovalSeq).toBe(1);
     expect(loaded.approvalsUnresolved).toBe(3);
   });
@@ -347,16 +347,22 @@ describe('oversight-marker correlation state', () => {
     expect(loaded.openCalls).toEqual({ toolu_2: { callDigest: 'b'.repeat(32), openedAt: T } });
   });
 
-  it('drops a non-string pendingApprovals entry rather than keeping it', () => {
+  it('drops a malformed pendingApprovals entry rather than keeping it', () => {
     fs.mkdirSync(path.join(dir, 'aer-hooks'), { recursive: true });
     saveState('ovm-bad2', freshState(T), env);
     const file = path.join(dir, 'aer-hooks', fs.readdirSync(path.join(dir, 'aer-hooks'))[0]!);
     fs.writeFileSync(file, JSON.stringify({
       v: 2, createdAt: T, lastActivityAt: T, seq: 0, droppedBudget: 0, approvalsUnresolved: 0, outbox: [],
-      pendingApprovals: ['toolu_1', 42, null, 'unid:2'],
+      pendingApprovals: [
+        { id: 'toolu_1', pushedAt: T },
+        { id: 42, pushedAt: T },
+        null,
+        { id: 'unid:2', pushedAt: 'not-a-number' },
+        { id: 'unid:3', pushedAt: T + 1 },
+      ],
     }));
     const loaded = loadState('ovm-bad2', env, T)!;
-    expect(loaded.pendingApprovals).toEqual(['toolu_1', 'unid:2']);
+    expect(loaded.pendingApprovals).toEqual([{ id: 'toolu_1', pushedAt: T }, { id: 'unid:3', pushedAt: T + 1 }]);
   });
 
   it('caps openCalls at MAX_APPROVAL_TRACKING_ENTRIES, keeping the most recently opened', () => {
@@ -379,14 +385,14 @@ describe('oversight-marker correlation state', () => {
     fs.mkdirSync(path.join(dir, 'aer-hooks'), { recursive: true });
     saveState('ovm-cap2', freshState(T), env);
     const file = path.join(dir, 'aer-hooks', fs.readdirSync(path.join(dir, 'aer-hooks'))[0]!);
-    const pendingApprovals = Array.from({ length: 70 }, (_, i) => `toolu_${i}`);
+    const pendingApprovals = Array.from({ length: 70 }, (_, i) => ({ id: `toolu_${i}`, pushedAt: T + i }));
     fs.writeFileSync(file, JSON.stringify({
       v: 2, createdAt: T, lastActivityAt: T, seq: 0, droppedBudget: 0, approvalsUnresolved: 0, outbox: [], pendingApprovals,
     }));
     const loaded = loadState('ovm-cap2', env, T)!;
     expect(loaded.pendingApprovals).toHaveLength(64);
-    expect(loaded.pendingApprovals).not.toContain('toolu_0');
-    expect(loaded.pendingApprovals).toContain('toolu_69');
+    expect(loaded.pendingApprovals?.map((e) => e.id)).not.toContain('toolu_0');
+    expect(loaded.pendingApprovals?.map((e) => e.id)).toContain('toolu_69');
   });
 
   it('defaults approvalsUnresolved to 0 when the stored value is missing or invalid', () => {

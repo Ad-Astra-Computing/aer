@@ -78,12 +78,14 @@ export interface SessionState {
   openCalls?: Record<string, { callDigest: string; openedAt: number }>;
   /**
    * Open permission requests, oldest first, not yet resolved by a tool_end.
-   * Each entry is a REAL tool_use_id recovered via openCalls, or (only when
-   * no open call's digest matches) a synthetic `unid:<n>`. Cleared at every
-   * turn_end: an entry orphaned in one turn must never be resolved by an
-   * unrelated call several turns later.
+   * Each entry's `id` is a REAL tool_use_id recovered via openCalls, or
+   * (only when no open call's digest matches) a synthetic `unid:<n>`;
+   * `pushedAt` lets the narrow FIFO fallback require the single open call to
+   * have been opened no later than the request itself. Cleared at every
+   * turn_end AND session_end: an entry orphaned in one turn must never be
+   * resolved by an unrelated call several turns (or sessions) later.
    */
-  pendingApprovals?: string[];
+  pendingApprovals?: Array<{ id: string; pushedAt: number }>;
   /** Per-session counter for synthesizing the next `unid:<n>` placeholder. */
   pendingApprovalSeq?: number;
   /**
@@ -230,9 +232,17 @@ function validOpenCalls(v: unknown): Record<string, { callDigest: string; opened
   return Object.fromEntries(kept);
 }
 
-function validPendingApprovals(v: unknown): string[] | undefined {
+function validPendingApprovals(v: unknown): Array<{ id: string; pushedAt: number }> | undefined {
   if (!Array.isArray(v)) return undefined;
-  const kept = v.filter(isPendingApprovalId);
+  const kept: Array<{ id: string; pushedAt: number }> = [];
+  for (const raw of v) {
+    const rec = raw as Record<string, unknown> | null;
+    if (typeof rec !== 'object' || rec === null) continue;
+    const id = rec['id'];
+    const pushedAt = rec['pushedAt'];
+    if (!isPendingApprovalId(id) || !isInt(pushedAt)) continue;
+    kept.push({ id, pushedAt });
+  }
   return kept.length === 0 ? undefined : kept.slice(-MAX_APPROVAL_TRACKING_ENTRIES);
 }
 

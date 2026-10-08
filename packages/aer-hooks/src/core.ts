@@ -21,7 +21,14 @@ import { MAX_APPROVAL_TRACKING_ENTRIES } from './session-store.js';
  */
 export interface ApprovalCorrelationState {
   openCalls?: Record<string, { callDigest: string; openedAt: number }>;
-  pendingApprovals?: string[];
+  /**
+   * Each entry carries `pushedAt` (build-review fix 4) so the FIFO fallback
+   * can require the single open call to have been opened no later than the
+   * request was pushed: a request always follows its own PreToolUse, so an
+   * open call that started AFTER this pending entry cannot be the call it
+   * belongs to, and must not be paired with it.
+   */
+  pendingApprovals?: Array<{ id: string; pushedAt: number }>;
   pendingApprovalSeq?: number;
   approvalsUnresolved?: number;
 }
@@ -81,32 +88,50 @@ function closeOpenCall(state: ApprovalCorrelationState, toolUseId: string | unde
   state.openCalls = rest;
 }
 
-function pushPendingApproval(state: ApprovalCorrelationState, id: string): void {
-  const next = [...(state.pendingApprovals ?? []), id];
+function pushPendingApproval(state: ApprovalCorrelationState, id: string, now: number): void {
+  const next = [...(state.pendingApprovals ?? []), { id, pushedAt: now }];
   state.pendingApprovals = next.length > MAX_APPROVAL_TRACKING_ENTRIES
     ? next.slice(next.length - MAX_APPROVAL_TRACKING_ENTRIES)
     : next;
 }
 
 /**
- * PermissionRequest: recover the real tool_use_id by digest match against
- * openCalls (exactly one match), or push a synthetic `unid:<n>` when zero or
- * more than one call shares that digest: an ambiguous match is treated the
- * same as no match, never resolved to a specific id it cannot distinguish.
+ * PermissionRequest: prefer a harness-supplied tool_use_id when the payload
+ * carries one (build-review fix 3 — Codex's docs say it can; using it
+ * directly, rather than falling through to digest recovery, avoids a false
+ * `unid:` whenever Codex's PermissionRequest and tool_start shapes diverge
+ * enough that the digest would not match even though the real id is right
+ * there). Otherwise recover the real id by digest match against openCalls
+ * (exactly one match), or push a synthetic placeholder when zero or more
+ * than one call shares that digest — but NOT the same placeholder for both:
+ * a zero-match (`unid:<n>`) means no PreToolUse was ever seen for this
+ * call at all, which is the only shape the narrow single-open-call FIFO
+ * fallback is sound for; a multi-match (`ambig:<n>`) means two or more real
+ * open calls share this exact content, and must never become eligible for
+ * that fallback, even after enough of them close that only one remains —
+ * discovered while testing fix 4: without this split, two calls sharing a
+ * digest would resolve correctly only while both stayed open, then
+ * silently start guessing the moment the first one closed.
  */
-function handlePermissionRequest(state: ApprovalCorrelationState, digest: string | undefined): void {
-  if (digest === undefined) {
-    state.pendingApprovalSeq = (state.pendingApprovalSeq ?? 0) + 1;
-    pushPendingApproval(state, `unid:${state.pendingApprovalSeq}`);
+function handlePermissionRequest(state: ApprovalCorrelationState, toolUseId: string | undefined, digest: string | undefined, now: number): void {
+  if (toolUseId !== undefined) {
+    pushPendingApproval(state, toolUseId, now);
     return;
   }
-  const matches = Object.entries(state.openCalls ?? {}).filter(([, v]) => v.callDigest === digest);
-  if (matches.length === 1) {
-    pushPendingApproval(state, matches[0]![0]);
-    return;
+  if (digest !== undefined) {
+    const matches = Object.entries(state.openCalls ?? {}).filter(([, v]) => v.callDigest === digest);
+    if (matches.length === 1) {
+      pushPendingApproval(state, matches[0]![0], now);
+      return;
+    }
+    if (matches.length > 1) {
+      state.pendingApprovalSeq = (state.pendingApprovalSeq ?? 0) + 1;
+      pushPendingApproval(state, `ambig:${state.pendingApprovalSeq}`, now);
+      return;
+    }
   }
   state.pendingApprovalSeq = (state.pendingApprovalSeq ?? 0) + 1;
-  pushPendingApproval(state, `unid:${state.pendingApprovalSeq}`);
+  pushPendingApproval(state, `unid:${state.pendingApprovalSeq}`, now);
 }
 
 /**
@@ -120,7 +145,7 @@ function handlePermissionRequest(state: ApprovalCorrelationState, digest: string
 function resolvePermissionDenied(state: ApprovalCorrelationState, toolUseId: string | undefined): boolean {
   if (toolUseId === undefined) return false;
   const pending = state.pendingApprovals ?? [];
-  const idx = pending.indexOf(toolUseId);
+  const idx = pending.findIndex((e) => e.id === toolUseId);
   if (idx === -1) return false;
   state.pendingApprovals = [...pending.slice(0, idx), ...pending.slice(idx + 1)];
   return true;
@@ -131,22 +156,38 @@ type ToolEndResolution = 'allowed' | 'unresolved' | 'none';
 /**
  * tool_end: resolve by exact tool_use_id match first (the common case, since
  * PermissionRequest already recovered the real id via digest match). The FIFO
- * arm fires only when the pending entry is a synthetic `unid:` AND exactly
- * one call is open (no ambiguity left to resolve incorrectly): the upstream-
- * rewrite case where this call's own id never matched by digest. Otherwise
- * nothing resolves; the entry ages into approvalsUnresolved at turn_end.
+ * arm fires only when the pending entry is a synthetic `unid:` (never
+ * `ambig:` — that prefix means two or more real open calls shared the
+ * request's digest, which stays unresolvable no matter how many later close
+ * and leave only one open), exactly one call is open (no ambiguity left to
+ * resolve incorrectly), AND that open
+ * call was opened no later than the pending entry was pushed (build-review
+ * fix 4 — a request always follows its own PreToolUse, so an open call that
+ * started AFTER this request cannot be the call it belongs to; this closes
+ * the route where a PreToolUse dropped on lock timeout left openCalls
+ * incomplete and a later, unrelated single open call would otherwise be
+ * paired with a stale unid: entry). Otherwise nothing resolves; the entry
+ * ages into approvalsUnresolved at turn_end.
+ *
+ * `toolEndHook` (build-review fix 1), not `isError`, decides the hedge: an
+ * ordinary PostToolUse with an error-shaped response still means the call
+ * was let through the gate (ok/is_error describe the CALL's outcome, a
+ * separate concern from whether it was approved); only a genuine
+ * PostToolUseFailure invocation is the unprobed, possibly-a-denial shape.
  */
-function resolveToolEnd(state: ApprovalCorrelationState, toolUseId: string | undefined, isError: boolean | undefined): ToolEndResolution {
+function resolveToolEnd(state: ApprovalCorrelationState, toolUseId: string | undefined, toolEndHook: 'completed' | 'failure' | undefined): ToolEndResolution {
   const pending = state.pendingApprovals ?? [];
-  let idx = toolUseId !== undefined ? pending.indexOf(toolUseId) : -1;
+  let idx = toolUseId !== undefined ? pending.findIndex((e) => e.id === toolUseId) : -1;
   if (idx === -1) {
-    const openCount = Object.keys(state.openCalls ?? {}).length;
-    const unidIdx = pending.findIndex((id) => id.startsWith('unid:'));
-    if (unidIdx !== -1 && openCount === 1) idx = unidIdx;
+    const openEntries = Object.values(state.openCalls ?? {});
+    const unidIdx = pending.findIndex((e) => e.id.startsWith('unid:'));
+    if (unidIdx !== -1 && openEntries.length === 1 && openEntries[0]!.openedAt <= pending[unidIdx]!.pushedAt) {
+      idx = unidIdx;
+    }
   }
   if (idx === -1) return 'none';
   state.pendingApprovals = [...pending.slice(0, idx), ...pending.slice(idx + 1)];
-  if (isError === true) {
+  if (toolEndHook === 'failure') {
     // From PostToolUseFailure: [docs, not probed]. The probe never observed a
     // resolved pending entry followed by PostToolUseFailure; this is
     // plausibly the exact shape a real interactive human denial produces, so
@@ -154,6 +195,12 @@ function resolveToolEnd(state: ApprovalCorrelationState, toolUseId: string | und
     state.approvalsUnresolved = (state.approvalsUnresolved ?? 0) + 1;
     return 'unresolved';
   }
+  // Recommended fix from the build review: approval.decided requires
+  // tool_use_id, which rides via this tool_end event's own meta, never from
+  // the resolved pending entry. A harness whose tool_end carries none (the
+  // FIFO arm does not require one at the call site) would otherwise send a
+  // payload the server rejects per-event; guard the send instead.
+  if (toolUseId === undefined) return 'none';
   return 'allowed';
 }
 
@@ -224,7 +271,7 @@ export function emitHookEvent(
         // Resolve BEFORE evicting: the single-open-call FIFO fallback needs
         // to see this call still counted among the open ones to judge
         // whether it was the only one.
-        const resolution = resolveToolEnd(state, toolUseId, event.isError);
+        const resolution = resolveToolEnd(state, toolUseId, event.toolEndHook);
         closeOpenCall(state, toolUseId);
         if (resolution === 'allowed') {
           // tool_use_id/turn_id already ride via `common` (commonMeta already
@@ -240,7 +287,7 @@ export function emitHookEvent(
       }
       case 'permission': {
         if (event.permissionHook === 'request') {
-          handlePermissionRequest(state, event.callDigest);
+          handlePermissionRequest(state, event.meta?.['tool_use_id'] as string | undefined, event.callDigest, now);
           return sent; // no decision yet
         }
         if (event.permissionHook === 'denied') {
@@ -258,6 +305,16 @@ export function emitHookEvent(
         return sent;
       }
       case 'turn_end': {
+        sweepTurnEnd(state);
+        send('collector.report', { collector: 'aer-hooks', phase: event.kind });
+        return sent;
+      }
+      case 'session_end': {
+        // Build-review fix 2: a pending request open when the session ends
+        // (a human quitting at the dialog with no Stop, or any lifecycle-1
+        // registration where Stop maps to session_end and no turn_end ever
+        // sweeps) must not be silently lost, and must not persist to be
+        // wrongly FIFO-paired against a later, unrelated session.
         sweepTurnEnd(state);
         send('collector.report', { collector: 'aer-hooks', phase: event.kind });
         return sent;
