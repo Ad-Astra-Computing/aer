@@ -167,15 +167,14 @@ describe('oversight-markers approval correlation', () => {
     expect(state.approvalsUnresolved).toBe(1);
   });
 
-  it('a FIFO-eligible tool_end carrying no tool_use_id leaves the entry pending, never silently drops it (confirmation-pass fix A)', () => {
-    // The FIFO arm would match (one unid: entry, one open call, timing ok),
-    // but approval.decided requires a tool_use_id and this tool_end has
-    // none. The entry must stay in the queue rather than be consumed and
-    // counted nowhere.
+  it('a tool_end carrying no tool_use_id leaves the entry pending, never silently drops it', () => {
+    // A tool_end with no tool_use_id can never match anything by id, so the
+    // unid: entry pushed below must stay in the queue rather than be
+    // consumed and counted nowhere.
     const { events, state, fire } = drive();
-    // The open call's input differs from the request's (an upstream rewrite,
-    // as in the fix-4 fixture above) so the digest cannot match and the
-    // request becomes unid: despite one real call being open.
+    // The open call's input differs from the request's (an upstream rewrite)
+    // so the digest cannot match and the request becomes unid: despite one
+    // real call being open.
     fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 'original' } });
     fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 'rewritten' } });
     expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['unid:1']);
@@ -186,20 +185,26 @@ describe('oversight-markers approval correlation', () => {
     expect(state.approvalsUnresolved).toBe(1);
   });
 
-  it('a session with a known dropped event never lets the FIFO arm pair a concurrently open call (confirmation-pass fix B)', () => {
-    // D's PreToolUse never ran; its PermissionRequest pushes unid:1. C is
-    // ALREADY open when the drop happened and stays open across D's
-    // request, so the timing guard alone would pass (C opened before the
-    // push). Passing openCallsMayBeIncomplete:true must refuse the arm
-    // regardless.
+  it('a lost PreToolUse never gets its approval pinned onto an unrelated open call (security review)', () => {
+    // D's PreToolUse never ran (crash, timeout, killed process - lost before
+    // it ever reached this collector). Its PermissionRequest matches no open
+    // call by digest and pushes unid:1. C opened earlier and is still open
+    // when D's request arrives and stays open across it. A single-open-call
+    // FIFO fallback used to pair D's approval onto C's tool_end here,
+    // producing a false approval.decided {tool_use_id:'tu-C', decision:
+    // 'allowed', decided_by:'prompted'} for a call nobody ever prompted on.
+    // There is no local signal that can tell this case apart from a digest
+    // mismatch on C's OWN PreToolUse being rewritten upstream, so the fix is
+    // to never guess here at all: D's approval must end up unresolved, and
+    // C's tool_end must produce no approval.decided of its own.
     const { sink, events } = fakeSink();
     const state: import('./core.js').ApprovalCorrelationState = {};
-    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 } }, 'claude-code', undefined, 2), sink, state, 1, false);
-    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } }, 'claude-code', undefined, 2), sink, state, 2, true);
+    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 } }, 'claude-code', undefined, 2), sink, state, 1);
+    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 1 } }, 'claude-code', undefined, 2), sink, state, 2);
     expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['unid:1']);
-    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 }, tool_response: {} }, 'claude-code', undefined, 2), sink, state, 3, true);
+    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-C', tool_input: { x: 2 }, tool_response: {} }, 'claude-code', undefined, 2), sink, state, 3);
     expect(events.filter((e) => e.eventType === 'approval.decided')).toEqual([]);
-    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'Stop' }, 'claude-code', undefined, 2), sink, state, 4, true);
+    emitHookEvent(normalize({ session_id: 's', hook_event_name: 'Stop' }, 'claude-code', undefined, 2), sink, state, 4);
     expect(state.approvalsUnresolved).toBe(1);
   });
 
@@ -283,19 +288,27 @@ describe('oversight-markers approval correlation', () => {
     expect(state.approvalsUnresolved).toBe(1);
   });
 
-  it('digest-matched request, single open call, upstream rewrite before PermissionRequest: the narrow FIFO fallback resolves it', () => {
-    // Case (a) from the confirmation-pass review: an upstream PreToolUse hook
-    // rewrote tool_input between PreToolUse and PermissionRequest, so the
-    // digest no longer matches. With exactly one call open there is nothing
-    // else the resulting unid: entry could belong to.
+  it('digest-matched request, single open call, upstream rewrite before PermissionRequest: now counted unresolved, not guessed (security review)', () => {
+    // An upstream PreToolUse hook rewrote tool_input between PreToolUse and
+    // PermissionRequest, so the digest no longer matches and the request
+    // becomes unid:1 even though exactly one call is open. A narrow
+    // single-open-call FIFO fallback used to resolve this to an allowed
+    // approval, reasoning that with only one call open there was nothing
+    // else it could belong to - but that reasoning doesn't hold: a request
+    // for a DIFFERENT call whose own PreToolUse was simply lost (crash,
+    // timeout, killed process) produces the exact same local state, and the
+    // fallback would then pair it onto this unrelated open call instead
+    // (see the lost-PreToolUse test above). Since nothing here can tell the
+    // two apart, this legitimate case is now also counted unresolved rather
+    // than risk a false "allowed, prompted" on the wrong tool_use_id.
     const { events, state, fire } = drive();
     fire({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 'original' } });
     fire({ session_id: 's', hook_event_name: 'PermissionRequest', tool_name: 'Approve', tool_input: { x: 'rewritten-by-upstream-hook' } });
     expect(state.pendingApprovals?.map((e) => e.id)).toEqual(['unid:1']);
     fire({ session_id: 's', hook_event_name: 'PostToolUse', tool_name: 'Approve', tool_use_id: 'tu-1', tool_input: { x: 'original' }, tool_response: {} });
-    expect(decided(events)).toEqual([
-      { eventType: 'approval.decided', payload: { harness: 'claude-code', session_ref: 's', tool_use_id: 'tu-1', decision: 'allowed', decided_by: 'prompted' } },
-    ]);
+    expect(decided(events)).toEqual([]);
+    fire({ session_id: 's', hook_event_name: 'Stop' });
+    expect(state.approvalsUnresolved).toBe(1);
   });
 
   it('two open calls sharing one digest: the request resolves to ambig, never guessed at either call even after one closes', () => {

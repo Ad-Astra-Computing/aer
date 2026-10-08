@@ -153,29 +153,23 @@ function resolvePermissionDenied(state: ApprovalCorrelationState, toolUseId: str
 
 type ToolEndResolution = 'allowed' | 'unresolved' | 'none';
 
-// tool_end: exact tool_use_id match, else the narrow single-open-call
-// `unid:` FIFO fallback (never `ambig:`), gated by request timing and by
-// `openCallsMayBeIncomplete`; `toolEndHook` decides the unresolved hedge.
+// tool_end: exact tool_use_id match only. A prior build carried a narrow
+// single-open-call `unid:` FIFO fallback meant for an upstream hook rewrite
+// (the same call's own PreToolUse seen, but its digest no longer matches);
+// removed because nothing here can actually tell that case apart from a
+// LOST PreToolUse for a DIFFERENT call (a crash, timeout or killed process
+// before the hook ever fired) - in the second case the only other call open
+// at tool_end can get this one's approval paired onto it, a false "allowed,
+// prompted" on the wrong tool_use_id. An unmatched `unid:` entry now falls
+// through to the next sweep and is counted unresolved instead.
 function resolveToolEnd(
   state: ApprovalCorrelationState,
   toolUseId: string | undefined,
   toolEndHook: 'completed' | 'failure' | undefined,
-  openCallsMayBeIncomplete: boolean,
 ): ToolEndResolution {
   const pending = state.pendingApprovals ?? [];
-  let idx = toolUseId !== undefined ? pending.findIndex((e) => e.id === toolUseId) : -1;
-  if (idx === -1 && !openCallsMayBeIncomplete) {
-    const openEntries = Object.values(state.openCalls ?? {});
-    const unidIdx = pending.findIndex((e) => e.id.startsWith('unid:'));
-    if (unidIdx !== -1 && openEntries.length === 1 && openEntries[0]!.openedAt <= pending[unidIdx]!.pushedAt) {
-      idx = unidIdx;
-    }
-  }
+  const idx = toolUseId !== undefined ? pending.findIndex((e) => e.id === toolUseId) : -1;
   if (idx === -1) return 'none';
-  // A FIFO match with no tool_use_id on this tool_end must not consume the
-  // entry (fix A): approval.decided requires the id, and consuming it here
-  // would count it nowhere. Leave it pending for the next sweep instead.
-  if (toolUseId === undefined) return 'none';
   state.pendingApprovals = [...pending.slice(0, idx), ...pending.slice(idx + 1)];
   if (toolEndHook === 'failure') {
     // From PostToolUseFailure: [docs, not probed]. The probe never observed a
@@ -218,8 +212,6 @@ export function emitHookEvent(
   sink: EventSink,
   state: ApprovalCorrelationState = {},
   now: number = Date.now(),
-  /** True when this harness session has dropped an event for budget reasons at some point, so openCalls may be missing an entry (confirmation-pass fix B). */
-  openCallsMayBeIncomplete = false,
 ): number {
   try {
     if (event.kind === 'other') return 0;
@@ -254,10 +246,7 @@ export function emitHookEvent(
       }
       case 'tool_end': {
         const toolUseId = event.meta?.['tool_use_id'] as string | undefined;
-        // Resolve BEFORE evicting: the single-open-call FIFO fallback needs
-        // to see this call still counted among the open ones to judge
-        // whether it was the only one.
-        const resolution = resolveToolEnd(state, toolUseId, event.toolEndHook, openCallsMayBeIncomplete);
+        const resolution = resolveToolEnd(state, toolUseId, event.toolEndHook);
         closeOpenCall(state, toolUseId);
         if (resolution === 'allowed') {
           // tool_use_id/turn_id already ride via `common` (commonMeta already
