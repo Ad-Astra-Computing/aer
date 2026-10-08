@@ -64,9 +64,11 @@ export interface GateResult {
  */
 // Security review F9: refuse a degenerate root ($HOME or /) here, the
 // enforcement point, rather than changing findWorkspaceRoot's own fallback.
+// path.resolve on both sides strips a trailing slash (round 2 confirmation:
+// a trailing slash on $HOME otherwise defeated the comparison).
 function isDegenerateRoot(root: string): boolean {
   const resolved = path.resolve(root);
-  return resolved === os.homedir() || resolved === path.parse(resolved).root;
+  return resolved === path.resolve(os.homedir()) || resolved === path.parse(resolved).root;
 }
 
 export function gateDecision(filePath: string, workspaceRoot: string | undefined): GateResult {
@@ -104,19 +106,18 @@ async function missing(filePath: string): Promise<boolean> {
   }
 }
 
-// Security review F1: a symlinked ancestor directory is invisible to lstat
-// on the final component and to the lexical workspace check; realpath the
-// parent and the root to catch it (see the commit message for F1/F1-R1).
+// Security review F1: gateDecision's checks are lexical, so a symlinked
+// ancestor directory, or the root itself being a symlink to $HOME or /, is
+// invisible to them. realpath both sides and re-check (F1-R1, F9 round 2).
 type WorkspaceResolution = { escapes: true } | { escapes: false; resolvedPath: string };
 
-// F1-R1: an alias can stay inside the workspace while resolving to .git;
-// return the resolved path so the caller re-checks git-segment/class too.
 async function resolveAgainstWorkspace(filePath: string, workspaceRoot: string): Promise<WorkspaceResolution> {
   try {
     const [realParent, realRoot] = await Promise.all([
       fsp.realpath(path.dirname(filePath)),
       fsp.realpath(workspaceRoot),
     ]);
+    if (isDegenerateRoot(realRoot)) return { escapes: true };
     const resolvedPath = path.join(realParent, path.basename(filePath));
     if (!isInsideWorkspace(resolvedPath, realRoot) && realParent !== realRoot) return { escapes: true };
     return { escapes: false, resolvedPath };
@@ -137,7 +138,7 @@ const O_NOFOLLOW_NONBLOCK = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 
  *
  * Security review F1: open, stat and hash all share one fd (O_NOFOLLOW), so
  * nothing re-resolves the path after the open. F1-R2 (low, accepted): the
- * realpath checks above still run before that open; see the commit message.
+ * realpath checks above still run before that open, a narrower window.
  */
 export async function hashFileForEffectDigest(
   filePath: string,

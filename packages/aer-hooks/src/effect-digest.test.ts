@@ -203,6 +203,24 @@ describe('hashFileForEffectDigest', () => {
     const r = await hashFileForEffectDigest(path.join(alias, 'config'), dir, KEY, { remainingBytes: MAX_AGGREGATE_DIGEST_BYTES });
     expect(r.status).not.toBe('ok');
   });
+
+  // Round 2 confirmation: isDegenerateRoot in gateDecision only sees the
+  // LITERAL workspaceRoot string; a workspace root that is itself a symlink
+  // to the home directory passed that lexical check and still hashed ok.
+  it('refuses a workspace root that is a symlink to the home directory', async () => {
+    const rootLink = fs.mkdtempSync(path.join(SCRATCH_ROOT, 'rootlink-'));
+    fs.rmSync(rootLink, { recursive: true, force: true });
+    fs.symlinkSync(os.homedir(), rootLink);
+    const file = path.join(os.homedir(), '.aer-effect-digest-test-scratch-marker.txt');
+    fs.writeFileSync(file, 'marker');
+    try {
+      const r = await hashFileForEffectDigest(path.join(rootLink, path.basename(file)), rootLink, KEY, { remainingBytes: MAX_AGGREGATE_DIGEST_BYTES });
+      expect(r.status).not.toBe('ok');
+    } finally {
+      fs.rmSync(file, { force: true });
+      fs.rmSync(rootLink, { force: true });
+    }
+  });
 });
 
 describe('hashBeforeDigest', () => {

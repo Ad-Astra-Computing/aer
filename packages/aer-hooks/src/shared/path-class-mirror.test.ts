@@ -108,10 +108,16 @@ describe('classifyPath additional secret shapes (security review F10)', () => {
   it('classifies them as secret_material', () => {
     const paths = [
       '/repo/.envrc', '/repo/infra/terraform.tfvars', '/repo/prod.tfvars',
-      '/home/x/.vault-token', '/repo/secrets.json', '/home/x/kubeconfig',
+      '/repo/prod.tfvars.json', '/home/x/.vault-token', '/repo/secrets.json',
+      '/home/x/kubeconfig', '/home/x/kubeconfig.yaml', '/home/x/prod.kubeconfig',
       '/home/x/id_rsa', '/home/x/id_ed25519',
     ];
     for (const p of paths) expect(classifyPath(p)).toBe('secret_material');
+  });
+
+  it('does not flag a bare "identity" basename outside .ssh, too generic a name (round 2 confirmation)', () => {
+    expect(classifyPath('/repo/src/identity')).toBeNull();
+    expect(classifyPath('/home/x/.ssh/identity')).toBe('ssh_key');
   });
 });
 

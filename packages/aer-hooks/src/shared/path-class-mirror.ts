@@ -26,6 +26,10 @@ export const HASHABLE_PATH_CLASSES: ReadonlySet<PathClass | null> = new Set([
 ]);
 
 const SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa', 'identity']);
+// Round 2 confirmation: 'identity' alone, outside a .ssh segment, is too
+// generic a basename (an unrelated src/identity module would false-positive)
+// to treat as secret material; the named id_* keys are unambiguous anywhere.
+const BARE_SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa']);
 const ENV_PLACEHOLDER_BASENAMES = new Set(['.env.example', '.env.sample', '.env.dist', '.env.template']);
 const SECRET_MATERIAL_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx', '.tfstate']);
 const SECRET_MATERIAL_BASENAMES = new Set([
@@ -43,8 +47,9 @@ const AGENT_CONFIG_BASENAMES = new Set(['claude_desktop_config.json']);
 function isSecretMaterialPath(basename: string): boolean {
   if (SECRET_MATERIAL_BASENAMES.has(basename)) return true;
   if (basename.startsWith('service-account') && basename.endsWith('.json')) return true;
-  if (basename.endsWith('.tfvars')) return true;
-  if (SSH_KEY_BASENAMES.has(basename)) return true;
+  if (basename.endsWith('.tfvars') || basename.endsWith('.tfvars.json')) return true;
+  if (basename === 'kubeconfig.yaml' || basename.endsWith('.kubeconfig')) return true;
+  if (BARE_SSH_KEY_BASENAMES.has(basename)) return true;
   const dot = basename.lastIndexOf('.');
   if (dot <= 0) return false;
   return SECRET_MATERIAL_EXTENSIONS.has(basename.slice(dot));
