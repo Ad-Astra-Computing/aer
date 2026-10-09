@@ -80,6 +80,14 @@ be a trusted project before its hooks load at all. For automation that has
 already vetted its hooks, `codex exec --dangerously-bypass-hook-trust` runs
 them without a recorded approval, for that invocation only.
 
+As of Codex 0.162.0, the startup review does not offer `permission_denied`
+for trust the way it does every other AER hook, including its sibling
+`permission_request`, so a normal "Trust all and continue" never records
+approval for it. The practical effect: `approval.decided` for a denied call
+is never recorded in the Codex TUI, even once everything else is trusted.
+`codex exec` is unaffected, since it bypasses trust entirely. This is a Codex
+limitation, not something `aer-hooks install` can route around.
+
 The Codex TUI runs its sessions in a background app-server by default, so
 leaving the TUI with `/exit` disconnects from the session rather than ending
 it. Codex ends it, and fires the SessionEnd that completes the record, when

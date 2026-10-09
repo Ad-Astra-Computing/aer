@@ -35,7 +35,7 @@ import {
 } from '../lib/hooks-e2e.mjs';
 
 /** The version under test. */
-export const CODEX_PINS = { '@openai/codex': '0.158.0' };
+export const CODEX_PINS = { '@openai/codex': '0.162.0' };
 
 // A model Codex knows, so it offers apply_patch; any other name gets a
 // fallback tool set without it. Served by the local provider, never OpenAI.
@@ -320,9 +320,23 @@ export default function register(registry, env) {
       const exitedAt = Date.now();
 
       // The review recorded trust for every AER hook, against its command.
+      // Known Codex TUI gap (9 Oct): the startup review trusts
+      // permission_request but not its sibling permission_denied, so a
+      // Codex TUI user who does the normal "Trust all and continue" never
+      // gets approval.decided(denied) recorded; codex exec bypasses trust
+      // entirely so it is unaffected. Asserted by name so any OTHER hook
+      // silently losing trust is still caught as a real regression.
       const cfg = readFileSync(join(w.codexHome, 'config.toml'), 'utf8');
-      const trusted = (cfg.match(/trusted_hash = "sha256:[0-9a-f]{64}"/g) ?? []).length;
-      c.assert.ok(trusted >= 8, `trusted hooks in config.toml: ${trusted}`);
+      const trustedKeys = [...cfg.matchAll(/\[hooks\.state\."[^"]*:([a-z_]+):\d+:\d+"\]/g)].map((m) => m[1]);
+      for (const key of [
+        'session_start', 'user_prompt_submit', 'pre_tool_use', 'post_tool_use',
+        'stop', 'subagent_start', 'subagent_stop', 'session_end', 'permission_request',
+      ]) {
+        c.assert.ok(trustedKeys.includes(key), `${key} not trusted by the startup review (${trustedKeys})`);
+      }
+      if (!trustedKeys.includes('permission_denied')) {
+        c.note('known gap: permission_denied was not trusted by the startup review');
+      }
 
       assertToolsRan(c, w.model, w.proj, k);
       await assertOneCompletedRecord(c, sink, { id: w.id, harness: 'codex', waitMs: mode === 'daemon' ? 150_000 : 30_000 });
