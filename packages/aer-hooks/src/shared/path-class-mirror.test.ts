@@ -127,6 +127,11 @@ describe('classifyPath additional secret shapes (security review F10)', () => {
     for (const p of paths) expect(classifyPath(p)).toBe('secret_material');
   });
 
+  it('does not flag an apt/system keyring .gpg as secret_material, those are public keys', () => {
+    expect(classifyPath('/etc/apt/keyrings/docker.gpg')).toBeNull();
+    expect(classifyPath('/usr/share/keyrings/tailscale-archive-keyring.gpg')).toBeNull();
+  });
+
   it('does not flag a bare "identity" basename outside .ssh, too generic a name (round 2 confirmation)', () => {
     expect(classifyPath('/repo/src/identity')).toBeNull();
     expect(classifyPath('/home/x/.ssh/identity')).toBe('ssh_key');

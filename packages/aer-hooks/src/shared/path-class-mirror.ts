@@ -31,7 +31,7 @@ const SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
 // to treat as secret material; the named id_* keys are unambiguous anywhere.
 const BARE_SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa']);
 const ENV_PLACEHOLDER_BASENAMES = new Set(['.env.example', '.env.sample', '.env.dist', '.env.template']);
-const SECRET_MATERIAL_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx', '.tfstate', '.gpg']);
+const SECRET_MATERIAL_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx', '.tfstate']);
 const SECRET_MATERIAL_BASENAMES = new Set([
   '.pgpass', '.my.cnf', '.htpasswd', 'credentials.json', 'secrets.yaml', 'secrets.yml',
   '.envrc', '.vault-token', 'secrets.json', 'kubeconfig', '.dockercfg', 'credentials',
@@ -128,6 +128,10 @@ export function classifyPath(p: string): PathClass | null {
   if (segments[0] === 'Library' && segments[1] === 'LaunchDaemons') return 'launch_daemon';
   if (segments[0] === 'Library' && segments[1] === 'LaunchAgents') return 'launch_agent';
   if (segments[0] === 'mnt' && segments[1]?.length === 1) return 'windows_mount';
+  // A private key export, unless it's the same public-keyring convention
+  // excluded above (/etc/apt/keyrings, /usr/share/keyrings): those .gpg
+  // files are public signing keys every apt-based install guide writes.
+  if (basename.endsWith('.gpg') && !has('keyrings')) return 'secret_material';
   if (isSecretMaterialPath(basename)) return 'secret_material';
   return null;
 }
