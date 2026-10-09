@@ -102,12 +102,14 @@ export async function guardMcpRequest(
   if (opts.requireDpop && opts.dpopProof === undefined) {
     verifyOpts = { ...verifyOpts, dpopProof: getHeader('dpop') ?? null };
   }
-  // When the resource requires mTLS and the thumbprint wasn't supplied directly,
-  // resolve it per request (forwarded-cert header behind a trusted proxy).
-  if (opts.requireMtls && opts.mtlsThumbprint === undefined && opts.resolveMtlsThumbprint) {
-    verifyOpts = { ...verifyOpts, mtlsThumbprint: await opts.resolveMtlsThumbprint(getHeader) };
-  }
   try {
+    // When the resource requires mTLS and the thumbprint wasn't supplied
+    // directly, resolve it per request (forwarded-cert header behind a
+    // trusted proxy). A caller-supplied resolver that throws is a denial,
+    // not an unhandled rejection: it runs inside this same try.
+    if (opts.requireMtls && opts.mtlsThumbprint === undefined && opts.resolveMtlsThumbprint) {
+      verifyOpts = { ...verifyOpts, mtlsThumbprint: await opts.resolveMtlsThumbprint(getHeader) };
+    }
     const claims = await verifyAttestation(token, verifyOpts);
     return { ok: true, claims };
   } catch (err) {
