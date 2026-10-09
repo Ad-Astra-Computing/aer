@@ -64,11 +64,23 @@ export interface GateResult {
  */
 // Security review F9: refuse a degenerate root ($HOME or /) here, the
 // enforcement point, rather than changing findWorkspaceRoot's own fallback.
+// Security review: exact-match against $HOME or the filesystem root let
+// /home, /Users (any OS's home-parent directory) and common system
+// directories through as a "workspace root" - a file anywhere under them
+// then gets digested. Refuse any root that IS $HOME, is an ANCESTOR of
+// $HOME (covers /home, /Users and any custom equivalent without hardcoding
+// OS-specific names), is the filesystem root, or is a known system
+// directory outright.
+const SYSTEM_ROOTS = new Set(['/etc', '/var', '/usr', '/bin', '/sbin', '/opt', '/root', '/boot', '/dev', '/proc', '/sys']);
+
 // path.resolve on both sides strips a trailing slash (round 2 confirmation:
 // a trailing slash on $HOME otherwise defeated the comparison).
 function isDegenerateRoot(root: string): boolean {
   const resolved = path.resolve(root);
-  return resolved === path.resolve(os.homedir()) || resolved === path.parse(resolved).root;
+  if (resolved === path.parse(resolved).root) return true;
+  if (SYSTEM_ROOTS.has(resolved)) return true;
+  const home = path.resolve(os.homedir());
+  return resolved === home || isInsideWorkspace(home, resolved);
 }
 
 export function gateDecision(filePath: string, workspaceRoot: string | undefined): GateResult {

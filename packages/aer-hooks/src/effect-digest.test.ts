@@ -91,6 +91,18 @@ describe('gateDecision', () => {
   it('refuses a workspace root equal to the filesystem root', () => {
     expect(gateDecision('/notes.txt', '/')).toEqual({ hashable: false, pathClass: null, status: 'outside_workspace' });
   });
+
+  // Security review: an exact match against $HOME let any ANCESTOR of
+  // $HOME (/home, /Users, or any OS's home-parent directory) through as a
+  // "workspace root", making every other user's home directory hashable too.
+  it('refuses a workspace root that is an ancestor of the home directory', () => {
+    const parent = path.dirname(os.homedir());
+    expect(gateDecision(path.join(os.homedir(), 'notes.txt'), parent)).toEqual({ hashable: false, pathClass: null, status: 'outside_workspace' });
+  });
+
+  it('refuses a workspace root that is a known system directory', () => {
+    expect(gateDecision('/etc/ssh/ssh_host_ed25519_key', '/etc')).toEqual({ hashable: false, pathClass: null, status: 'outside_workspace' });
+  });
 });
 
 describe('hashFileForEffectDigest', () => {

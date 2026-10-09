@@ -31,11 +31,17 @@ const SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
 // to treat as secret material; the named id_* keys are unambiguous anywhere.
 const BARE_SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa']);
 const ENV_PLACEHOLDER_BASENAMES = new Set(['.env.example', '.env.sample', '.env.dist', '.env.template']);
-const SECRET_MATERIAL_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx', '.tfstate']);
+const SECRET_MATERIAL_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx', '.tfstate', '.gpg']);
 const SECRET_MATERIAL_BASENAMES = new Set([
   '.pgpass', '.my.cnf', '.htpasswd', 'credentials.json', 'secrets.yaml', 'secrets.yml',
-  '.envrc', '.vault-token', 'secrets.json', 'kubeconfig',
+  '.envrc', '.vault-token', 'secrets.json', 'kubeconfig', '.dockercfg', 'credentials',
 ]);
+// Hardware-key-agnostic prefix patterns security review found hashable: a
+// system SSH host key (sshd's own identity, not a user key under .ssh) and
+// an Apple Push Notification auth key.
+const SSH_HOST_KEY_RE = /^ssh_host_.+_key$/;
+const APNS_AUTH_KEY_RE = /^AuthKey_.+\.p8$/;
+const FIREBASE_ADMINSDK_RE = /^firebase-adminsdk-.+\.json$/;
 const AGENT_CONFIG_SEGMENT_BASENAME: ReadonlyArray<[string, string]> = [
   ['.claude', 'settings.json'],
   ['.cursor', 'mcp.json'],
@@ -50,6 +56,9 @@ function isSecretMaterialPath(basename: string): boolean {
   if (basename.endsWith('.tfvars') || basename.endsWith('.tfvars.json')) return true;
   if (basename === 'kubeconfig.yaml' || basename.endsWith('.kubeconfig')) return true;
   if (BARE_SSH_KEY_BASENAMES.has(basename)) return true;
+  if (SSH_HOST_KEY_RE.test(basename)) return true;
+  if (APNS_AUTH_KEY_RE.test(basename)) return true;
+  if (FIREBASE_ADMINSDK_RE.test(basename)) return true;
   const dot = basename.lastIndexOf('.');
   if (dot <= 0) return false;
   return SECRET_MATERIAL_EXTENSIONS.has(basename.slice(dot));

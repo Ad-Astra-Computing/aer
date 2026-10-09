@@ -115,6 +115,18 @@ describe('classifyPath additional secret shapes (security review F10)', () => {
     for (const p of paths) expect(classifyPath(p)).toBe('secret_material');
   });
 
+  // Fable security review: these came back hashable (unclassified) in
+  // adversarial testing, a gap in the denylist rather than the workspace
+  // gate itself.
+  it('classifies the denylist gaps a security review found as secret_material', () => {
+    const paths = [
+      '/home/x/.dockercfg', '/home/x/AuthKey_ABC123XYZ.p8', '/home/x/backup.gpg',
+      '/home/x/credentials', '/etc/ssh/ssh_host_ed25519_key', '/etc/ssh/ssh_host_rsa_key',
+      '/home/x/firebase-adminsdk-abc12-def456.json',
+    ];
+    for (const p of paths) expect(classifyPath(p)).toBe('secret_material');
+  });
+
   it('does not flag a bare "identity" basename outside .ssh, too generic a name (round 2 confirmation)', () => {
     expect(classifyPath('/repo/src/identity')).toBeNull();
     expect(classifyPath('/home/x/.ssh/identity')).toBe('ssh_key');
