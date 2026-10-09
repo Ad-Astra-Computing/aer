@@ -205,6 +205,20 @@ function assertToolsRan(c, model, proj, k) {
 
 const EXEC_ARGS = (prompt) => ['exec', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', prompt];
 
+// Config.toml's trust state: a `[hooks.state."...:<event>:i:j"]` header with
+// NO trusted_hash line under it means Codex wrote the entry but did not
+// record trust against it, so the header alone must never be read as proof
+// of trust. Matches each header together with the first non-blank line that
+// follows, requiring that line to be the trusted_hash.
+function trustedHookNames(cfg) {
+  const names = [];
+  const re = /\[hooks\.state\."[^"]*:([a-z_]+):\d+:\d+"\]\n([^\n]*)/g;
+  for (const m of cfg.matchAll(re)) {
+    if (/^trusted_hash = "sha256:[0-9a-f]{64}"/.test(m[2])) names.push(m[1]);
+  }
+  return names;
+}
+
 // ---------------------------------------------------------------------------
 
 export default function register(registry, env) {
@@ -319,23 +333,16 @@ export default function register(registry, env) {
       c.assert.equal(exit.code, 0, 'TUI exit status');
       const exitedAt = Date.now();
 
-      // The review recorded trust for every AER hook, against its command.
-      // Known Codex TUI gap (9 Oct): the startup review trusts
-      // permission_request but not its sibling permission_denied, so a
-      // Codex TUI user who does the normal "Trust all and continue" never
-      // gets approval.decided(denied) recorded; codex exec bypasses trust
-      // entirely so it is unaffected. Asserted by name so any OTHER hook
-      // silently losing trust is still caught as a real regression.
+      // The review recorded trust for every AER hook, against its command:
+      // a header alone proves Codex wrote a state entry, not that it was
+      // actually trusted, so each name's trusted_hash line is matched too.
       const cfg = readFileSync(join(w.codexHome, 'config.toml'), 'utf8');
-      const trustedKeys = [...cfg.matchAll(/\[hooks\.state\."[^"]*:([a-z_]+):\d+:\d+"\]/g)].map((m) => m[1]);
+      const trustedKeys = trustedHookNames(cfg);
       for (const key of [
         'session_start', 'user_prompt_submit', 'pre_tool_use', 'post_tool_use',
         'stop', 'subagent_start', 'subagent_stop', 'session_end', 'permission_request',
       ]) {
         c.assert.ok(trustedKeys.includes(key), `${key} not trusted by the startup review (${trustedKeys})`);
-      }
-      if (!trustedKeys.includes('permission_denied')) {
-        c.note('known gap: permission_denied was not trusted by the startup review');
       }
 
       assertToolsRan(c, w.model, w.proj, k);
@@ -344,4 +351,37 @@ export default function register(registry, env) {
       c.note(`the record completed within ${Math.max(0, completes(sink)[0].at - exitedAt)} ms of /exit`);
     }, { pty: true, timeoutMs: 420_000 });
   }
+
+  // Confirmed (9 Oct) on both codex 0.158.0 and current 0.162.0, by reading
+  // the real generated config.toml: the startup review trusts every other
+  // AER hook, including permission_denied's sibling permission_request, but
+  // never writes a trusted_hash for permission_denied itself. A Codex TUI
+  // user who does the normal "Trust all and continue" never gets
+  // approval.decided(denied) recorded; codex exec is unaffected, since it
+  // bypasses trust entirely. A Codex limitation, not something aer-hooks
+  // install can route around. Cheapest possible repro: through the startup
+  // review only, no prompt or tool call.
+  t.known(
+    'codex TUI: the startup review trusts permission_denied like every other AER hook',
+    'permission_denied is never offered for trust at the Codex TUI startup review',
+    async (c) => {
+      const why = ptyUnavailable();
+      if (why) return { skip: why };
+      const cx = await codexInstall(env);
+      if (cx.skip) return cx;
+      const sink = await c.sink();
+      const k = canaries('CXTUIPD');
+      const w = await wiredProject(c, { baseUrl: sink.url, k, command: shellLine(k) });
+      const pty = startPty(cx.bin, [], { cwd: w.proj, env: w.env });
+      c.cleanup(async () => { pty.kill(); killByCwd(w.proj); await pty.waitExit(5000); });
+      const screen = () => pty.text().slice(-1500);
+      c.assert.ok(await pty.waitFor(/Trustallandcontinue/, 60_000), `no hook review at startup: ${screen()}`);
+      await pty.press('down');
+      await pty.press('enter');
+      c.assert.ok(await pty.waitFor(/AskCodex/, 30_000), `no prompt after the review: ${screen()}`);
+      const cfg = readFileSync(join(w.codexHome, 'config.toml'), 'utf8');
+      c.assert.ok(trustedHookNames(cfg).includes('permission_denied'), 'permission_denied not trusted');
+    },
+    { pty: true, timeoutMs: 90_000 },
+  );
 }
