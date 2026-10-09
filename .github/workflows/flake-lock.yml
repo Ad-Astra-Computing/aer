@@ -1,7 +1,7 @@
 name: Update flake.lock
 
-# Dependabot does not understand Nix, so the flake inputs would otherwise drift
-# indefinitely while every other ecosystem stays current.
+# Dependabot's nix ecosystem only bumps flake.lock; it never rebuilds or
+# verifies the per-system pnpm deps hash. This workflow does both.
 on:
   schedule:
     - cron: '0 6 * * 1'
