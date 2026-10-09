@@ -139,7 +139,17 @@ jobs:
   # working. `nix flake check` builds, typechecks and tests every workspace
   # member offline in the sandbox, and builds the Python SDK.
   nix:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            system: x86_64-linux
+          - os: macos-latest
+            system: aarch64-darwin
+          - os: ubuntu-24.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -150,9 +160,6 @@ jobs:
           nix flake metadata --json > /dev/null
           git diff --exit-code flake.lock
 
-      # --all-systems evaluates every system we claim to support, not just the
-      # runner architecture. That is what catches an eval error on a platform
-      # CI cannot build, which is exactly how the darwin breakage got in.
       - run: nix flake check --all-systems --print-build-logs
 
       # Every app output, not just the CLI. `nix flake check` only evaluates

@@ -40,16 +40,24 @@
         # Vendors the exact pnpm-lock.yaml graph as a fixed-output derivation
         # (network access happens only here, at eval/fetch time, in a sandbox
         # exempted for FOD hashing) so every build below is fully offline and
-        # reproducible. Bump the hash whenever pnpm-lock.yaml changes: set it
-        # to lib.fakeHash, run `nix build .#checks.<system>.default`, and copy
-        # the "got:" value nix prints back in.
+        # reproducible. Per-system: pnpm vendors each platform's own optional
+        # native packages, so the hash differs by system. Bump one whenever
+        # pnpm-lock.yaml changes: set it to lib.fakeHash, run
+        # `nix build .#checks.<system>.default` on that system, and copy the
+        # "got:" value back in.
+        pnpmDepsHashes = {
+          x86_64-linux = "sha256-g1fXZEv3yp+glGZ0HjfzAOZoZSQc7fVgSOWXFAQusKg=";
+          aarch64-darwin = "sha256-qevhNEma++PfdB508BucQhWdo1jQ+hEiokFZposBSnI=";
+          aarch64-linux = pkgs.lib.fakeHash;
+        };
+
         pnpmDeps = pkgs.fetchPnpmDeps {
           pname = "aer";
           src = self;
           inherit pnpmWorkspaces;
           pnpm = pkgs.pnpm;
           fetcherVersion = 4;
-          hash = "sha256-g1fXZEv3yp+glGZ0HjfzAOZoZSQc7fVgSOWXFAQusKg=";
+          hash = pnpmDepsHashes.${system};
         };
 
         # Common offline build environment shared by every package/check

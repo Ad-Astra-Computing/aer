@@ -8,8 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: flake-lock
@@ -18,15 +17,14 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-
-      # The dependency hash is a function of the lockfile, nixpkgs' pnpm and the
-      # fetcher version. Record pnpm now so a moved hash can be explained later.
-      - id: before
-        run: echo "pnpm=$(nix eval --raw --inputs-from . nixpkgs#pnpm.version)" >> "$GITHUB_OUTPUT"
 
       - run: nix flake update
 
@@ -38,66 +36,194 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # This job never touches pnpm-lock.yaml or fetcherVersion, so a new pnpm
-      # is the only legitimate reason for the hash to move. A move without one
-      # is the anomaly the hash exists to catch, so the job stops instead.
       - if: steps.diff.outputs.changed == 'true'
-        id: refresh
-        name: Refresh the pnpm dependency hash
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: flake-lock
+          path: flake.lock
+          retention-days: 1
+
+  refresh:
+    needs: update
+    if: needs.update.outputs.changed == 'true'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            system: x86_64-linux
+          - os: macos-latest
+            system: aarch64-darwin
+          - os: ubuntu-24.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: flake-lock
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      # Record pnpm now so a moved hash can be explained later. This job
+      # never touches pnpm-lock.yaml or fetcherVersion, so a new pnpm is the
+      # only legitimate reason for THIS system's hash to move. A move
+      # without one is the anomaly the hash exists to catch.
+      - id: before
+        run: echo "pnpm=$(nix eval --raw --inputs-from . nixpkgs#pnpm.version)" >> "$GITHUB_OUTPUT"
+
+      - id: refresh
+        name: Refresh this system's pnpm dependency hash
         env:
           PNPM_BEFORE: ${{ steps.before.outputs.pnpm }}
+          SYSTEM: ${{ matrix.system }}
         run: |
           set +e
           out=$(nix build .#node-modules --no-link 2>&1)
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then
-            echo "dependency hash unchanged"
+            echo "dependency hash unchanged for $SYSTEM"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          specified=$(printf '%s\n' "$out" | sed -n 's/.*specified: *\(sha256-[A-Za-z0-9+/=]*\).*/\1/p' | head -n 1)
-          got=$(printf '%s\n' "$out" | sed -n 's/.*got: *\(sha256-[A-Za-z0-9+/=]*\).*/\1/p' | head -n 1)
+          specified=$(printf '%s\n' "$out" | sed -n 's/.*specified: *\(sha256-[A-Za-z0-9+\/=]*\).*/\1/p' | head -n 1)
+          got=$(printf '%s\n' "$out" | sed -n 's/.*got: *\(sha256-[A-Za-z0-9+\/=]*\).*/\1/p' | head -n 1)
           if [ -z "$specified" ] || [ -z "$got" ]; then
             printf '%s\n' "$out"
             exit 1
           fi
-          count=$(grep -cF "\"$specified\"" flake.nix || true)
+          line=$(grep -nE "^[[:space:]]*${SYSTEM} = " flake.nix || true)
+          count=$(printf '%s\n' "$line" | grep -c . || true)
           if [ "$count" -ne 1 ]; then
-            echo "expected $specified exactly once in flake.nix, found $count"
+            echo "expected exactly one '$SYSTEM = ...' line in pnpmDepsHashes, found $count"
             exit 1
           fi
           pnpm_after=$(nix eval --raw --inputs-from . nixpkgs#pnpm.version)
           if [ "$pnpm_after" = "$PNPM_BEFORE" ]; then
-            echo "the dependency hash moved but pnpm stayed at $pnpm_after; refusing to refresh it"
+            echo "the $SYSTEM dependency hash moved but pnpm stayed at $pnpm_after; refusing to refresh it"
             printf '%s\n' "$out"
             exit 1
           fi
-          sed -i "s|\"$specified\"|\"$got\"|" flake.nix
-          echo "dependency hash refreshed for pnpm $PNPM_BEFORE -> $pnpm_after"
-          echo "note=The pnpm dependency hash moved because nixpkgs moved pnpm from $PNPM_BEFORE to $pnpm_after." >> "$GITHUB_OUTPUT"
+          sed -i -E "s|^([[:space:]]*${SYSTEM} = ).*;|\1\"${got}\";|" flake.nix
+          echo "$SYSTEM dependency hash refreshed for pnpm $PNPM_BEFORE -> $pnpm_after"
+          note="The $SYSTEM pnpm dependency hash moved because nixpkgs moved pnpm from $PNPM_BEFORE to $pnpm_after."
+          {
+            echo "changed=true"
+            echo "note<<FLAKE_LOCK_NOTE_EOF_${GITHUB_RUN_ID}_${SYSTEM}"
+            echo "$note"
+            echo "FLAKE_LOCK_NOTE_EOF_${GITHUB_RUN_ID}_${SYSTEM}"
+          } >> "$GITHUB_OUTPUT"
 
-      # Prove the update before proposing it. An update that fails the checks is
-      # worse than no update, because it looks routine.
-      - if: steps.diff.outputs.changed == 'true'
-        run: nix flake check --all-systems --print-build-logs
+      # Re-prove after any refresh: an update that fails the checks is worse
+      # than no update, because it looks routine. A system left unchanged
+      # already proved itself in the first attempt above.
+      - if: steps.refresh.outputs.changed == 'true'
+        run: nix build .#node-modules --no-link
 
-      - if: steps.diff.outputs.changed == 'true'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: flake-nix-${{ matrix.system }}
+          path: flake.nix
+          retention-days: 1
+
+      - if: steps.refresh.outputs.changed == 'true'
         env:
+          NOTE: ${{ steps.refresh.outputs.note }}
+          SYSTEM: ${{ matrix.system }}
+        run: printf '%s\n' "$NOTE" > "note-${SYSTEM}.txt"
+
+      - if: steps.refresh.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: note-${{ matrix.system }}
+          path: note-${{ matrix.system }}.txt
+          retention-days: 1
+
+  assemble:
+    needs: [update, refresh]
+    if: needs.update.outputs.changed == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: flake-lock
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: flake-nix-*
+          path: ${{ runner.temp }}/by-system
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: note-*
+          path: ${{ runner.temp }}/notes
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      - name: Merge each system's proven hash line
+        env:
+          BY_SYSTEM: ${{ runner.temp }}/by-system
+        run: |
+          for system in x86_64-linux aarch64-darwin aarch64-linux; do
+            src="$BY_SYSTEM/flake-nix-${system}/flake.nix"
+            line=$(grep -nE "^[[:space:]]*${system} = " "$src" | head -n 1 | cut -d: -f2-)
+            [ -n "$line" ] || { echo "missing $system line in $src"; exit 1; }
+            esc=$(printf '%s' "$line" | sed -e 's/[&/|\\]/\\&/g')
+            sed -i -E "s|^[[:space:]]*${system} = .*;|${esc}|" flake.nix
+          done
+
+      - name: Collect refresh notes
+        id: notes
+        env:
+          NOTES_DIR: ${{ runner.temp }}/notes
+        run: |
+          note=""
+          for d in "$NOTES_DIR"/note-*; do
+            [ -d "$d" ] || continue
+            for f in "$d"/*.txt; do
+              [ -s "$f" ] || continue
+              note="$(printf '%s\n%s' "$note" "$(cat "$f")")"
+            done
+          done
+          {
+            echo "note<<FLAKE_LOCK_NOTES_EOF_${GITHUB_RUN_ID}"
+            printf '%s\n' "$note"
+            echo "FLAKE_LOCK_NOTES_EOF_${GITHUB_RUN_ID}"
+          } >> "$GITHUB_OUTPUT"
+
+      - run: nix flake check --all-systems --print-build-logs
+
+      - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HASH_NOTE: ${{ steps.refresh.outputs.note }}
+          HASH_NOTE: ${{ steps.notes.outputs.note }}
         run: |
           # Nothing may ride along under a routine title: the lock, plus at
-          # most the one hash line in flake.nix.
+          # most one hash line per system in flake.nix.
           changed=$(git status --porcelain | awk '{print $2}' | sort | tr '\n' ' ')
           case "$changed" in
             "flake.lock ") ;;
             "flake.lock flake.nix ")
-              [ "$(git diff --numstat flake.nix)" = "$(printf '1\t1\tflake.nix')" ] \
+              added=$(git diff --numstat flake.nix | awk '{print $1}')
+              deleted=$(git diff --numstat flake.nix | awk '{print $2}')
+              [ "$added" = "$deleted" ] && [ "$added" -ge 1 ] && [ "$added" -le 3 ] \
                 || { git diff flake.nix; exit 1; } ;;
             *) echo "unexpected changes: $changed"; exit 1 ;;
           esac
-          body="Weekly flake input update. \`nix flake check\` passed on this lock before the pull request was opened."
-          if [ -n "$HASH_NOTE" ]; then body="$body $HASH_NOTE"; fi
+          body="Weekly flake input update. nix flake check passed natively on x86_64-linux, and every other system in pnpmDepsHashes rebuilt node_modules on its own architecture, before this was proposed."
+          if [ -n "$(echo "$HASH_NOTE" | tr -d '[:space:]')" ]; then
+            body="$(printf '%s\n%s' "$body" "$HASH_NOTE")"
+          fi
           branch="flake-lock/$(date -u +%Y-%m-%d)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
