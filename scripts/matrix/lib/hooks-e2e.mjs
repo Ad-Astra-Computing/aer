@@ -44,7 +44,12 @@ export async function installHooks(c, harness, { env, envFile, dir, cwd }) {
 export const opens = (sink) => sink.find('POST', '/v1/sessions');
 export const completes = (sink) => sink.find('POST', /^\/v1\/sessions\/[^/]+\/complete$/);
 export const byType = (sink, t) => sink.events().filter((e) => e.event_type === t);
-export const phases = (sink) => byType(sink, 'collector.report').map((e) => e.payload?.phase);
+// turn_start moved off collector.report onto its own oversight marker
+// (human.input{kind:'prompt'}); every other phase still reports the old way.
+export const phases = (sink) => [
+  ...byType(sink, 'collector.report').map((e) => e.payload?.phase),
+  ...byType(sink, 'human.input').filter((e) => e.payload?.kind === 'prompt').map(() => 'turn_start'),
+];
 
 /** Wait until `n` completions have arrived, or `ms` passes; returns the count. */
 export async function completed(sink, n = 1, ms = 30_000) {

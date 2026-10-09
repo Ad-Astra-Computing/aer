@@ -15,7 +15,7 @@ import { canaries, assertNoCanaries } from '../lib/harness.mjs';
 import { deadPort } from '../lib/sink.mjs';
 
 const PKG = '@adastracomputing/aer-hooks';
-const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd'];
+const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd', 'PermissionRequest', 'PermissionDenied'];
 const V2 = ['--harness', 'claude-code', '--lifecycle', 'v2'];
 const CODEX_V2 = ['--harness', 'codex', '--lifecycle', 'v2'];
 
@@ -83,7 +83,12 @@ function assertFewResends(c, sink) {
   const kept = stored(sink).length;
   c.assert.ok(posted <= 2 * kept, `${posted} events posted for ${kept} stored`);
 }
-const phases = (sink) => byType(sink, 'collector.report').map((e) => e.payload?.phase);
+// turn_start moved off collector.report onto its own oversight marker
+// (human.input{kind:'prompt'}); every other phase still reports the old way.
+const phases = (sink) => [
+  ...byType(sink, 'collector.report').map((e) => e.payload?.phase),
+  ...byType(sink, 'human.input').filter((e) => e.payload?.kind === 'prompt').map(() => 'turn_start'),
+];
 
 /** A Claude Code transcript with one assistant message carrying model and usage. */
 function writeTranscript(path, cn) {
@@ -160,7 +165,7 @@ export default function register(registry) {
   for (const harness of ['claude-code', 'codex']) {
     const cfgRel = harness === 'claude-code' ? ['.claude', 'settings.json'] : ['.codex', 'hooks.json'];
 
-    t.case(`install ${harness}: wires all eight lifecycle v2 events, keeps foreign entries`, async (c) => {
+    t.case(`install ${harness}: wires all ten lifecycle v2 events, keeps foreign entries`, async (c) => {
       const home = c.home();
       const cfgPath = join(home, ...cfgRel);
       mkdirSync(join(cfgPath, '..'), { recursive: true });
@@ -200,7 +205,7 @@ export default function register(registry) {
       const st = await c.bin('aer-hooks', ['status', '--json'], { env, cwd: home });
       c.assert.exit(st, 0, 'status --json');
       const entry = JSON.parse(st.stdout).hooks.entries.find((e) => e.harness === harness);
-      c.assert.equal(entry.wiredEvents.length, 8, 'status wiredEvents');
+      c.assert.equal(entry.wiredEvents.length, 10, 'status wiredEvents');
       c.assert.equal(entry.resolves, true, 'status resolves');
 
       // Uninstall removes ours and only ours.
@@ -244,7 +249,7 @@ export default function register(registry) {
       const start = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_start');
       c.assert.ok(start, 'no session_start marker');
       c.assert.equal(start.payload.harness, harness, 'harness on the marker');
-      c.assert.ok(Array.isArray(start.payload.events_registered) && start.payload.events_registered.length === 8, `events_registered ${JSON.stringify(start.payload.events_registered)}`);
+      c.assert.ok(Array.isArray(start.payload.events_registered) && start.payload.events_registered.length === 10, `events_registered ${JSON.stringify(start.payload.events_registered)}`);
       // The server reads the last report it holds, so the closing one must carry it too.
       const end = byType(sink, 'collector.report').find((e) => e.payload?.phase === 'session_end');
       c.assert.equal(JSON.stringify(end?.payload?.events_registered), JSON.stringify(start.payload.events_registered), 'events_registered on the closing report');
