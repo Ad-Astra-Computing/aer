@@ -76,6 +76,23 @@ describe('gateDecision', () => {
     expect(gateDecision('/repo/package.json', root)).toEqual({ hashable: true, pathClass: 'package_manifest' });
   });
 
+  // Security review: gateDecision calls classifyPathForHashing, which
+  // lowercases the whole path first. A basename check for the literal
+  // "AuthKey_" prefix (mixed case) can never match post-lowercase, so
+  // AuthKey_*.p8 was hashable through this path even though classifyPath
+  // (case-sensitive, used only in path-class-mirror.test.ts) correctly
+  // classified it - the gate itself was still open.
+  it('refuses an Apple Push Notification auth key through the actual hashing path', () => {
+    expect(gateDecision('/repo/certs/AuthKey_ABC123XYZ.p8', root)).toEqual({ hashable: false, pathClass: 'secret_material', status: 'credential_class' });
+  });
+
+  // Security review: excluding any path with a bare `keyrings` segment
+  // anywhere let a real secret .gpg through under an unrelated directory
+  // sharing that name (e.g. a project's own vendor/keyrings/).
+  it('refuses a .gpg file under a project directory that happens to be named keyrings', () => {
+    expect(gateDecision('/repo/vendor/keyrings/secring.gpg', root)).toEqual({ hashable: false, pathClass: 'secret_material', status: 'credential_class' });
+  });
+
   it('refuses with no workspace root at all', () => {
     expect(gateDecision('/repo/src/index.ts', undefined)).toEqual({ hashable: false, pathClass: null, status: 'outside_workspace' });
   });

@@ -31,16 +31,17 @@ const SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
 // to treat as secret material; the named id_* keys are unambiguous anywhere.
 const BARE_SSH_KEY_BASENAMES = new Set(['id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa']);
 const ENV_PLACEHOLDER_BASENAMES = new Set(['.env.example', '.env.sample', '.env.dist', '.env.template']);
-const SECRET_MATERIAL_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx', '.tfstate']);
+// .p8 (Apple Push Notification auth keys, conventionally named AuthKey_*.p8)
+// as a plain extension, not an AuthKey_-prefixed regex: classifyPathForHashing
+// lowercases the whole path before classifying it, so a basename-starts-with
+// check for the literal "AuthKey_" can never match on the hashing path.
+const SECRET_MATERIAL_EXTENSIONS = new Set(['.pem', '.key', '.p12', '.pfx', '.jks', '.kdbx', '.tfstate', '.p8']);
 const SECRET_MATERIAL_BASENAMES = new Set([
   '.pgpass', '.my.cnf', '.htpasswd', 'credentials.json', 'secrets.yaml', 'secrets.yml',
   '.envrc', '.vault-token', 'secrets.json', 'kubeconfig', '.dockercfg', 'credentials',
 ]);
-// Hardware-key-agnostic prefix patterns security review found hashable: a
-// system SSH host key (sshd's own identity, not a user key under .ssh) and
-// an Apple Push Notification auth key.
+// A system SSH host key (sshd's own identity, not a user key under .ssh).
 const SSH_HOST_KEY_RE = /^ssh_host_.+_key$/;
-const APNS_AUTH_KEY_RE = /^AuthKey_.+\.p8$/;
 const FIREBASE_ADMINSDK_RE = /^firebase-adminsdk-.+\.json$/;
 const AGENT_CONFIG_SEGMENT_BASENAME: ReadonlyArray<[string, string]> = [
   ['.claude', 'settings.json'],
@@ -57,7 +58,6 @@ function isSecretMaterialPath(basename: string): boolean {
   if (basename === 'kubeconfig.yaml' || basename.endsWith('.kubeconfig')) return true;
   if (BARE_SSH_KEY_BASENAMES.has(basename)) return true;
   if (SSH_HOST_KEY_RE.test(basename)) return true;
-  if (APNS_AUTH_KEY_RE.test(basename)) return true;
   if (FIREBASE_ADMINSDK_RE.test(basename)) return true;
   const dot = basename.lastIndexOf('.');
   if (dot <= 0) return false;
@@ -131,7 +131,13 @@ export function classifyPath(p: string): PathClass | null {
   // A private key export, unless it's the same public-keyring convention
   // excluded above (/etc/apt/keyrings, /usr/share/keyrings): those .gpg
   // files are public signing keys every apt-based install guide writes.
-  if (basename.endsWith('.gpg') && !has('keyrings')) return 'secret_material';
+  // Only these two specific, well-known public-keyring directories are
+  // excluded (a bare `keyrings` segment check matched ANY path containing
+  // one anywhere, letting a real secret .gpg through e.g. under a project's
+  // own vendor/keyrings/ directory).
+  const isPublicAptKeyring = (segments[0] === 'etc' && segments[1] === 'apt' && segments[2] === 'keyrings')
+    || (segments[0] === 'usr' && segments[1] === 'share' && segments[2] === 'keyrings');
+  if (basename.endsWith('.gpg') && !isPublicAptKeyring) return 'secret_material';
   if (isSecretMaterialPath(basename)) return 'secret_material';
   return null;
 }
