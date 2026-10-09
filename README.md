@@ -133,6 +133,13 @@ commands) picks it up on its own. `npx @adastracomputing/aer whoami`
 shows what is signed in and `npx @adastracomputing/aer logout` revokes
 it.
 
+On Nix, both run from the flake the same way:
+
+```sh
+nix run github:Ad-Astra-Computing/aer#aer -- login
+nix run github:Ad-Astra-Computing/aer#aer -- link
+```
+
 Setting `AER_API_KEY` yourself still works and takes priority over a stored
 login, which is what a CI job or a container without a browser should do
 instead of running `login` there. `aer-hooks` and `aer-auto-node` read that
@@ -169,6 +176,13 @@ Then send a tiny instrumented run end to end and verify what comes out:
 
 ```sh
 npx @adastracomputing/aer smoke
+```
+
+On Nix, both run from the flake the same way:
+
+```sh
+nix run github:Ad-Astra-Computing/aer#aer -- doctor
+nix run github:Ad-Astra-Computing/aer#aer -- smoke
 ```
 
 ## Record a coding harness
@@ -286,6 +300,12 @@ then does all of the checking locally.
 
 ```sh
 npx @adastracomputing/aer verify <aer-id>
+```
+
+On Nix:
+
+```sh
+nix run github:Ad-Astra-Computing/aer#aer -- verify <aer-id>
 ```
 
 ## Python SDK

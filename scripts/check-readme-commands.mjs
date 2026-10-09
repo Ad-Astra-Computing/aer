@@ -47,14 +47,25 @@ const RUN = new Map([
 const SKIP = new Map([
   ['npx @adastracomputing/aer login', 'needs a browser and a person to approve the device code'],
   ['npx @adastracomputing/aer login --no-browser', 'needs a person to approve the device code'],
+  [
+    'nix run github:Ad-Astra-Computing/aer#aer -- login',
+    'needs a browser and a person to approve the device code',
+  ],
   ['npx @adastracomputing/aer link', 'needs a login session from the command above'],
   ['npx @adastracomputing/aer link --agent <id>', 'the argument is a placeholder'],
   ['npx @adastracomputing/aer link --create-agent my-agent', 'needs a login session from the command above'],
+  ['nix run github:Ad-Astra-Computing/aer#aer -- link', 'needs a login session from the command above'],
   ['npx @adastracomputing/aer whoami', 'needs a login session from the command above'],
   ['npx @adastracomputing/aer logout', 'needs a login session from the command above'],
   ['npx @adastracomputing/aer doctor', 'needs a configured project and a tenant API key'],
+  [
+    'nix run github:Ad-Astra-Computing/aer#aer -- doctor',
+    'needs a configured project and a tenant API key',
+  ],
   ['npx @adastracomputing/aer smoke', 'needs a tenant API key'],
+  ['nix run github:Ad-Astra-Computing/aer#aer -- smoke', 'needs a tenant API key'],
   ['npx @adastracomputing/aer verify <aer-id>', 'the argument is a placeholder'],
+  ['nix run github:Ad-Astra-Computing/aer#aer -- verify <aer-id>', 'the argument is a placeholder'],
   [
     'AER_BASE_URL=https://api.aer.run npx @adastracomputing/aer verify <aer-id>',
     'the argument is a placeholder',
