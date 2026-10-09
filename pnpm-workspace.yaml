@@ -20,3 +20,8 @@ overrides:
   # are critical; neither upstream has re-pinned yet.
   proxy-addr: ^2.0.8
   shell-quote: ^1.11.0
+  # @modelcontextprotocol/sdk bundles @hono/node-server pinned to an old hono
+  # for its own example HTTP transport; not reachable from our code either way.
+  hono: ^4.13.13
+  # Reached through postcss's own dependency range; upstream hasn't re-pinned.
+  source-map-js: ^1.2.2
