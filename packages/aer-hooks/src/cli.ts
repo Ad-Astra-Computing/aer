@@ -19,11 +19,13 @@ import {
   createHttpSink,
   resolveSinkOptionsFromEnv,
   deriveClientRef,
+  commitmentKeyFromString,
   type EventSink,
   type HttpSinkOptions,
 } from '@adastracomputing/aer-emit';
 import { normalize, type Harness, type HookEvent, type Lifecycle } from './normalize.js';
 import { emitHookEvent, shapesOf } from './core.js';
+import { computeEffectDigestPlan, applyEffectDigestPlan } from './effect-digest-plan.js';
 import {
   loadState,
   saveState,
@@ -380,6 +382,10 @@ function withReportEvidence(
   // outcome this collector declines to guess at). Accumulates across the
   // session and rides the closing report, same as events_dropped_budget.
   if (state.approvalsUnresolved > 0) out['approvals_unresolved'] = state.approvalsUnresolved;
+  // Effects recording (P0-2): a before-digest computed and lost to a
+  // PostToolUse that never arrived, same reporting shape as the two counters
+  // above.
+  if ((state.effectStashesUnattached ?? 0) > 0) out['effect_stashes_unattached'] = state.effectStashesUnattached;
   if (phaseHead !== undefined) out['repo_head'] = phaseHead;
   return stripToIngestPayload(out).payload;
 }
@@ -1013,6 +1019,15 @@ async function orchestrateAndEmit(
   // Once per harness session: clear what sessions that never came back left.
   if (event.kind === 'session_start') sweepStale(env);
 
+  // Effects recording (P0-2): the slow, file-reading half runs here, against
+  // a best-effort unlocked read of the stash (`probe`), outside any lock.
+  // The sync apply half runs inside withState's callback below, against the
+  // actual locked state, so a since-changed stash is never corrupted.
+  const effectKey = commitmentKeyFromString(env['AER_COMMITMENT_KEY']);
+  const effectPlan = (event.kind === 'tool_start' || event.kind === 'tool_end')
+    ? await computeEffectDigestPlan(event, probe?.effectStash, effectKey, now)
+    : { kind: 'none' as const };
+
   const { ageMs, quietMs } = parseCheckpointMs(env);
   const queued = await withState(ctx, (st, at) => {
     let state = st;
@@ -1038,6 +1053,7 @@ async function orchestrateAndEmit(
       startSegment(state, at, ctx.storeKey, env);
     }
 
+    applyEffectDigestPlan(event, state, effectPlan, at);
     const events = buildQueuedEvents(event, state, at, evidence, ctx.storeKey, env, true);
     // The end of a session whose last record a checkpoint already completed:
     // opening a record to hold only this marker would add an empty record to

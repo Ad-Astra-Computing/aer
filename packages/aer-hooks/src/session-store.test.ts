@@ -15,6 +15,8 @@ import {
   MAX_OUTBOX_EVENTS,
   sweepStale,
   lockFileFor,
+  sweepStaleEffectStash,
+  MAX_EFFECT_STASH_ENTRIES,
   type SessionState,
 } from './session-store.js';
 
@@ -402,5 +404,75 @@ describe('oversight-marker correlation state', () => {
     fs.writeFileSync(file, JSON.stringify({ v: 2, createdAt: T, lastActivityAt: T, seq: 0, droppedBudget: 0, approvalsUnresolved: -1, outbox: [] }));
     const loaded = loadState('ovm-neg', env, T)!;
     expect(loaded.approvalsUnresolved).toBe(0);
+  });
+});
+
+describe('sweepStaleEffectStash', () => {
+  let dir: string;
+  let env: NodeJS.ProcessEnv;
+  const T = 3_000_000;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-store-effect-'));
+    fs.mkdirSync(path.join(dir, 'tmp'));
+    env = { XDG_CACHE_HOME: dir, TMPDIR: path.join(dir, 'tmp') } as NodeJS.ProcessEnv;
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('is a no-op on a state with no stash', () => {
+    const state = freshState(0);
+    expect(sweepStaleEffectStash(state, 1000)).toBe(0);
+  });
+
+  it('keeps a fresh entry and evicts one past the TTL, counting it', () => {
+    const state = freshState(0);
+    state.effectStash = {
+      'tu1::/repo/a.ts': { path: '/repo/a.ts', stashedAt: 1000 },
+      'tu2::/repo/b.ts': { path: '/repo/b.ts', stashedAt: 0 },
+    };
+    const evicted = sweepStaleEffectStash(state, 1000, 500);
+    expect(evicted).toBe(1);
+    expect(Object.keys(state.effectStash!)).toEqual(['tu1::/repo/a.ts']);
+    expect(state.effectStashesUnattached).toBe(1);
+  });
+
+  it('caps at MAX_EFFECT_STASH_ENTRIES, evicting the oldest first', () => {
+    const state = freshState(0);
+    const stash: NonNullable<SessionState['effectStash']> = {};
+    for (let i = 0; i < MAX_EFFECT_STASH_ENTRIES + 5; i++) {
+      stash[`tu${i}::/repo/${i}.ts`] = { path: `/repo/${i}.ts`, stashedAt: i };
+    }
+    state.effectStash = stash;
+    const evicted = sweepStaleEffectStash(state, MAX_EFFECT_STASH_ENTRIES + 5, 10 ** 9);
+    expect(evicted).toBe(5);
+    expect(Object.keys(state.effectStash!)).toHaveLength(MAX_EFFECT_STASH_ENTRIES);
+    expect(state.effectStash!['tu0::/repo/0.ts']).toBeUndefined();
+    expect(state.effectStashesUnattached).toBe(5);
+  });
+
+  it('round-trips a stash entry through saveState/loadState', () => {
+    const state = freshState(T);
+    state.effectStash = { 'tu1::/repo/a.ts': { path: '/repo/a.ts', sha256Before: 'a'.repeat(64), stashedAt: T } };
+    saveState('effect-stash-rt', state, env);
+    const loaded = loadState('effect-stash-rt', env, T)!;
+    expect(loaded.effectStash).toEqual(state.effectStash);
+  });
+
+  it('drops a corrupt entry (bad hex, missing fields) rather than trusting it', () => {
+    fs.mkdirSync(path.join(dir, 'aer-hooks'), { recursive: true });
+    saveState('effect-stash-corrupt', freshState(T), env);
+    const file = path.join(dir, 'aer-hooks', fs.readdirSync(path.join(dir, 'aer-hooks'))[0]!);
+    fs.writeFileSync(file, JSON.stringify({
+      v: 2, createdAt: T, lastActivityAt: T, seq: 0, droppedBudget: 0, approvalsUnresolved: 0, outbox: [],
+      effectStash: {
+        'tu1::/repo/a.ts': { path: '/repo/a.ts', sha256Before: 'not-hex', stashedAt: T },
+        'tu2::/repo/b.ts': { path: '/repo/b.ts', stashedAt: T },
+        'tu3::/repo/c.ts': { stashedAt: T },
+      },
+    }));
+    const loaded = loadState('effect-stash-corrupt', env, T)!;
+    expect(loaded.effectStash!['tu1::/repo/a.ts']!.sha256Before).toBeUndefined();
+    expect(loaded.effectStash!['tu2::/repo/b.ts']).toEqual({ path: '/repo/b.ts', stashedAt: T });
+    expect(loaded.effectStash!['tu3::/repo/c.ts']).toBeUndefined();
   });
 });

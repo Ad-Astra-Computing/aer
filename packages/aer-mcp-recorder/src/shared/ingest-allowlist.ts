@@ -9,6 +9,12 @@
 //
 // decided_by and approvals_unresolved (P0-1 oversight markers) are aer-hooks
 // only; a key this package never sends is harmless.
+//
+// path_class, hash_status, sha256_before, sha256_after and bytes (effects
+// recording, P0-2) are new on this side: path_class is the client's own
+// classification of a file.written path (the server never trusts it alone),
+// and the other four carry a keyed HMAC file-content digest. See
+// hashable-path-classes.ts for the gate that decides when a digest is sent.
 
 export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'provider', 'model', 'agent', 'name', 'source', 'status', 'streaming', 'tools_available',
@@ -31,6 +37,8 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'run_id', 'thread_id', 'main_thread', 'harness_agent_id',
   'subagent_events_unattached', 'events_dropped_budget',
   'decided_by', 'approvals_unresolved',
+  'path_class', 'hash_status', 'sha256_before', 'sha256_after', 'bytes',
+  'effect_stashes_unattached',
 ]);
 
 export interface StripResult {

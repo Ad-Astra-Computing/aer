@@ -97,6 +97,19 @@ export interface SessionState {
    * way droppedBudget already accumulates across a session.
    */
   approvalsUnresolved: number;
+  /**
+   * Effects recording (P0-2): a before-digest sampled at tool_start, waiting
+   * for the matching tool_end to pair with. Keyed on `${tool_use_id}::${path}`
+   * so one call naming several files (MultiEdit, a Codex patch) stashes each
+   * independently. `sha256Before` absent means the file was new at
+   * tool_start, not an error. Evicted on match (tool_end) or by TTL
+   * (orphaned: the PostToolUse that would have closed it never arrived).
+   */
+  effectStash?: Record<string, { path: string; sha256Before?: string; stashedAt: number }>;
+  /** Stash entries evicted by TTL with no matching tool_end: computed but
+   *  lost, reported once on the closing collector.report the same way
+   *  droppedBudget already accumulates across a session. */
+  effectStashesUnattached?: number;
   outbox: OutboxEvent[];
   /**
    * The most events sent in one request since a batch ran its full request
@@ -111,6 +124,16 @@ export const MAX_OUTBOX_EVENTS = 1000;
 
 /** Most entries kept in openCalls or pendingApprovals at once; oldest dropped first. */
 export const MAX_APPROVAL_TRACKING_ENTRIES = 64;
+
+/** Most before-digest stash entries kept at once; oldest dropped first (and
+ *  counted, same as an orphaned entry past its TTL). */
+export const MAX_EFFECT_STASH_ENTRIES = 64;
+
+/** A stash entry outliving several hook-timeout windows with no matching
+ *  tool_end is orphaned, not just slow: the hook's own self-cap
+ *  (AER_HOOK_TIMEOUT_MS, default 10s) bounds one invocation, so a stash
+ *  entry open many times that long never gets a PostToolUse. */
+export const EFFECT_STASH_TTL_MS = 5 * 60 * 1000;
 
 /** State untouched this long is presumed left by a harness that went away. */
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -232,6 +255,32 @@ function validOpenCalls(v: unknown): Record<string, { callDigest: string; opened
   return Object.fromEntries(kept);
 }
 
+// path is bounded like any identifier-shaped field this store holds.
+const EFFECT_STASH_PATH_MAX_LEN = 4096;
+const EFFECT_STASH_KEY_MAX_LEN = PENDING_APPROVAL_MAX_LEN + 1 + EFFECT_STASH_PATH_MAX_LEN;
+const HEX64_RE = /^[0-9a-f]{64}$/;
+
+function validEffectStash(v: unknown): Record<string, { path: string; sha256Before?: string; stashedAt: number }> | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const entries: Array<[string, { path: string; sha256Before?: string; stashedAt: number }]> = [];
+  for (const [key, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (key.length === 0 || key.length > EFFECT_STASH_KEY_MAX_LEN) continue;
+    const rec = raw as Record<string, unknown> | null;
+    if (typeof rec !== 'object' || rec === null) continue;
+    const p = rec['path'];
+    const stashedAt = rec['stashedAt'];
+    if (typeof p !== 'string' || p.length === 0 || p.length > EFFECT_STASH_PATH_MAX_LEN) continue;
+    if (!isInt(stashedAt)) continue;
+    const sha = rec['sha256Before'];
+    const entry: { path: string; sha256Before?: string; stashedAt: number } = { path: p, stashedAt };
+    if (typeof sha === 'string' && HEX64_RE.test(sha)) entry.sha256Before = sha;
+    entries.push([key, entry]);
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((a, b) => a[1].stashedAt - b[1].stashedAt);
+  return Object.fromEntries(entries.slice(-MAX_EFFECT_STASH_ENTRIES));
+}
+
 function validPendingApprovals(v: unknown): Array<{ id: string; pushedAt: number }> | undefined {
   if (!Array.isArray(v)) return undefined;
   const kept: Array<{ id: string; pushedAt: number }> = [];
@@ -296,6 +345,9 @@ function parseState(p: Record<string, unknown>): SessionState | null {
   const pendingApprovals = validPendingApprovals(p['pendingApprovals']);
   if (pendingApprovals !== undefined) s.pendingApprovals = pendingApprovals;
   if (isInt(p['pendingApprovalSeq'])) s.pendingApprovalSeq = p['pendingApprovalSeq'];
+  const effectStash = validEffectStash(p['effectStash']);
+  if (effectStash !== undefined) s.effectStash = effectStash;
+  if (isInt(p['effectStashesUnattached'])) s.effectStashesUnattached = p['effectStashesUnattached'];
   copyTranscript(p, s);
   const reg = p['eventsRegistered'];
   if (Array.isArray(reg) && reg.every((x) => typeof x === 'string')) s.eventsRegistered = reg as string[];
@@ -416,6 +468,31 @@ export function enqueue(state: SessionState, events: OutboxEvent[]): number {
   });
   state.droppedBudget += dropped;
   return dropped;
+}
+
+/**
+ * Effects recording (P0-2): evict stash entries a PostToolUse never came for
+ * (older than ttlMs) or past the cap, counting each in effectStashesUnattached
+ * so a before-digest computed and lost is reported, not silently dropped.
+ */
+export function sweepStaleEffectStash(state: SessionState, now: number, ttlMs: number = EFFECT_STASH_TTL_MS): number {
+  const stash = state.effectStash;
+  if (stash === undefined) return 0;
+  const entries = Object.entries(stash);
+  const kept: typeof entries = [];
+  let evicted = 0;
+  for (const entry of entries) {
+    if (now - entry[1].stashedAt > ttlMs) evicted += 1;
+    else kept.push(entry);
+  }
+  kept.sort((a, b) => a[1].stashedAt - b[1].stashedAt);
+  const overflow = kept.length - MAX_EFFECT_STASH_ENTRIES;
+  const final = overflow > 0 ? kept.slice(overflow) : kept;
+  evicted += Math.max(0, overflow);
+  if (final.length === 0) delete state.effectStash;
+  else state.effectStash = Object.fromEntries(final);
+  if (evicted > 0) state.effectStashesUnattached = (state.effectStashesUnattached ?? 0) + evicted;
+  return evicted;
 }
 
 function isClosing(e: OutboxEvent): boolean {

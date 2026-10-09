@@ -11,3 +11,6 @@ export type { PrincipalKind } from './principal.js';
 export { sinkFromEnv, resolveSinkOptionsFromEnv } from './env.js';
 export type { SinkEnvOverrides } from './env.js';
 export { deriveClientRef, CLIENT_REF_PATTERN } from './client-ref.js';
+export {
+  commitmentKeyFromString, deriveKid, hashFileDigest, hashFileDigestSync, FILE_DIGEST_DOMAIN,
+} from './commitment-key.js';
