@@ -258,6 +258,11 @@ export function emitHookEvent(
         if (event.ok !== undefined) fields['ok'] = event.ok;
         if (event.isError !== undefined) fields['is_error'] = event.isError;
         send('tool.completed', fields);
+        // Effects recording (P0-2): the combined before/after file.written,
+        // when a stash matched this call. NEVER shapesOf(event) here: that
+        // would resend this call's ORDINARY shapes a second time (tool_start
+        // already sent them).
+        for (const shape of event.effectShapes ?? []) send(shape.eventType, { ...fields, ...shape.payload });
         return sent;
       }
       case 'permission': {
