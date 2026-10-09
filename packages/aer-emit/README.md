@@ -46,6 +46,20 @@ Moving from an earlier release? See [Upgrading](https://github.com/Ad-Astra-Comp
   vars, or a `NullSink` when unconfigured.
 - `resolvePrincipal(id, kind, display)`: normalizes the on-whose-behalf principal
   (id capped at 128, display at 64, kind in `user|service|ci` defaulting to `user`).
+- `commitmentKeyFromString(s)`: parses `AER_COMMITMENT_KEY` (64-hex, base64 or
+  base64url, >= 32 decoded bytes) into the `Buffer` the digest functions below
+  need, or `null` on anything shorter or unparseable, meaning the caller
+  treats the feature as off. Never silently accepts a malformed key as a
+  shorter, weaker one.
+- `deriveKid(key)`: a non-secret identifier for which commitment key produced
+  a tag, so a verifier knows which key to use and rotation is possible. Must
+  match `aer-auto-node`'s own `deriveKid` for the same key.
+- `hashFileDigest(key, chunks)` / `hashFileDigestSync(key, data)`: a keyed
+  HMAC-SHA256 tag of file content (`aer-file-digest.v1` domain, a different
+  HMAC domain from prompt/wire tags), for the opt-in file-content digests
+  `aer-hooks` and `aer-auto-node` attach to `file.written` when a commitment
+  key is configured. The streamed form never buffers a whole file to compute
+  the tag; the sync form is for test vectors and small in-memory buffers.
 
 ## Non-negotiable properties
 

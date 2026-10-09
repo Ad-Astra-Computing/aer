@@ -241,6 +241,26 @@ through a tool shape this package recognises, inside the detected workspace,
 through an allowlisted class. It does not detect or block a credential file
 being written, only decline to digest it. It does not cover file deletion.
 
+## Oversight markers (how much a human was supervising)
+
+Two more event types, needing no configuration, so a completed session's
+record can show how much a human was actually in the loop: `human.input`
+(a turn started, i.e. the agent received a prompt from a person) and
+`approval.decided` (a tool call that needed approval was allowed or
+denied, and by what: `decided_by` is `prompted` for a call a person
+approved interactively, or `policy` for one an automated rule denied
+without ever reaching a person; Claude Code never reports `human` for a
+denial, only `prompted` or `policy`). Neither carries the prompt text, the
+tool's arguments or its result, the same bodies-off rule as everything else.
+
+A session wired before this shipped needs `aer-hooks install` (or `doctor`)
+run again to pick up the two additional hook registrations this needs
+(`PermissionRequest`, `PermissionDenied`); `status`/`doctor` warn when a
+registration is missing one of them. A lost `PreToolUse` invocation (a
+crash, a timeout, a killed process, never reaching the collector) never
+gets its `approval.decided` guessed onto an unrelated open call: an
+unmatched approval request is counted unresolved instead.
+
 ## Fail-open, never blocking
 
 The `aer-hook` binary is designed so it can never break or slow the harness. It
