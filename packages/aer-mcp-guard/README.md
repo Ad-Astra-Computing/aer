@@ -65,6 +65,10 @@ if (!result.ok) {
 // result.claims.agent_id / agent_session_id / tenant_id …
 ```
 
+This core has no setup-time check: with `requireDpop`, build `opts.url` from
+your own pinned origin, never from the request's `Host` header. Only the
+Express and Hono adapters enforce `trustedOrigin` for you.
+
 By default the guard reads the token from `X-AER-Attestation` only. Pass
 `allowBearer: true` to also accept `Authorization: Bearer`, for a client that
 cannot set a custom header:
@@ -96,8 +100,8 @@ On denial the guard returns an HTTP status plus a JSON-RPC 2.0 error
 
 | status | when |
 | --- | --- |
-| **401** | no token / malformed / bad signature / expired / wrong audience or issuer |
-| **403** | token valid but revoked (introspection reports inactive) |
+| **401** | no token / malformed / bad signature / expired / wrong audience or issuer / DPoP or mTLS proof missing or invalid |
+| **403** | token valid but revoked (introspection reports inactive), or `insufficient_scope` |
 | **503** | introspection unreachable and fail-closed (token liveness unknown), or the JWKS unreachable (`jwks_unavailable`) |
 
 The request **body is never consumed**, so SSE and streaming Streamable-HTTP
@@ -112,11 +116,24 @@ for least-privilege, plus DPoP (`requireDpop`) and mTLS (`requireMtls`) holder
 binding. When you enable DPoP the guard reads the `DPoP` header for you; for mTLS
 you resolve the client-cert thumbprint from your handler and pass it via
 `resolveMtlsThumbprint`. A bound token that arrives without a valid proof is
-denied with a `401` DPoP challenge.
+denied with a `401` and a `dpop_*` or `mtls_*` reason in `data.reason` - this
+guard does not send a `WWW-Authenticate` challenge header.
 
 Resolve the thumbprint from your TLS terminator (a verified peer cert, or a
 forwarded header your trusted proxy sets and strips from client input), never
-from a header a client can set.
+from a header a client can set. `thumbprintFromForwardedClientCert` reads
+exactly the header name you pass it: it does not verify that a proxy, rather
+than the client, set it. Behind anything that doesn't strip and overwrite that
+header before your app sees it, a client can forge its own cert thumbprint and
+pass mTLS binding outright.
+
+`requireDpop` similarly needs the resource's real public origin pinned, not
+derived from the request: both adapters throw at setup unless you pass
+`trustedOrigin` alongside `requireDpop` (Express: second argument; Hono: same).
+Without it, the DPoP `htu` origin would come from the client-controlled `Host`
+header, and an attacker holding a proof captured against your real origin
+could replay it against any deployment sharing the same audience and replay
+store by spoofing `Host` to match.
 
 Note that `audience` binds a token to the resource, so a resource that serves
 more than one AER tenant should also check `claims.tenant_id` (available on the
