@@ -48,7 +48,7 @@
         pnpmDepsHashes = {
           x86_64-linux = "sha256-g1fXZEv3yp+glGZ0HjfzAOZoZSQc7fVgSOWXFAQusKg=";
           aarch64-darwin = "sha256-qevhNEma++PfdB508BucQhWdo1jQ+hEiokFZposBSnI=";
-          aarch64-linux = pkgs.lib.fakeHash;
+          aarch64-linux = "sha256-nlsxbgzKSXexVJV8Uo6fZG3UGwHIbXC1yCZGG4mS2y0=";
         };
 
         pnpmDeps = pkgs.fetchPnpmDeps {
