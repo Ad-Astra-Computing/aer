@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+### Minor Changes
+
+- [`792f56d`](https://github.com/Ad-Astra-Computing/aer/commit/792f56d0c71be89b74c6e37f985cc101a0474029) - Add opt-in file-content digests for file.written: when a commitment key is
+  configured, a tool call that writes a file gets a keyed HMAC-SHA256 tag of
+  its content before and after, computed locally and never sent as plaintext.
+  File deletion is not covered yet. The server independently re-derives the
+  file's sensitivity class and refuses the tag on any credential-shaped,
+  `.git` or otherwise non-hashable path, regardless of what the client decided.
+
 ## 0.4.1
 
 ### Patch Changes
