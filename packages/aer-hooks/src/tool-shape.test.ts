@@ -165,7 +165,6 @@ describe('what a tool call reduces to', () => {
   });
 
   it('says nothing about a tool whose shape it does not know', () => {
-    expect(shapeOfToolCall('Grep', { pattern: 'SECRET' })).toBeUndefined();
     expect(shapeOfToolCall('TodoWrite', { todos: [] })).toBeUndefined();
   });
 

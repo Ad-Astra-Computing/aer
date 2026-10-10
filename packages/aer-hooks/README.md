@@ -210,6 +210,25 @@ If you need evidence about the arguments themselves, use content commitments:
 the record carries a one-way tag you can later open against your own
 retained plaintext with a key that never leaves your machine.
 
+## Risk labels (destructive commands, credential access, privilege escalation)
+
+A shell command's programs are reduced further into closed-set labels: which
+well-known verb it ran (`git push`, `rm`, `DROP TABLE`, ...), which of a
+fixed list of flags it carried (`recursive`, `force`, `no_preserve_root`,
+...), which class of location a path belongs to (a build directory, the
+repository root, an SSH key directory, a shell startup file, ...), whether a
+privilege-elevation or service-manager wrapper (`sudo`, `doas`, `pkexec`,
+`run0`, `systemd-run`, `mdo`, `machinectl`) ran it, and similar signals the
+server uses to flag destructive commands, credential access, recorder
+tampering and privilege escalation. These labels are computed on your
+machine from the command your agent ran; the command itself, its arguments,
+file names inside a class, branch names, usernames and search patterns never
+leave your machine. An elevation or service-manager wrapper that hits a flag
+outside its own known set stops there rather than guess what it ran: the
+wrapper is still recorded, but the line reads as unresolved instead of
+risking a username, path or config file name going out as if it were a
+program name.
+
 ## Effects recording (file content digests)
 
 Set `AER_COMMITMENT_KEY` and a `Write`/`Edit`/`MultiEdit`/`apply_patch` call

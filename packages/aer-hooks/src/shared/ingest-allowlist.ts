@@ -39,6 +39,16 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'decided_by', 'approvals_unresolved',
   'path_class', 'hash_status', 'sha256_before', 'sha256_after', 'bytes',
   'effect_stashes_unattached',
+  // Malicious-behaviour detection slice 1 (aer-malicious-behaviour-detection-
+  // design.md section 4): closed-set labels computed from argv/paths that
+  // are discarded before the event is sent. Mirrors BODIES_OFF_PAYLOAD_KEYS's
+  // own slice 1 addition in the API repo. path_class is already listed above.
+  'verb', 'flags', 'target_class', 'path_count', 'glob', 'paths_touched_classes',
+  'search_class', 'wrapper', 'wrapper_flags', 'elevated',
+  'target_user_class', 'cap_class', 'group_class', 'gtfobin_elevation', 'upload',
+  'stdin_from_class', 'sql_verb', 'where_clause', 'branch_class', 'remote_class',
+  'registry_changed', 'context_changed', 'target_process_class', 'env_unset_class',
+  'env_set_class', 'history_cleared', 'interpreter_inline', 'ai_cli',
 ]);
 
 export interface StripResult {
