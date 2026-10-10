@@ -308,36 +308,104 @@ const LEADING_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', '
 /** Keywords whose whole clause runs no program of its own. */
 const CLAUSE_KEYWORDS = new Set(['fi', 'done', 'esac', 'for', 'case', 'select', 'function', 'in']);
 
+/**
+ * A program that runs another program, and the shape of its own flags.
+ *
+ * `strict` wrappers (the privilege/service-manager family, M2/M3) fail
+ * closed on a flag in neither `bare` nor `valued`: parsing stops there and
+ * the wrapped program is reported unresolved rather than guessed, so a
+ * hand-maintained flag list can miss a flag without leaking a value.
+ * Lenient launchers (env/nice/timeout/xargs/nohup/exec/command) keep the
+ * old behaviour of treating an unrecognised flag as bare: they never raise
+ * privilege, and what they could misread (a PID limit, a delimiter) is not
+ * the sensitive surface the privilege wrappers are.
+ */
+interface WrapperSpec {
+  /** This wrapper's own flags that take a following argument. */
+  valued: ReadonlySet<string>;
+  /** This wrapper's own flags that take no argument. Only consulted for a
+   *  `strict` wrapper; a lenient wrapper has no need to enumerate these. */
+  bare: ReadonlySet<string>;
+  strict: boolean;
+}
+
+function wrapper(valued: readonly string[], bare: readonly string[] = [], strict = false): WrapperSpec {
+  return { valued: new Set(valued), bare: new Set(bare), strict };
+}
+
 /** Programs that run another program, and the options of theirs that take a value. */
-const WRAPPERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ['sudo', new Set(['-u', '-g', '-C', '-D', '-h', '-p', '-r', '-t', '-U', '-T'])],
-  ['env', new Set(['-u', '-C', '-S', '--unset', '--chdir', '--split-string'])],
-  ['timeout', new Set(['-s', '-k', '--signal', '--kill-after'])],
-  ['nice', new Set(['-n', '--adjustment'])],
-  ['nohup', new Set<string>()],
-  ['exec', new Set(['-a'])],
-  ['command', new Set<string>()],
-  ['xargs', new Set(['-n', '-I', '-d', '-L', '-P', '-s', '-E', '-a', '--max-args', '--replace', '--delimiter', '--max-lines', '--max-procs', '--arg-file'])],
-  // Privilege-elevation wrappers (T6). doas/pkexec/run0/mdo/machinectl
-  // follow the generic skip-flags-then-take-first-positional path below, a
-  // known simplification. sudoedit and su are NOT here (M2): each has its
-  // own case in readProgram instead, never this generic path, since
-  // neither runs a program as its positional.
-  ['doas', new Set(['-u'])],
-  ['pkexec', new Set(['--user'])],
-  ['run0', new Set(['--uid', '--user', '--property'])],
-  // --scope takes no value (M3, security review): it is a bare flag that
-  // selects a transient scope unit, not an option with an argument. Listing
-  // it as valued swallowed the next word (the actual wrapped program) as if
-  // it were --scope's value.
-  ['systemd-run', new Set(['--uid', '--unit', '--description', '--property'])],
-  ['mdo', new Set(['-u', '-g', '-G'])],
+const WRAPPERS: ReadonlyMap<string, WrapperSpec> = new Map([
+  ['env', wrapper(['-u', '-C', '-S', '--unset', '--chdir', '--split-string'])],
+  ['timeout', wrapper(['-s', '-k', '--signal', '--kill-after'])],
+  ['nice', wrapper(['-n', '--adjustment'])],
+  ['nohup', wrapper([])],
+  ['exec', wrapper(['-a'])],
+  ['command', wrapper([])],
+  ['xargs', wrapper(['-n', '-I', '-d', '-L', '-P', '-s', '-E', '-a', '--max-args', '--replace', '--delimiter', '--max-lines', '--max-procs', '--arg-file'])],
+  // Privilege-elevation / service-manager wrappers (T6, M2/M3, security
+  // review round 3): STRICT. sudoedit and su are NOT here: each has its own
+  // case in readProgram instead, never this generic path, since neither
+  // runs a program as its positional. `sudo -e`/`--edit` is intercepted in
+  // readProgram before this table is consulted and routed through the same
+  // no-leak sudoedit-equivalent path.
+  //
+  // Flag sets below are read off each tool's own --help/man page (sudo
+  // 1.9.x, doas 6.8, pkexec/polkit 127, systemd-run/run0/machinectl from
+  // systemd), not guessed, so ordinary real-world usage resolves instead of
+  // constantly falling into the safe-but-uninformative `unknown` bucket.
+  ['sudo', wrapper(
+    ['-C', '--close-from', '-D', '--chdir', '-g', '--group', '--host', '-p', '--prompt',
+      '-R', '--chroot', '-T', '--command-timeout', '-t', '--type', '-U', '--other-user', '-u', '--user'],
+    ['-A', '--askpass', '-b', '--background', '-B', '--bell', '-E', '--preserve-env', '-e', '--edit',
+      '-H', '--set-home', '--help', '-i', '--login', '-K', '--remove-timestamp', '-k', '--reset-timestamp',
+      '-l', '--list', '-n', '--non-interactive', '-P', '--preserve-groups', '-S', '--stdin', '-s', '--shell',
+      '-V', '--version', '-v', '--validate'],
+    true,
+  )],
+  // `-h` is overloaded in sudo's own getopt string: alone it is --help, but
+  // followed by a non-option word it is a remote host (sudo's parse_args.c),
+  // the same ambiguity `-e`/sudoedit has for a different reason. Leaving it
+  // out of both sets fails closed (unknown) rather than risk the host
+  // leaking as `command` the way it did when `-h` sat in `bare` (security
+  // review round 4).
+  ['doas', wrapper(['-C', '-u'], ['-L', '-n', '-s'], true)],
+  ['pkexec', wrapper(['--user'], ['--disable-internal-agent', '--keep-cwd', '--version', '--help'], true)],
+  ['run0', wrapper(
+    ['--machine', '--unit', '-u', '--user', '-g', '--group', '--property', '--description', '--slice',
+      '--nice', '-D', '--chdir', '--setenv', '--background', '--shell-prompt-prefix', '--lightweight', '--area'],
+    ['-h', '--help', '-V', '--version', '--no-ask-password', '--slice-inherit', '--via-shell', '-i',
+      '--pty', '--pty-late', '--pipe', '--empower'],
+    true,
+  )],
+  ['systemd-run', wrapper(
+    ['-H', '--host', '-M', '--machine', '-u', '--unit', '-p', '--property', '--description', '--slice',
+      '--expand-environment', '--service-type', '--uid', '--gid', '--nice', '--working-directory',
+      '--root-directory', '-E', '--setenv', '--json', '--job-mode', '--background', '--path-property',
+      '--socket-property', '--on-active', '--on-boot', '--on-startup', '--on-unit-active',
+      '--on-unit-inactive', '--on-calendar'],
+    // --scope takes no value (M3, security review): it is a bare flag that
+    // selects a transient scope unit, not an option with an argument.
+    // Listing it as valued swallowed the next word (the actual wrapped
+    // program) as if it were --scope's value.
+    ['-h', '--help', '--version', '--no-ask-password', '--user', '--scope', '--slice-inherit',
+      '--expand-environment', '--no-block', '-r', '--remain-after-exit', '--wait', '--send-sighup',
+      '-d', '--same-dir', '-R', '--same-root-dir', '-t', '--pty', '-T', '--pty-late', '-P', '--pipe',
+      '-q', '--quiet', '-v', '--verbose', '-G', '--collect', '-S', '--shell', '--ignore-failure',
+      '--no-pager', '--on-timezone-change'],
+    true,
+  )],
+  ['mdo', wrapper(['-u', '-g', '-G'], [], true)],
   // machinectl (T6, M3): `machinectl shell [user@]<host> <command>` is an
-  // elevation route the design doc groups with run0/systemd-run. Its real
-  // flag set is not modelled beyond the common host selectors; the `shell`
-  // subcommand itself is read as a (bogus) wrapped-program name, the same
+  // elevation route the design doc groups with run0/systemd-run. The
+  // `shell` subcommand itself is read as a (bogus) wrapped-program name, a
   // known simplification already accepted for the other generic wrappers.
-  ['machinectl', new Set(['-H', '--host', '-M', '--machine'])],
+  ['machinectl', wrapper(
+    ['-H', '--host', '-M', '--machine', '-p', '--property', '-P', '--kill-whom', '-s', '--signal',
+      '--uid', '-E', '--setenv'],
+    ['-h', '--help', '--version', '--no-pager', '--no-legend', '--no-ask-password', '--system', '--user',
+      '--value', '-q', '--quiet', '-a', '--all', '-l', '--full', '--read-only', '--mkdir'],
+    true,
+  )],
 ]);
 
 /** Elevation-wrapper program names (T6), closed set `wrapper`. `other` is
@@ -400,6 +468,9 @@ const RECORDER_PROCESS_NAMES: ReadonlySet<string> = new Set(['aer-hook', 'aer-au
 const HARNESS_PROCESS_NAMES: ReadonlySet<string> = new Set(['claude', 'codex', 'gemini', 'copilot', 'opencode']);
 
 const GROUP_CLASS_SET: ReadonlySet<string> = new Set(['sudo', 'wheel', 'admin', 'adm', 'docker', 'lxd', 'disk', 'kvm', 'shadow', 'root']);
+/** su's own flags that take a value, so their value is never mistaken for
+ *  the username positional (fix, security review round 3). */
+const SU_VALUED: ReadonlySet<string> = new Set(['-c', '-s', '-g', '-G', '-w', '--command']);
 const PROTECTED_BRANCH_RE = /^(main|master|prod.*|release\/.*)$/;
 
 /** The words of one command after its program, redirections and their targets removed. */
@@ -420,23 +491,59 @@ function argumentWords(command: Token[], from: number): Word[] {
   return words;
 }
 
-/** Index of the first program word of a wrapper's arguments, or -1. */
-function wrappedProgramIndex(wrapper: string, args: Word[]): number {
-  const valued = WRAPPERS.get(wrapper)!;
+interface WrapperParse {
+  /** Index of the wrapped program's name, or -1 when none was found or
+   *  parsing had to stop before one could be identified. */
+  at: number;
+  /** End (exclusive) of the region of `args` that was read as the
+   *  wrapper's OWN flags. Never includes the wrapped command's own
+   *  arguments, so a caller scanning for the wrapper's own flags (e.g.
+   *  `wrapper_flags`) cannot misattribute something the wrapped program
+   *  took (fix: wrapper_flags previously scanned the whole args array). */
+  flagEnd: number;
+  /** A `strict` wrapper hit a flag that is in neither its `bare` nor its
+   *  `valued` set: parsing stopped right there rather than guessing that
+   *  the next word is the wrapped program. The wrapper definitely ran
+   *  (`at === -1` here), but what it ran is unknown, never approximated. */
+  unknownFlag: boolean;
+}
+
+/** The wrapped-program boundary of a wrapper's own arguments. Fails closed
+ *  for a `strict` wrapper (see WrapperSpec): an unrecognised flag stops
+ *  parsing instead of letting its value be mistaken for the wrapped
+ *  program (M2/M3, security review round 3). A lenient wrapper keeps the
+ *  legacy behaviour of treating an unrecognised flag as bare. */
+function wrappedProgramIndex(wrapperName: string, args: Word[]): WrapperParse {
+  const spec = WRAPPERS.get(wrapperName)!;
   let skippedDuration = false;
   for (let i = 0; i < args.length; i += 1) {
     const w = args[i]!;
-    if (w.unsafe) return -1;
-    if (w.text === '--') return i + 1 < args.length ? i + 1 : -1;
-    if (w.text.startsWith('-') && w.text.length > 1) {
-      if (valued.has(w.text)) i += 1;
-      continue;
+    if (w.unsafe) return { at: -1, flagEnd: i, unknownFlag: false };
+    if (w.text === '--') {
+      const at = i + 1 < args.length ? i + 1 : -1;
+      return { at, flagEnd: i + 1, unknownFlag: false };
     }
-    if (wrapper === 'env' && ASSIGNMENT_RE.test(w.text)) continue;
-    if (wrapper === 'timeout' && !skippedDuration) { skippedDuration = true; continue; }
-    return i;
+    if (w.text.startsWith('-') && w.text.length > 1) {
+      const eq = w.text.indexOf('=');
+      const name = eq === -1 ? w.text : w.text.slice(0, eq);
+      if (eq !== -1) {
+        // A glued `--opt=value`: recognised whether the option is normally
+        // bare (`--preserve-env=list`) or valued, since the value travels
+        // in the same word either way.
+        if (spec.valued.has(name) || spec.bare.has(name)) continue;
+        if (spec.strict) return { at: -1, flagEnd: i, unknownFlag: true };
+        continue;
+      }
+      if (spec.valued.has(w.text)) { i += 1; continue; }
+      if (spec.bare.has(w.text)) continue;
+      if (spec.strict) return { at: -1, flagEnd: i, unknownFlag: true };
+      continue; // lenient: unrecognised flag, legacy "treat as bare" fallback.
+    }
+    if (wrapperName === 'env' && ASSIGNMENT_RE.test(w.text)) continue;
+    if (wrapperName === 'timeout' && !skippedDuration) { skippedDuration = true; continue; }
+    return { at: i, flagEnd: i, unknownFlag: false };
   }
-  return -1;
+  return { at: -1, flagEnd: args.length, unknownFlag: false };
 }
 
 // ── hosts ───────────────────────────────────────────────────────────────────
@@ -694,6 +801,22 @@ function classifyTargetArgs(positionals: readonly Word[]): string | undefined {
   if (anyUnsafe && bestRank <= UNKNOWN_RANK) return undefined;
   return best;
 }
+
+// Known gap (reviewer-accepted, pre-existing, not fixed this round): this
+// F2 protection is order-DEPENDENT across invocations of the same program.
+// `rm "$DIR"; rm -rf node_modules` (unsafe first) correctly clears
+// target_class to undefined, because the first invocation's label omits
+// the key entirely and the second invocation's mergeTargetClass(undefined,
+// 'dep_dir') is then invoked and returns undefined. But `rm -rf
+// node_modules; rm "$DIR"` (unsafe SECOND) keeps 'dep_dir': the second
+// invocation's label also omits the key (classifyTargetArgs again returns
+// undefined), and mergeLabel's `Object.entries(from)` loop skips a key
+// `from` never set at all, so the special merge never runs and the
+// already-recorded 'dep_dir' is left untouched. A real fix needs mergeLabel
+// to distinguish "this invocation read nothing" from "this invocation read
+// something unsafe", which the current ProgramLabel shape (a plain object,
+// closed-set values only) has no sentinel for without widening the
+// target_class enum itself.
 
 /** The non-flag (positional) arguments of a simple, already-parsed command,
  *  plus whether any of them is unsafe (an expansion), which makes every
@@ -979,6 +1102,84 @@ function mergeTargetClass(a: string | undefined, b: string | undefined): string 
   return targetClassRank(b) > targetClassRank(a) ? b : a;
 }
 
+/**
+ * Severity rank for `verb` across the git/kubectl/aws/az/gcloud/docker verbs
+ * this module produces (security review round 3, M4: first-invocation-wins
+ * on `verb` is its own evasion class, so `git reset; git push --force origin
+ * main` must read as the force-push, not the harmless reset placed first).
+ * Destructive, data-plane or exfiltration-shaped actions outrank read-only
+ * or merely context-changing ones. A verb not listed here ranks below
+ * everything named; a program with only one possible verb (rm, chmod) needs
+ * no entry.
+ */
+const VERB_RANK: ReadonlyMap<string, number> = new Map([
+  // git
+  ['git push', 8],
+  ['git branch -D', 6],
+  ['git reset --hard', 6],
+  ['git clean', 4],
+  ['git remote set-url', 3],
+  ['git checkout --', 2],
+  ['git reset', 0],
+  // aws
+  ['aws rds delete-db-instance', 9],
+  ['aws s3 rm', 7],
+  ['aws sts assume-role', 3],
+  ['aws sts get-session-token', 1],
+  // gcloud
+  ['gcloud delete', 8],
+  ['gcloud --impersonate-service-account', 3],
+  ['gcloud auth print-access-token', 1],
+  // az
+  ['az delete', 8],
+  ['az role assignment create', 5],
+  ['az account get-access-token', 1],
+  ['az', 0],
+  // kubectl
+  ['kubectl delete', 8],
+  ['kubectl config view --raw', 1],
+  ['kubectl', 0],
+  // terraform
+  ['terraform destroy', 9],
+  // docker
+  ['docker push', 5],
+  ['docker system prune', 4],
+  ['docker login', 1],
+  // supply chain
+  ['npm publish', 5], ['pnpm publish', 5], ['yarn publish', 5],
+  ['cargo publish', 5], ['twine upload', 5], ['gem push', 5],
+  ['gh repo create', 2], ['gh release create', 2], ['gh auth token', 1],
+]);
+
+/** `delete`/`alter` on a WHERE-protected row is still destructive, but DROP
+ *  and TRUNCATE discard the whole object with no row-level undo at all. */
+const SQL_VERB_RANK: ReadonlyMap<string, number> = new Map([
+  ['drop', 4], ['truncate', 3], ['delete', 2], ['alter', 1],
+]);
+
+/** sys_admin is near-root-equivalent; setuid/setgid and dac_override can
+ *  escalate or bypass permission checks outright; sys_ptrace enables
+ *  process injection; net_raw/net_bind are comparatively narrow. */
+const CAP_CLASS_RANK: ReadonlyMap<string, number> = new Map([
+  ['sys_admin', 7], ['setuid', 6], ['dac_override', 5], ['sys_ptrace', 4],
+  ['setgid', 3], ['net_raw', 2], ['net_bind', 1], ['other', 0],
+]);
+
+/** The higher-ranked of two values of a ranked scalar field, order-
+ *  independent: a value not in `rank` sits below every named one but above
+ *  nothing (so two unranked values keep the first, as the generic fallback
+ *  already does). Mirrors mergeTargetClass's shape for `verb`/`sql_verb`/
+ *  `cap_class` (M4, security review round 3): a second, safer invocation of
+ *  the same program must never hide a more severe first one, nor the
+ *  reverse. */
+function rankedMerge(rank: ReadonlyMap<string, number>, a: unknown, b: unknown): unknown {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  const ra = rank.get(a as string) ?? -1;
+  const rb = rank.get(b as string) ?? -1;
+  return rb > ra ? b : a;
+}
+
 function mergeAiCli(
   a: NonNullable<ProgramLabel['ai_cli']> | undefined,
   b: NonNullable<ProgramLabel['ai_cli']> | undefined,
@@ -1006,6 +1207,12 @@ const SPECIAL_SCALAR_MERGE: Readonly<Record<string, (a: unknown, b: unknown) => 
   // anywhere on the line must not be hidden by a second, safer invocation.
   where_clause: (a, b) => (a === undefined ? b : b === undefined ? a : (a as boolean) && (b as boolean)),
   ai_cli: (a, b) => mergeAiCli(a as ProgramLabel['ai_cli'], b as ProgramLabel['ai_cli']),
+  // M4 (security review round 3): first-invocation-wins on verb/sql_verb/
+  // cap_class is itself an evasion class, the mirror image of the bug this
+  // merge exists to fix. See VERB_RANK/SQL_VERB_RANK/CAP_CLASS_RANK above.
+  verb: (a, b) => rankedMerge(VERB_RANK, a, b),
+  sql_verb: (a, b) => rankedMerge(SQL_VERB_RANK, a, b),
+  cap_class: (a, b) => rankedMerge(CAP_CLASS_RANK, a, b),
 };
 
 /**
@@ -1116,6 +1323,19 @@ function readCommand(command: Token[], acc: Acc): void {
   if (sawAssignment) note(acc.programs, 'env', MAX_PROGRAMS);
 }
 
+/** The file `sudoedit`/`sudo -e` opens, reduced to a path_class only, never
+ *  the path or its basename (M2). Skips the values of sudo's own valued
+ *  flags when hunting for the file positional (fix, security review round
+ *  3): `sudoedit -u root /etc/sudoers` previously lost its path_class
+ *  because `-u`'s value was mistaken for the file argument. */
+function recordSudoeditTarget(acc: Acc, program: string, args: Word[]): void {
+  const target = positionals(args, WRAPPERS.get('sudo')!.valued)[0];
+  if (target !== undefined && !target.unsafe) {
+    const cls = classifyPath(target.text);
+    if (cls !== null) recordLabel(acc, program, { path_class: cls });
+  }
+}
+
 function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated = false): void {
   const program = programName(word);
   if (program === undefined) {
@@ -1141,13 +1361,26 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
   // its basename) are reported.
   if (program === 'sudoedit') {
     recordLabel(acc, program, { wrapper: program, verb: 'sudoedit', elevated: true });
-    const { positionals } = plainPositionals(args);
-    const target = positionals[0];
-    if (target !== undefined && !target.unsafe) {
-      const cls = classifyPath(target.text);
-      if (cls !== null) recordLabel(acc, program, { path_class: cls });
-    }
+    recordSudoeditTarget(acc, program, args);
     return;
+  }
+
+  // sudo -e / --edit (M2 follow-up, security review round 3): this flag
+  // routes sudo into the exact same edit mode as the standalone `sudoedit`
+  // binary (sudo's own usage synopsis lists `-e` as a distinct mode from
+  // running a command). It never runs a program either, so it must go
+  // through the identical no-leak path, never the generic wrapper-
+  // positional path below, which would otherwise read the edited file as
+  // `command`. Checked only within sudo's OWN flag region (fix, security
+  // review round 4): `sudo mysql -e "DROP DATABASE prod"` is mysql's `-e`,
+  // not sudo's, and scanning the whole argv for `-e` hid mysql entirely.
+  if (program === 'sudo') {
+    const sudoParse = wrappedProgramIndex('sudo', args);
+    if (hasFlag(args.slice(0, sudoParse.flagEnd), '-e', '--edit')) {
+      recordLabel(acc, program, { wrapper: program, verb: 'sudoedit', elevated: true });
+      recordSudoeditTarget(acc, program, args);
+      return;
+    }
   }
 
   // su (M2, security review, bodies-off leak): its positional is a
@@ -1157,8 +1390,11 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
   // `sh -c` is below, never stored itself.
   if (program === 'su') {
     recordLabel(acc, program, { wrapper: program, elevated: true });
-    const { positionals } = plainPositionals(args);
-    const user = positionals.find((w) => w.text !== '-');
+    // Skip the VALUES of su's own valued flags when hunting for the
+    // username positional (fix, security review round 3): `su -c "<cmd>"`
+    // previously misread the -c string's content as the username, and a
+    // username given AFTER -c's value (`su -c "..." root`) was never seen.
+    const user = positionals(args, SU_VALUED).find((w) => w.text !== '-');
     if (user === undefined) {
       recordLabel(acc, program, { target_user_class: 'root' });
     } else if (!user.unsafe) {
@@ -1167,28 +1403,48 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
     if (depth < MAX_DEPTH) {
       const cIndex = args.findIndex((w) => !w.unsafe && w.text === '-c');
       const value = cIndex === -1 ? undefined : args[cIndex + 1];
+      // Known gap (reviewer-accepted, pre-existing): `elevated` is not
+      // threaded through this walk, so `sudo su -c "rm -rf /"` does not
+      // mark the nested `rm` as elevated even though it genuinely runs as
+      // whatever user `su` switched to. Not fixed here; see the identical
+      // note on the sh/bash `-c` walk below.
       if (value !== undefined && !value.unsafe) walk(value.text, acc, depth + 1);
     }
     return;
   }
 
   if (WRAPPERS.has(program) && depth < MAX_DEPTH) {
-    const at = wrappedProgramIndex(program, args);
-    if (at !== -1) {
-      const elevates = ELEVATING_WRAPPER_NAMES.has(program);
-      if (WRAPPER_LABEL_NAMES.has(program)) {
-        const wrapperFlags = args.filter((w) => !w.unsafe && WRAPPER_FLAG_LABELS.has(w.text)).map((w) => w.text);
-        recordLabel(acc, program, {
-          wrapper: program,
-          ...(elevates ? { elevated: true } : {}),
-          ...(wrapperFlags.length > 0 ? { wrapper_flags: wrapperFlags } : {}),
-        });
-      }
+    const parsed = wrappedProgramIndex(program, args);
+    const elevates = ELEVATING_WRAPPER_NAMES.has(program);
+    if (WRAPPER_LABEL_NAMES.has(program)) {
+      // Only the wrapper's OWN flag region (fix, security review round 3):
+      // this previously scanned the whole args array, so `sudo systemd-run
+      // --scope ...` reported --scope as one of SUDO's wrapper_flags even
+      // though it belongs to systemd-run.
+      const wrapperFlags = args.slice(0, parsed.flagEnd)
+        .filter((w) => !w.unsafe && WRAPPER_FLAG_LABELS.has(w.text)).map((w) => w.text);
+      recordLabel(acc, program, {
+        wrapper: program,
+        ...(elevates ? { elevated: true } : {}),
+        ...(wrapperFlags.length > 0 ? { wrapper_flags: wrapperFlags } : {}),
+      });
+    }
+    if (parsed.unknownFlag) {
+      // Fail closed (M2/M3 structural fix, security review round 3): a
+      // strict elevation/service-manager wrapper hit a flag its own list
+      // does not recognise. The wrapper itself is already recorded above;
+      // its target must never be guessed from the unknown flag's value, so
+      // parsing stops here and the line is marked unknown rather than risk
+      // sending a username, path or config basename as a program name.
+      acc.unknown = true;
+      return;
+    }
+    if (parsed.at !== -1) {
       // Elevation inherited from an outer wrapper must survive passing
       // through a non-elevating launcher (security review F1): `sudo
       // xargs rm -rf /` still runs `rm` as root even though `xargs` itself
       // never elevates.
-      readProgram(args[at]!, args.slice(at + 1), acc, depth + 1, elevated || elevates);
+      readProgram(args[parsed.at]!, args.slice(parsed.at + 1), acc, depth + 1, elevated || elevates);
       return;
     }
   }
@@ -1200,6 +1456,11 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
   if (SHELL_DASH_C.has(program) && depth < MAX_DEPTH) {
     const cIndex = args.findIndex((w) => !w.unsafe && w.text === '-c');
     const value = cIndex === -1 ? undefined : args[cIndex + 1];
+    // Known gap (reviewer-accepted, pre-existing): `elevated` is not
+    // threaded through this walk, so `sudo sh -c "rm -rf /"` does not mark
+    // the nested `rm` as elevated even though the shell it runs in does.
+    // Not fixed here (would need `elevated` on readCommand/walk's own
+    // signature, a broader change than this round's scope).
     if (value !== undefined && !value.unsafe) {
       walk(value.text, acc, depth + 1);
     }

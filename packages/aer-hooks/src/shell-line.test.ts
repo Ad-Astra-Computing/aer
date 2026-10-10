@@ -322,3 +322,192 @@ describe('systemd-run --scope and machinectl (M3, security review)', () => {
     expect(r.labels['machinectl']?.elevated).toBe(true);
   });
 });
+
+describe('elevation wrappers fail closed on an unrecognised flag (M2/M3 structural fix, security review round 3)', () => {
+  // Round 3's review found these nine leaks still reaching the wire as
+  // `command`, each a flag missing from a wrapper's "known valued" list.
+  // The fix is structural (fail closed on an unknown flag), so each case
+  // is a canary: the raw value must never appear in the emitted JSON.
+  const canaries: Array<[line: string, canary: string, expectedProgram: string]> = [
+    ['run0 -u deploy-svc-acct id', 'deploy-svc-acct', 'id'],
+    ['run0 -D /srv/clients/acme-merger id', 'acme-merger', 'id'],
+    ['systemd-run -u acme-merger-job id', 'acme-merger-job', 'id'],
+    ['systemd-run --working-directory /srv/clients/acme-merger id', 'acme-merger', 'id'],
+    ['doas -C /etc/acme-doas.conf id', 'acme-doas', 'id'],
+    ['sudo --user deploy-svc-acct id', 'deploy-svc-acct', 'id'],
+    ['sudo -R /srv/acme-chroot id', 'acme-chroot', 'id'],
+  ];
+
+  it.each(canaries)('%s never sends the flag value as command, and resolves %s', (line, canary, expectedProgram) => {
+    const r = reduceShellLine(line);
+    expect(JSON.stringify(r)).not.toContain(canary);
+    expect(r.programs).toContain(expectedProgram);
+  });
+
+  it('sudo -e and --edit both route through the no-leak sudoedit-equivalent path, never the wrapper-positional path', () => {
+    for (const flag of ['-e', '--edit']) {
+      const r = reduceShellLine(`sudo ${flag} /srv/clients/acme-merger-terms.md`);
+      expect(r.programs).toEqual(['sudo']);
+      expect(r.labels['sudo']).toEqual({ wrapper: 'sudo', verb: 'sudoedit', elevated: true });
+      expect(JSON.stringify(r)).not.toMatch(/acme-merger-terms/);
+    }
+  });
+
+  it('sudo -e reports the edited file\'s path_class like sudoedit does, never the path', () => {
+    const r = reduceShellLine('sudo -e /etc/sudoers');
+    expect(r.labels['sudo']?.path_class).toBe('sudoers');
+    expect(JSON.stringify(r)).not.toMatch(/\/etc\/sudoers/);
+  });
+
+  // Security review round 4: the sudo -e/--edit check scanned the whole
+  // argv, so the WRAPPED program's own -e flag (mysql, perl, grep, ...) was
+  // mistaken for sudo's edit mode, hiding the real command entirely.
+  it('a wrapped program\'s own -e flag is not mistaken for sudo\'s edit mode', () => {
+    const dropped = reduceShellLine('sudo mysql -e "DROP DATABASE prod"');
+    expect(dropped.programs).toEqual(['sudo', 'mysql']);
+    expect(dropped.labels['mysql']?.sql_verb).toBe('drop');
+
+    const perl = reduceShellLine("sudo perl -e '...'");
+    expect(perl.programs).toEqual(['sudo', 'perl']);
+
+    const grep = reduceShellLine('sudo grep -e pat /etc/shadow');
+    expect(grep.programs).toEqual(['sudo', 'grep']);
+
+    // sudo's OWN -e still works when it is genuinely sudo's.
+    const edit = reduceShellLine('sudo -u root -e /etc/sudoers');
+    expect(edit.programs).toEqual(['sudo']);
+    expect(edit.labels['sudo']?.path_class).toBe('sudoers');
+  });
+
+  // Security review round 4: sudo's `-h` is overloaded (--help alone, or a
+  // remote host when followed by a word), and this round had put it in
+  // sudo's bare set, so `sudo -h <host> <cmd>` leaked the host as `command`.
+  it('sudo -h degrades to unknown rather than leaking a remote host name', () => {
+    const r = reduceShellLine('sudo -h acme-db01.internal id');
+    expect(r.unknown).toBe(true);
+    expect(JSON.stringify(r)).not.toMatch(/acme-db01/);
+  });
+
+  it('a genuinely unrecognised future flag degrades to unknown rather than leaking (fail-closed, not an exhaustive list)', () => {
+    for (const line of [
+      'sudo --totally-new-future-flag-xyz id',
+      'doas --totally-new-future-flag-xyz id',
+      'pkexec --totally-new-future-flag-xyz id',
+      'run0 --totally-new-future-flag-xyz id',
+      'systemd-run --totally-new-future-flag-xyz id',
+      'machinectl --totally-new-future-flag-xyz id',
+    ]) {
+      const r = reduceShellLine(line);
+      expect(r.unknown).toBe(true);
+      // The wrapper itself is still recorded as having run, elevated where
+      // applicable; `id` (the thing actually run) is never guessed.
+      expect(r.programs).not.toContain('id');
+      expect(JSON.stringify(r)).not.toMatch(/\bid\b/);
+    }
+  });
+
+  it('ordinary, well-documented real-world usage of every elevation wrapper still resolves (not everything falls into unknown)', () => {
+    const cases: Array<[line: string, expectedProgram: string]> = [
+      ['sudo -u deploy make install', 'make'],
+      ['sudo -i -u deploy -- make install', 'make'],
+      ['sudo --preserve-env=PATH make test', 'make'],
+      ['doas -u deploy make install', 'make'],
+      ['doas -n make install', 'make'],
+      ['pkexec --user deploy make install', 'make'],
+      ['run0 --user deploy make install', 'make'],
+      ['run0 --pty make install', 'make'],
+      ['systemd-run --unit=myjob --property=X=Y make install', 'make'],
+      ['systemd-run --scope --pty make install', 'make'],
+      ['machinectl shell root@ /bin/bash', undefined as unknown as string],
+    ];
+    for (const [line, expectedProgram] of cases) {
+      const r = reduceShellLine(line);
+      if (expectedProgram !== undefined) {
+        expect(r.unknown).toBe(false);
+        expect(r.programs).toContain(expectedProgram);
+      }
+    }
+  });
+});
+
+describe('wrapper_flags scans only the wrapper\'s own arguments, never the wrapped command\'s (fix, security review round 3)', () => {
+  it('sudo rm -i x never reports -i (rm\'s own flag) as one of sudo\'s wrapper_flags', () => {
+    const r = reduceShellLine('sudo rm -i x');
+    expect(r.labels['sudo']?.wrapper_flags).toBeUndefined();
+  });
+
+  it('sudo sh -c "..." never reports -c (sh\'s own flag) as one of sudo\'s wrapper_flags', () => {
+    const r = reduceShellLine('sudo sh -c "echo hi"');
+    expect(r.labels['sudo']?.wrapper_flags).toBeUndefined();
+  });
+
+  it('sudo systemd-run --scope ... never reports --scope as one of sudo\'s wrapper_flags, only systemd-run\'s', () => {
+    const r = reduceShellLine('sudo systemd-run --scope rm -rf /');
+    expect(r.labels['sudo']?.wrapper_flags).toBeUndefined();
+    expect(r.labels['systemd-run']?.wrapper_flags).toContain('--scope');
+  });
+});
+
+describe('su -c and sudoedit -u no longer mis-skip a valued flag\'s value (fix, security review round 3)', () => {
+  it('su -c "<cmd>" never reads the -c string as the username; defaults to root', () => {
+    const r = reduceShellLine('su -c "cat /etc/shadow"');
+    expect(r.labels['su']?.target_user_class).toBe('root');
+    expect(JSON.stringify(r)).not.toMatch(/shadow/);
+  });
+
+  it('su -c "<cmd>" root reads the username given AFTER -c\'s value', () => {
+    const r = reduceShellLine('su -c "cat /etc/shadow" root');
+    expect(r.labels['su']?.target_user_class).toBe('root');
+    expect(JSON.stringify(r)).not.toMatch(/shadow/);
+  });
+
+  it('sudoedit -u root /etc/sudoers reports the file\'s path_class, not losing it to -u\'s value', () => {
+    const r = reduceShellLine('sudoedit -u root /etc/sudoers');
+    expect(r.labels['sudoedit']?.path_class).toBe('sudoers');
+    expect(JSON.stringify(r)).not.toMatch(/\/etc\/sudoers/);
+  });
+});
+
+describe('verb/sql_verb/cap_class first-invocation-wins is itself an evasion class (M4, security review round 3)', () => {
+  it('a force-push placed SECOND is never hidden by a harmless reset placed first', () => {
+    const r = reduceShellLine('git reset; git push --force origin main');
+    expect(r.labels['git']?.verb).toBe('git push');
+    expect(r.labels['git']?.flags).toContain('force');
+    expect(r.labels['git']?.branch_class).toBe('protected');
+  });
+
+  it('a namespace delete placed SECOND is never hidden by a context switch placed first', () => {
+    const r = reduceShellLine('kubectl config use-context prod; kubectl delete ns prod');
+    expect(r.labels['kubectl']?.verb).toBe('kubectl delete');
+  });
+
+  it('a DROP placed SECOND is never hidden by an ALTER placed first', () => {
+    const r = reduceShellLine('psql -c "ALTER TABLE accounts ADD COLUMN x int"; psql -c "DROP TABLE users"');
+    expect(r.labels['psql']?.sql_verb).toBe('drop');
+  });
+
+  it('a destructive s3 rm placed SECOND is never hidden by a read-only sts call placed first', () => {
+    const r = reduceShellLine('aws sts get-session-token; aws s3 rm s3://bucket --recursive');
+    expect(r.labels['aws']?.verb).toBe('aws s3 rm');
+    expect(r.labels['aws']?.flags).toContain('recursive');
+  });
+
+  it('the higher-ranked verb/sql_verb wins regardless of which invocation comes first', () => {
+    const forward = reduceShellLine('git reset; git push --force origin main');
+    const backward = reduceShellLine('git push --force origin main; git reset');
+    expect(forward.labels['git']?.verb).toBe('git push');
+    expect(backward.labels['git']?.verb).toBe('git push');
+
+    const sqlForward = reduceShellLine('psql -c "DELETE FROM a"; psql -c "DROP TABLE b"');
+    const sqlBackward = reduceShellLine('psql -c "DROP TABLE b"; psql -c "DELETE FROM a"');
+    expect(sqlForward.labels['psql']?.sql_verb).toBe('drop');
+    expect(sqlBackward.labels['psql']?.sql_verb).toBe('drop');
+  });
+
+  it('cap_class ranks the same way: a sys_admin capability is never hidden by a lower one', () => {
+    const forward = reduceShellLine('setcap cap_net_raw=ep /a; setcap cap_sys_admin=ep /b');
+    const backward = reduceShellLine('setcap cap_sys_admin=ep /b; setcap cap_net_raw=ep /a');
+    expect(forward.labels['setcap']?.cap_class).toBe('sys_admin');
+    expect(backward.labels['setcap']?.cap_class).toBe('sys_admin');
+  });
+});
