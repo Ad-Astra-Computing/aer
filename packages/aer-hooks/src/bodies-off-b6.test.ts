@@ -119,3 +119,119 @@ describe('B6: a future Codex OTel adapter cannot leak tool_result args/output', 
     expect(payload['duration_ms']).toBe(42);
   });
 });
+
+// Malicious-behaviour detection slice 1: the closed-set labels computed in
+// shell-line.ts/tool-shape.ts are argv/path/pattern-derived, so this suite
+// feeds adversarial canary strings through the real hook pipeline and
+// proves none of them ever reaches the wire, only the labels they produced.
+describe('slice 1: risk labels never carry the raw argv, path, branch name or search pattern', () => {
+  it('a sudo-wrapped rm -rf on a canary-named directory emits labels, never the path', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'sudo rm -rf /home/CANARYUSER/CANARYSECRETDIR' },
+    });
+    expect(wire).not.toContain('CANARYUSER');
+    expect(wire).not.toContain('CANARYSECRETDIR');
+    expect(wire).toContain('"wrapper":"sudo"');
+    expect(wire).toContain('"verb":"rm"');
+    expect(wire).toContain('"recursive"');
+    expect(wire).toContain('"force"');
+  });
+
+  it('a git push --force to a canary branch emits branch_class, never the branch name', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --force origin CANARYBRANCHNAME' },
+    });
+    expect(wire).not.toContain('CANARYBRANCHNAME');
+    expect(wire).toContain('"branch_class":"other"');
+    expect(wire).toContain('"remote_class":"origin"');
+  });
+
+  it('a claude CLI with a bypass flag and a canary extra flag emits ai_cli without the extra', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'claude --dangerously-skip-permissions --model CANARYMODEL -p "CANARYPROMPT"' },
+    });
+    expect(wire).not.toContain('CANARYMODEL');
+    expect(wire).not.toContain('CANARYPROMPT');
+    expect(wire).toContain('"ai_cli"');
+    expect(wire).toContain('--dangerously-skip-permissions');
+  });
+
+  it('a shell-out through sh -c reduces to the wrapped verb, never the -c string', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'sudo sh -c "rm -rf /CANARYPATH"' },
+    });
+    expect(wire).not.toContain('CANARYPATH');
+    expect(wire).toContain('"wrapper":"sudo"');
+    expect(wire).toContain('"verb":"rm"');
+  });
+
+  it('python -c stays opaque: interpreter_inline only, never the inline code', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'python -c "CANARYPYTHONCODE"' },
+    });
+    expect(wire).not.toContain('CANARYPYTHONCODE');
+    expect(wire).toContain('"interpreter_inline":true');
+  });
+
+  it('Grep on a credential-shaped path and pattern emits only the classes, never the path or pattern', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Grep',
+      tool_input: { pattern: 'CANARY_SECRET_VALUE', path: '/home/CANARYUSER/.ssh/id_rsa' },
+    });
+    expect(wire).not.toContain('CANARY_SECRET_VALUE');
+    expect(wire).not.toContain('CANARYUSER');
+    expect(wire).toContain('"path_class":"ssh_key"');
+    expect(wire).toContain('"search_class":"secrets_dir"');
+  });
+
+  it('Glob on a non-credential pattern emits no search_class', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Glob',
+      tool_input: { pattern: '**/*.CANARYEXT', path: '/repo/CANARYPROJECT' },
+    });
+    expect(wire).not.toContain('CANARYEXT');
+    expect(wire).not.toContain('CANARYPROJECT');
+    expect(wire).not.toContain('search_class');
+  });
+
+  it('a setuid chmod on a canary script emits cap_class, never the script path', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'chmod u+s /opt/CANARYSCRIPT.sh' },
+    });
+    expect(wire).not.toContain('CANARYSCRIPT');
+    expect(wire).toContain('"cap_class":"setuid"');
+  });
+
+  it('usermod joining a canary-named group emits group_class other, never the group name', () => {
+    const wire = emitOne({
+      session_id: 's1',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'usermod -aG CANARYGROUPNAME $USER' },
+    });
+    expect(wire).not.toContain('CANARYGROUPNAME');
+    expect(wire).toContain('"group_class":"other"');
+  });
+});
