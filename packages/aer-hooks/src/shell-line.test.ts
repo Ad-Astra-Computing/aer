@@ -211,4 +211,114 @@ describe('malicious-behaviour detection slice 1: incident corpus', () => {
     expect(r.labels['chmod']?.cap_class).toBe('setuid');
     expect(r.labels['pkill']?.target_process_class).toBe('harness');
   });
+
+  it('a repeated rm never lets a second, lower-risk delete clear the first one\'s target_class (M1)', () => {
+    expect(reduceShellLine('rm -rf /; rm -rf node_modules').labels['rm']?.target_class).toBe('root');
+    expect(reduceShellLine('rm -rf / && rm tmp.txt').labels['rm']?.target_class).toBe('root');
+  });
+
+  it('a second, safer git push never hides a force-push to a protected branch (M1)', () => {
+    const r = reduceShellLine('git push --force origin main; git push origin feature/x');
+    expect(r.labels['git']?.branch_class).toBe('protected');
+    expect(r.labels['git']?.flags).toContain('force');
+  });
+
+  it('a second, flagless AI CLI invocation never clears a bypass flag the first one set (M1)', () => {
+    const r = reduceShellLine('claude --dangerously-skip-permissions -p hi; claude --version');
+    expect(r.labels['claude']?.ai_cli?.name).toBe('claude');
+    expect(r.labels['claude']?.ai_cli?.bypass_flags).toContain('--dangerously-skip-permissions');
+  });
+});
+
+describe('malicious-behaviour detection slice 1: repeated-invocation merge (M1, security review)', () => {
+  it('merges the highest-ranked target_class across invocations, regardless of order', () => {
+    const forward = reduceShellLine('rm -rf / node_modules; rm -rf node_modules');
+    const backward = reduceShellLine('rm -rf node_modules; rm -rf / node_modules');
+    expect(forward.labels['rm']?.target_class).toBe('root');
+    expect(backward.labels['rm']?.target_class).toBe('root');
+  });
+
+  it('a missing target_class (an unsafe word) beats a low-risk one but loses to a high-risk one', () => {
+    expect(reduceShellLine('rm "$DIR"; rm -rf node_modules').labels['rm']?.target_class).toBeUndefined();
+    expect(reduceShellLine('rm "$DIR"; rm -rf /').labels['rm']?.target_class).toBe('root');
+  });
+
+  it('unions boolean and array labels across invocations rather than keeping only the last', () => {
+    const r = reduceShellLine('rm -rf node_modules; rm -Rf /');
+    expect(r.labels['rm']?.flags).toEqual(expect.arrayContaining(['recursive', 'force']));
+    expect(r.labels['rm']?.target_class).toBe('root');
+  });
+
+  it('where_clause: a WHERE-less invocation is never hidden by a second, safer one (false wins)', () => {
+    const noWhere = reduceShellLine('psql -c "DELETE FROM users"; psql -c "DELETE FROM sessions WHERE id=1"');
+    expect(noWhere.labels['psql']?.where_clause).toBe(false);
+    const bothWhere = reduceShellLine('psql -c "DELETE FROM a WHERE x=1"; psql -c "DELETE FROM b WHERE y=2"');
+    expect(bothWhere.labels['psql']?.where_clause).toBe(true);
+  });
+
+  it('remote_class: a new remote on one invocation is never hidden by origin on another', () => {
+    const r = reduceShellLine('git push origin main; git push git@new.example.com:org/r.git main');
+    expect(r.labels['git']?.remote_class).toBe('new');
+  });
+
+  it('elevated is never cleared by a later, non-elevated invocation of the same program', () => {
+    const forward = reduceShellLine('sudo rm x; rm -rf ~');
+    const backward = reduceShellLine('rm -rf ~; sudo rm x');
+    expect(forward.labels['rm']?.elevated).toBe(true);
+    expect(backward.labels['rm']?.elevated).toBe(true);
+    // The merge is order-independent (a documented, deterministic
+    // conservative combination), not just coincidentally equal.
+    expect(forward.labels['rm']).toEqual(backward.labels['rm']);
+  });
+});
+
+describe('sudoedit and su: bodies-off (M2, security review, content leak)', () => {
+  it('sudoedit never sends the edited path or its basename as `command`, only a path_class', () => {
+    const r = reduceShellLine('sudoedit /srv/clients/CANARYDEALNAME-terms.md');
+    expect(r.programs).toEqual(['sudoedit']);
+    expect(r.labels['sudoedit']).toEqual({ wrapper: 'sudoedit', verb: 'sudoedit', elevated: true });
+    expect(JSON.stringify(r)).not.toMatch(/CANARYDEALNAME/);
+  });
+
+  it('sudoedit reports the edited file\'s path_class, never the path, when it classifies', () => {
+    const r = reduceShellLine('sudoedit /etc/sudoers');
+    expect(r.labels['sudoedit']?.path_class).toBe('sudoers');
+    expect(JSON.stringify(r)).not.toMatch(/\/etc\/sudoers/);
+  });
+
+  it('su never sends the target username as `command` or anywhere else in the payload', () => {
+    const r = reduceShellLine('su CANARYUSERNAME');
+    expect(r.programs).toEqual(['su']);
+    expect(r.labels['su']).toEqual({ wrapper: 'su', elevated: true, target_user_class: 'other' });
+    expect(JSON.stringify(r)).not.toMatch(/CANARYUSERNAME/);
+  });
+
+  it('a bare su (no positional) is read as switching to root', () => {
+    expect(reduceShellLine('su').labels['su']?.target_user_class).toBe('root');
+    expect(reduceShellLine('su -').labels['su']?.target_user_class).toBe('root');
+  });
+
+  it('su -c recurses into the command string the same way sh -c does, never storing the string itself', () => {
+    const r = reduceShellLine('su deploy-svc-acct -c "rm -rf /CANARYDIR"');
+    expect(r.programs).toEqual(['su', 'rm']);
+    expect(r.labels['rm']?.target_class).toBe('outside_cwd');
+    expect(JSON.stringify(r)).not.toMatch(/CANARYDIR/);
+    expect(JSON.stringify(r)).not.toMatch(/deploy-svc-acct/);
+  });
+});
+
+describe('systemd-run --scope and machinectl (M3, security review)', () => {
+  it('--scope is a bare flag: it never swallows the wrapped program as its value', () => {
+    const r = reduceShellLine('sudo systemd-run --scope rm -rf /');
+    expect(r.programs).toContain('rm');
+    expect(r.labels['rm']?.target_class).toBe('root');
+    expect(r.labels['rm']?.elevated).toBe(true);
+    expect(r.labels['systemd-run']?.wrapper_flags).toContain('--scope');
+  });
+
+  it('machinectl is a recognised elevation-adjacent wrapper (design doc T6)', () => {
+    const r = reduceShellLine('machinectl shell root@ /bin/bash');
+    expect(r.labels['machinectl']?.wrapper).toBe('machinectl');
+    expect(r.labels['machinectl']?.elevated).toBe(true);
+  });
 });

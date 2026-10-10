@@ -5,6 +5,8 @@
 // The single-command reducer in shared/shell-reduce.ts answers "what ran
 // first"; this answers "what ran", which is what a reader of a record needs.
 
+import { classifyPath } from './shared/path-class-mirror.js';
+
 /** Most programs and hosts one line reports, so a generated line cannot flood the record. */
 const MAX_PROGRAMS = 16;
 const MAX_HOSTS = 8;
@@ -50,6 +52,7 @@ export interface ProgramLabel {
   target_class?: string;
   path_count?: number;
   glob?: boolean;
+  path_class?: string;
   wrapper?: string;
   wrapper_flags?: string[];
   elevated?: boolean;
@@ -315,17 +318,26 @@ const WRAPPERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['exec', new Set(['-a'])],
   ['command', new Set<string>()],
   ['xargs', new Set(['-n', '-I', '-d', '-L', '-P', '-s', '-E', '-a', '--max-args', '--replace', '--delimiter', '--max-lines', '--max-procs', '--arg-file'])],
-  // Privilege-elevation wrappers (T6). sudoedit/su/doas/pkexec/run0/mdo
-  // follow the generic skip-flags-then-take-first-positional path below;
-  // their quirks (su -c's string argument, systemd-run's --unit) are not
-  // modelled, a known simplification for this slice.
-  ['sudoedit', new Set<string>()],
+  // Privilege-elevation wrappers (T6). doas/pkexec/run0/mdo/machinectl
+  // follow the generic skip-flags-then-take-first-positional path below, a
+  // known simplification. sudoedit and su are NOT here (M2): each has its
+  // own case in readProgram instead, never this generic path, since
+  // neither runs a program as its positional.
   ['doas', new Set(['-u'])],
-  ['su', new Set(['-c'])],
   ['pkexec', new Set(['--user'])],
   ['run0', new Set(['--uid', '--user', '--property'])],
-  ['systemd-run', new Set(['--uid', '--unit', '--scope', '--description', '--property'])],
+  // --scope takes no value (M3, security review): it is a bare flag that
+  // selects a transient scope unit, not an option with an argument. Listing
+  // it as valued swallowed the next word (the actual wrapped program) as if
+  // it were --scope's value.
+  ['systemd-run', new Set(['--uid', '--unit', '--description', '--property'])],
   ['mdo', new Set(['-u', '-g', '-G'])],
+  // machinectl (T6, M3): `machinectl shell [user@]<host> <command>` is an
+  // elevation route the design doc groups with run0/systemd-run. Its real
+  // flag set is not modelled beyond the common host selectors; the `shell`
+  // subcommand itself is read as a (bogus) wrapped-program name, the same
+  // known simplification already accepted for the other generic wrappers.
+  ['machinectl', new Set(['-H', '--host', '-M', '--machine'])],
 ]);
 
 /** Elevation-wrapper program names (T6), closed set `wrapper`. `other` is
@@ -948,11 +960,95 @@ function ownLabel(program: string, args: Word[]): ProgramLabel {
   return {};
 }
 
-function mergeLabel(into: ProgramLabel, from: ProgramLabel): ProgramLabel {
-  const merged: ProgramLabel = { ...into, ...from };
-  const flags = new Set([...(into.flags ?? []), ...(from.flags ?? [])]);
-  if (flags.size > 0) merged.flags = [...flags];
+/** A missing/unreadable target_class (M1) ranks between `unknown` and
+ *  `outside_cwd`: it beats the four low-risk classes it is standing in for
+ *  the ambiguity of (unknown, in_cwd, build_dir, dep_dir), but a genuinely
+ *  higher-risk class from another invocation still wins, mirroring
+ *  classifyTargetArgs's own anyUnsafe rule above. */
+const MISSING_TARGET_RANK = UNKNOWN_RANK + 0.5;
+
+function targetClassRank(cls: string | undefined): number {
+  if (cls === undefined) return MISSING_TARGET_RANK;
+  return TARGET_CLASS_RANK.get(cls) ?? MISSING_TARGET_RANK;
+}
+
+/** The higher-severity-ranked target_class of two invocations of the same
+ *  program (M1): `rm -rf /; rm -rf node_modules` must read as `root`, not
+ *  whichever invocation happened to run last. */
+function mergeTargetClass(a: string | undefined, b: string | undefined): string | undefined {
+  return targetClassRank(b) > targetClassRank(a) ? b : a;
+}
+
+function mergeAiCli(
+  a: NonNullable<ProgramLabel['ai_cli']> | undefined,
+  b: NonNullable<ProgramLabel['ai_cli']> | undefined,
+): ProgramLabel['ai_cli'] {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  const bypassFlags = [...new Set([...(a.bypass_flags ?? []), ...(b.bypass_flags ?? [])])];
+  const merged: NonNullable<ProgramLabel['ai_cli']> = { name: a.name };
+  if (bypassFlags.length > 0) merged.bypass_flags = bypassFlags;
+  if (a.alt_home === true || b.alt_home === true) merged.alt_home = true;
+  if (a.headless === true || b.headless === true) merged.headless = true;
   return merged;
+}
+
+/** Scalar fields whose two values need a specific, documented precedence
+ *  rather than either generic rule below (M1, security review). Only called
+ *  once both values are known to be defined. */
+const SPECIAL_SCALAR_MERGE: Readonly<Record<string, (a: unknown, b: unknown) => unknown>> = {
+  target_class: (a, b) => mergeTargetClass(a as string | undefined, b as string | undefined),
+  // A force-push to a protected branch must never be hidden by a second,
+  // safer push on the same line.
+  branch_class: (a, b) => (a === 'protected' || b === 'protected' ? 'protected' : b),
+  remote_class: (a, b) => (a === 'new' || b === 'new' ? 'new' : b),
+  // The more dangerous reading: a destructive SQL verb with no WHERE clause
+  // anywhere on the line must not be hidden by a second, safer invocation.
+  where_clause: (a, b) => (a === undefined ? b : b === undefined ? a : (a as boolean) && (b as boolean)),
+  ai_cli: (a, b) => mergeAiCli(a as ProgramLabel['ai_cli'], b as ProgramLabel['ai_cli']),
+};
+
+/**
+ * Combine the labels of two invocations of the same program on one line
+ * (M1, security review): a second invocation must never silently erase a
+ * signal the first one set. Booleans OR, arrays union, and the fields above
+ * take the documented higher-severity reading. Every other scalar keeps the
+ * first invocation's value, a known simplification of merging by program
+ * name rather than emitting one event per invocation.
+ */
+function mergeLabel(into: ProgramLabel, from: ProgramLabel): ProgramLabel {
+  const merged: Record<string, unknown> = { ...into };
+  for (const [key, value] of Object.entries(from)) {
+    if (value === undefined) continue;
+    const existing = (into as Record<string, unknown>)[key];
+    // A special merge runs even when `into` never set this key: a missing
+    // target_class (an unsafe word) must still rank above a low-risk one
+    // from the other invocation (see mergeTargetClass), not just pass
+    // through unexamined because `into` happened to have nothing here.
+    const special = SPECIAL_SCALAR_MERGE[key];
+    if (special !== undefined) {
+      merged[key] = special(existing, value);
+      continue;
+    }
+    if (existing === undefined) {
+      merged[key] = value;
+      continue;
+    }
+    if (Array.isArray(existing) || Array.isArray(value)) {
+      const union = new Set([
+        ...(Array.isArray(existing) ? existing : []),
+        ...(Array.isArray(value) ? value : []),
+      ]);
+      merged[key] = [...union];
+      continue;
+    }
+    if (typeof existing === 'boolean' || typeof value === 'boolean') {
+      merged[key] = Boolean(existing) || Boolean(value);
+      continue;
+    }
+    // Unlisted scalar: keep the first invocation's value (see doc comment).
+  }
+  return merged as ProgramLabel;
 }
 
 // ── the walk ────────────────────────────────────────────────────────────────
@@ -971,7 +1067,14 @@ function note(list: string[], value: string, cap: number): void {
 
 function recordLabel(acc: Acc, program: string, label: ProgramLabel): void {
   if (Object.keys(label).length === 0) return;
-  acc.labels[program] = mergeLabel(acc.labels[program] ?? {}, label);
+  const existing = acc.labels[program];
+  // The very first label recorded for this program is adopted as-is, never
+  // run through mergeLabel's "a missing target_class beats a low-risk one"
+  // rule (M1): that rule exists to protect a signal an EARLIER invocation
+  // already set from being silently cleared by a later, more confident but
+  // lower-risk one, not to treat "nothing recorded yet" itself as a
+  // low-confidence claim that outranks a concrete first answer.
+  acc.labels[program] = existing === undefined ? label : mergeLabel(existing, label);
 }
 
 /** One simple command: its program, any program it wraps, and the hosts they name. */
@@ -1030,6 +1133,44 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
     if (GTFOBIN_NAMES.has(program)) label.gtfobin_elevation = true;
   }
   recordLabel(acc, program, label);
+
+  // sudoedit (M2, security review, bodies-off leak): it never runs a
+  // program, it opens its positional in $EDITOR, so it must never be
+  // treated as a wrapper whose first positional becomes `command`. Only its
+  // own wrapper label and the edited file's PATH CLASS (never the path or
+  // its basename) are reported.
+  if (program === 'sudoedit') {
+    recordLabel(acc, program, { wrapper: program, verb: 'sudoedit', elevated: true });
+    const { positionals } = plainPositionals(args);
+    const target = positionals[0];
+    if (target !== undefined && !target.unsafe) {
+      const cls = classifyPath(target.text);
+      if (cls !== null) recordLabel(acc, program, { path_class: cls });
+    }
+    return;
+  }
+
+  // su (M2, security review, bodies-off leak): its positional is a
+  // username it switches to, never a program it runs, so it must never be
+  // treated as a wrapper whose positional becomes `command`. `su -c "<cmd>"`
+  // DOES run a shell command string; that string is reduced the same way
+  // `sh -c` is below, never stored itself.
+  if (program === 'su') {
+    recordLabel(acc, program, { wrapper: program, elevated: true });
+    const { positionals } = plainPositionals(args);
+    const user = positionals.find((w) => w.text !== '-');
+    if (user === undefined) {
+      recordLabel(acc, program, { target_user_class: 'root' });
+    } else if (!user.unsafe) {
+      recordLabel(acc, program, { target_user_class: user.text === 'root' ? 'root' : 'other' });
+    }
+    if (depth < MAX_DEPTH) {
+      const cIndex = args.findIndex((w) => !w.unsafe && w.text === '-c');
+      const value = cIndex === -1 ? undefined : args[cIndex + 1];
+      if (value !== undefined && !value.unsafe) walk(value.text, acc, depth + 1);
+    }
+    return;
+  }
 
   if (WRAPPERS.has(program) && depth < MAX_DEPTH) {
     const at = wrappedProgramIndex(program, args);
