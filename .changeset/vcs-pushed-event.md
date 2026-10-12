@@ -9,4 +9,5 @@ Detects a plain, single-branch `git push [remote] [branch]`, runs a local
 already-classified remote_class/branch_class. before_ref/after_ref are
 validated bare git object ids only; anything that cannot be cleanly
 resolved from argv (a bare push, remote-only push, multi-refspec, delete or
-colon refspec) degrades to outcome unknown with no refs rather than guess.
+colon refspec), or that shares its command line with another invocation,
+degrades to outcome unknown with no refs rather than guess.

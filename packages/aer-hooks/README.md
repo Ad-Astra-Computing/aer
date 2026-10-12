@@ -271,9 +271,12 @@ rev-parse` of the remote-tracking ref run before the push and the local
 branch run after, each sent only when its output is a bare 40- or 64-hex
 git object id. Anything the hook cannot reduce to a single remote and
 branch name still gets the event, just with `outcome: 'unknown'` and both
-refs omitted rather than guessed; a rejected push still reports both refs
-when they resolve, since they are a plain local read, not a claim about
-what the remote now holds. Nothing about the command's arguments, the
+refs omitted rather than guessed, as does a push that shares its command
+line with any other invocation (`git push || true`, a pipe, a leading
+`cd`), since the line's exit code and working directory then describe more
+than just the push. A rejected push still reports both refs when they
+resolve, since they are a plain local read, not a claim about what the
+remote now holds. Nothing about the command's arguments, the
 remote or branch NAME, or the push's own stdout/stderr is ever sent, only
 the closed-set classes and the validated hashes.
 
