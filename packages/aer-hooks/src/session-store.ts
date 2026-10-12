@@ -14,6 +14,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { SHA as SHA_RE } from './evidence.js';
 
 /** One event waiting for the server, already in its final shape except for the session id. */
 export interface OutboxEvent {
@@ -110,6 +111,23 @@ export interface SessionState {
    *  lost, reported once on the closing collector.report the same way
    *  droppedBudget already accumulates across a session. */
   effectStashesUnattached?: number;
+  /**
+   * vcs.pushed (git push outcome + before/after ref): the before_ref sampled
+   * at tool_start (a `git rev-parse refs/remotes/<remote>/<branch>` taken
+   * before the real push runs), waiting for the matching tool_end, keyed by
+   * tool_use_id. Only the before_ref itself is worth carrying forward: the
+   * matching tool_end recomputes remote_class/branch_class and the raw
+   * remote/branch names fresh from its own tool_input, same as every other
+   * shape. Absent (not an error) when the push's branch/remote could not be
+   * cleanly resolved at tool_start, or when the rev-parse itself found
+   * nothing (a brand-new local branch pushed for the first time has no
+   * remote-tracking ref yet). tool_end's reflog fallback is what covers
+   * that case, not a stash entry.
+   */
+  vcsPushStash?: Record<string, { beforeRef?: string; stashedAt: number }>;
+  /** vcsPushStash entries evicted by TTL with no matching tool_end: computed
+   *  but lost, reported the same way effectStashesUnattached is. */
+  vcsPushStashesUnattached?: number;
   outbox: OutboxEvent[];
   /**
    * The most events sent in one request since a batch ran its full request
@@ -134,6 +152,13 @@ export const MAX_EFFECT_STASH_ENTRIES = 64;
  *  (AER_HOOK_TIMEOUT_MS, default 10s) bounds one invocation, so a stash
  *  entry open many times that long never gets a PostToolUse. */
 export const EFFECT_STASH_TTL_MS = 5 * 60 * 1000;
+
+/** Most vcs-push before_ref stash entries kept at once; oldest dropped first. */
+export const MAX_VCS_PUSH_STASH_ENTRIES = 64;
+
+/** Same reasoning as EFFECT_STASH_TTL_MS: a git push outliving several
+ *  hook-timeout windows with no matching tool_end is orphaned. */
+export const VCS_PUSH_STASH_TTL_MS = 5 * 60 * 1000;
 
 /** State untouched this long is presumed left by a harness that went away. */
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -281,6 +306,25 @@ function validEffectStash(v: unknown): Record<string, { path: string; sha256Befo
   return Object.fromEntries(entries.slice(-MAX_EFFECT_STASH_ENTRIES));
 }
 
+function validVcsPushStash(v: unknown): Record<string, { beforeRef?: string; stashedAt: number }> | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const entries: Array<[string, { beforeRef?: string; stashedAt: number }]> = [];
+  for (const [key, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!isPendingApprovalId(key)) continue;
+    const rec = raw as Record<string, unknown> | null;
+    if (typeof rec !== 'object' || rec === null) continue;
+    const stashedAt = rec['stashedAt'];
+    if (!isInt(stashedAt)) continue;
+    const entry: { beforeRef?: string; stashedAt: number } = { stashedAt };
+    const before = rec['beforeRef'];
+    if (typeof before === 'string' && SHA_RE.test(before)) entry.beforeRef = before;
+    entries.push([key, entry]);
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((a, b) => a[1].stashedAt - b[1].stashedAt);
+  return Object.fromEntries(entries.slice(-MAX_VCS_PUSH_STASH_ENTRIES));
+}
+
 function validPendingApprovals(v: unknown): Array<{ id: string; pushedAt: number }> | undefined {
   if (!Array.isArray(v)) return undefined;
   const kept: Array<{ id: string; pushedAt: number }> = [];
@@ -348,6 +392,9 @@ function parseState(p: Record<string, unknown>): SessionState | null {
   const effectStash = validEffectStash(p['effectStash']);
   if (effectStash !== undefined) s.effectStash = effectStash;
   if (isInt(p['effectStashesUnattached'])) s.effectStashesUnattached = p['effectStashesUnattached'];
+  const vcsPushStash = validVcsPushStash(p['vcsPushStash']);
+  if (vcsPushStash !== undefined) s.vcsPushStash = vcsPushStash;
+  if (isInt(p['vcsPushStashesUnattached'])) s.vcsPushStashesUnattached = p['vcsPushStashesUnattached'];
   copyTranscript(p, s);
   const reg = p['eventsRegistered'];
   if (Array.isArray(reg) && reg.every((x) => typeof x === 'string')) s.eventsRegistered = reg as string[];
@@ -492,6 +539,31 @@ export function sweepStaleEffectStash(state: SessionState, now: number, ttlMs: n
   if (final.length === 0) delete state.effectStash;
   else state.effectStash = Object.fromEntries(final);
   if (evicted > 0) state.effectStashesUnattached = (state.effectStashesUnattached ?? 0) + evicted;
+  return evicted;
+}
+
+/**
+ * vcs.pushed (git push outcome + before/after ref): evict stash entries a
+ * PostToolUse never came for (older than ttlMs) or past the cap, counting
+ * each in vcsPushStashesUnattached, mirroring sweepStaleEffectStash exactly.
+ */
+export function sweepStaleVcsPushStash(state: SessionState, now: number, ttlMs: number = VCS_PUSH_STASH_TTL_MS): number {
+  const stash = state.vcsPushStash;
+  if (stash === undefined) return 0;
+  const entries = Object.entries(stash);
+  const kept: typeof entries = [];
+  let evicted = 0;
+  for (const entry of entries) {
+    if (now - entry[1].stashedAt > ttlMs) evicted += 1;
+    else kept.push(entry);
+  }
+  kept.sort((a, b) => a[1].stashedAt - b[1].stashedAt);
+  const overflow = kept.length - MAX_VCS_PUSH_STASH_ENTRIES;
+  const final = overflow > 0 ? kept.slice(overflow) : kept;
+  evicted += Math.max(0, overflow);
+  if (final.length === 0) delete state.vcsPushStash;
+  else state.vcsPushStash = Object.fromEntries(final);
+  if (evicted > 0) state.vcsPushStashesUnattached = (state.vcsPushStashesUnattached ?? 0) + evicted;
   return evicted;
 }
 

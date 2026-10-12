@@ -3,6 +3,12 @@
 // cost and gets nothing in the record. Source of truth is
 // BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
 //
+// The server allows six keys this package does not yet send: also_ran,
+// hosts_unreduced, via, resources_seen, prompts_seen, skill. None are
+// implemented here yet. Run scripts/check-client-allowlist-parity.mjs in
+// the monorepo after changing this file or the server's allowlist, since
+// the two repos have no shared CI to catch drift automatically.
+//
 // harness_agent_id, subagent_events_unattached and events_dropped_budget are
 // listed ahead of the server allowlist, which strips and counts them until it
 // accepts them; listing them now avoids a second client release.
@@ -39,6 +45,12 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'decided_by', 'approvals_unresolved',
   'path_class', 'hash_status', 'sha256_before', 'sha256_after', 'bytes',
   'effect_stashes_unattached',
+  // vcs.pushed (git push outcome + before/after ref): before_ref/after_ref
+  // are bare git object ids (40/64 lowercase hex), validated client-side
+  // before they are ever placed in a payload. outcome, branch_class and
+  // remote_class are already listed above. vcs_push_stashes_unattached
+  // mirrors effect_stashes_unattached's counter shape.
+  'before_ref', 'after_ref', 'vcs_push_stashes_unattached',
   // Malicious-behaviour detection slice 1 (aer-malicious-behaviour-detection-
   // design.md section 4): closed-set labels computed from argv/paths that
   // are discarded before the event is sent. Mirrors BODIES_OFF_PAYLOAD_KEYS's
