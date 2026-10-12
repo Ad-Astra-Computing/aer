@@ -224,10 +224,9 @@ tampering and privilege escalation. These labels are computed on your
 machine from the command your agent ran; the command itself, its arguments,
 file names inside a class, branch names, usernames and search patterns never
 leave your machine. An elevation or service-manager wrapper that hits a flag
-outside its own known set stops there rather than guess what it ran: the
-wrapper is still recorded, but the line reads as unresolved instead of
-risking a username, path or config file name going out as if it were a
-program name.
+outside its own known set stops there: the wrapper is still recorded, but
+the line reads as unresolved instead of risking a username, path or config
+file name going out as if it were a program name.
 
 ## Effects recording (file content digests)
 
@@ -270,11 +269,12 @@ push command's own exit code, and `before_ref`/`after_ref`: a `git
 rev-parse` of the remote-tracking ref run before the push and the local
 branch run after, each sent only when its output is a bare 40- or 64-hex
 git object id. Anything the hook cannot reduce to a single remote and
-branch name still gets the event, just with `outcome: 'unknown'` and both
-refs omitted rather than guessed, as does a push that shares its command
-line with any other invocation (`git push || true`, a pipe, a leading
-`cd`), since the line's exit code and working directory then describe more
-than just the push. A rejected push still reports both refs when they
+branch name still gets the event with `outcome: 'unknown'` and no refs. The
+same happens when the push shares its command line with any other
+invocation (`git push || true`, a pipe, a leading `cd`): the line's exit
+code and working directory then describe more than just the push, so
+neither ref is attributed to it. A rejected push still reports both refs
+when they
 resolve, since they are a plain local read, not a claim about what the
 remote now holds. Nothing about the command's arguments, the
 remote or branch NAME, or the push's own stdout/stderr is ever sent, only
