@@ -3,6 +3,12 @@
 // cost and gets nothing in the record. Source of truth is
 // BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
 //
+// The server allows six keys this package does not yet send: also_ran,
+// hosts_unreduced, via, resources_seen, prompts_seen, skill. None are
+// implemented here yet. Run scripts/check-client-allowlist-parity.mjs in
+// the monorepo after changing this file or the server's allowlist, since
+// the two repos have no shared CI to catch drift automatically.
+//
 // harness_agent_id, subagent_events_unattached and events_dropped_budget are
 // listed ahead of the server allowlist, which strips and counts them until it
 // accepts them; listing them now avoids a second client release.
