@@ -1315,6 +1315,10 @@ interface Acc {
   hostsUnreduced: number;
   labels: Record<string, ProgramLabel>;
   gitPushTarget?: { remote: string; branch: string };
+  /** Every program invocation on the line, not deduped: gates gitPushTarget
+   *  below, since a compound line's exit status and cwd describe the WHOLE
+   *  line, not just the git push inside it (review finding, M3). */
+  invocations: number;
 }
 
 function note(list: string[], value: string, cap: number): void {
@@ -1391,6 +1395,7 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
     acc.unknown = true;
     return;
   }
+  acc.invocations += 1;
   note(acc.programs, program, MAX_PROGRAMS);
   const targets = hostsFor(program, args);
   for (const h of targets.hosts) note(acc.hosts, h, MAX_HOSTS);
@@ -1542,9 +1547,16 @@ function walk(line: string, acc: Acc, depth: number): void {
  * nothing".
  */
 export function reduceShellLine(line: unknown): ShellLineReduction {
-  const acc: Acc = { programs: [], hosts: [], unknown: false, hostsUnreduced: 0, labels: {} };
+  const acc: Acc = { programs: [], hosts: [], unknown: false, hostsUnreduced: 0, labels: {}, invocations: 0 };
   if (typeof line !== 'string') return { ...acc, unknown: true };
   if (line.length > MAX_SCAN) acc.unknown = true;
   walk(line.slice(0, MAX_SCAN), acc, 0);
+  // A git push target is only a confident claim about the WHOLE line's
+  // outcome and cwd when it is the line's only invocation: `git push || true`,
+  // `git push | tee log` and `cd sub && git push` all run a second program
+  // whose exit status, or cwd, the target would otherwise misattribute.
+  if (acc.gitPushTarget !== undefined && (acc.invocations !== 1 || acc.unknown)) {
+    delete acc.gitPushTarget;
+  }
   return acc;
 }

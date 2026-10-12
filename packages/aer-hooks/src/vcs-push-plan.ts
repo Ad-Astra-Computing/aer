@@ -133,14 +133,21 @@ export async function computeVcsPushPlan(
     }
 
     const afterRef = await doRevParse(target.branch, cwd);
-    // Reflog fallback: if tool_start's before_ref is missing (stash TTL,
-    // a restart in between, or a brand-new branch's first push), try the
-    // reflog form once rather than omit the whole event. If that also
-    // fails, before_ref is omitted, never guessed.
+    const outcome = outcomeOf(event.isError);
+    // Reflog fallback (no tool_start stash entry): `@{1}` is only correct
+    // once this push has actually moved the remote-tracking ref, so try its
+    // current value first and fall back to `@{1}` only when that already
+    // equals afterRef on an accepted push.
     const stashedBefore = stashSnapshot?.[toolUseId]?.beforeRef;
-    const beforeRef = stashedBefore ?? await doRevParse(`${target.remote}/${target.branch}@{1}`, cwd);
+    let beforeRef = stashedBefore;
+    if (beforeRef === undefined) {
+      const currentRemoteRef = await doRevParse(`refs/remotes/${target.remote}/${target.branch}`, cwd);
+      beforeRef = outcome === 'accepted' && currentRemoteRef !== undefined && currentRemoteRef === afterRef
+        ? await doRevParse(`${target.remote}/${target.branch}@{1}`, cwd)
+        : currentRemoteRef;
+    }
 
-    const payload: Record<string, unknown> = { outcome: outcomeOf(event.isError), ...classes };
+    const payload: Record<string, unknown> = { outcome, ...classes };
     // Judgment call, flag for review: a rejected push still gets both refs
     // when they resolve, since they are plain local reads, not a claim the
     // remote now holds after_ref (that claim is what `outcome` carries). An

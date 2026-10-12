@@ -214,10 +214,10 @@ describe('computeVcsPushPlan + applyVcsPushPlan: tool_end', () => {
     expect(plan).toEqual({ kind: 'tool_end', appendShape: { eventType: 'vcs.pushed', payload: { outcome: 'unknown', remote_class: 'origin' } } });
   });
 
-  it('reflog fallback: no stash entry (lost to TTL, a restart, or no pre-exec signal) tries <remote>/<branch>@{1} for before_ref', async () => {
+  it('reflog fallback: an accepted push with no stash entry, whose remote-tracking ref already moved to after_ref, tries @{1} for before_ref', async () => {
     const target = { remote: 'origin', branch: 'feature-x' };
     const event = toolEnd('tu1', [gitPushShape()], false, target);
-    const deps = { revParse: riggedRevParse({ 'feature-x': HASH_B, 'origin/feature-x@{1}': HASH_REFLOG }) };
+    const deps = { revParse: riggedRevParse({ 'feature-x': HASH_B, 'refs/remotes/origin/feature-x': HASH_B, 'origin/feature-x@{1}': HASH_REFLOG }) };
     const plan = await computeVcsPushPlan(event, undefined, '/fallback', T, deps);
     if (plan.kind !== 'tool_end') throw new Error('unreachable');
     expect(plan.appendShape.payload['before_ref']).toBe(HASH_REFLOG);
@@ -228,10 +228,31 @@ describe('computeVcsPushPlan + applyVcsPushPlan: tool_end', () => {
   it('reflog fallback that also fails: before_ref is omitted, never guessed; the event is still emitted', async () => {
     const target = { remote: 'origin', branch: 'feature-x' };
     const event = toolEnd('tu1', [gitPushShape()], false, target);
-    const deps = { revParse: riggedRevParse({ 'feature-x': HASH_B, 'origin/feature-x@{1}': undefined }) };
+    const deps = { revParse: riggedRevParse({ 'feature-x': HASH_B, 'refs/remotes/origin/feature-x': HASH_B, 'origin/feature-x@{1}': undefined }) };
     const plan = await computeVcsPushPlan(event, undefined, '/fallback', T, deps);
     if (plan.kind !== 'tool_end') throw new Error('unreachable');
     expect(plan.appendShape.payload['before_ref']).toBeUndefined();
+    expect(plan.appendShape.payload['after_ref']).toBe(HASH_B);
+  });
+
+  it('rejected push with no stash entry: before_ref is the remote-tracking ref\'s CURRENT value, never @{1} (Fable review, the ref never moved)', async () => {
+    const target = { remote: 'origin', branch: 'feature-x' };
+    const event = toolEnd('tu1', [gitPushShape()], true, target);
+    const deps = { revParse: riggedRevParse({ 'feature-x': HASH_B, 'refs/remotes/origin/feature-x': HASH_A, 'origin/feature-x@{1}': HASH_REFLOG }) };
+    const plan = await computeVcsPushPlan(event, undefined, '/fallback', T, deps);
+    if (plan.kind !== 'tool_end') throw new Error('unreachable');
+    expect(plan.appendShape.payload['outcome']).toBe('rejected');
+    expect(plan.appendShape.payload['before_ref']).toBe(HASH_A);
+    expect(plan.appendShape.payload['after_ref']).toBe(HASH_B);
+  });
+
+  it('accepted push with no stash entry, whose remote-tracking ref has NOT yet moved to after_ref: before_ref is the current value, never the stale @{1}', async () => {
+    const target = { remote: 'origin', branch: 'feature-x' };
+    const event = toolEnd('tu1', [gitPushShape()], false, target);
+    const deps = { revParse: riggedRevParse({ 'feature-x': HASH_B, 'refs/remotes/origin/feature-x': HASH_A, 'origin/feature-x@{1}': HASH_REFLOG }) };
+    const plan = await computeVcsPushPlan(event, undefined, '/fallback', T, deps);
+    if (plan.kind !== 'tool_end') throw new Error('unreachable');
+    expect(plan.appendShape.payload['before_ref']).toBe(HASH_A);
     expect(plan.appendShape.payload['after_ref']).toBe(HASH_B);
   });
 
