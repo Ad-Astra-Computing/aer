@@ -91,6 +91,50 @@ describe('opencode built-in tools reduce the way the shell hooks do', () => {
     expect(normalizeOpencodeToolBefore({ tool: 'bash' }, { args: 'not an object' }).shapes).toBeUndefined();
   });
 
+  it('reduces glob to a path/pattern classification only, never the raw pattern or path', () => {
+    const ev = before('glob', { pattern: 'id_rsa', path: '/home/SECRET_VALUE/project', hidden: true, limit: 50 });
+    expect(ev.shapes).toEqual([{ eventType: 'file.searched', payload: { search_class: 'ssh_key' } }]);
+    expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
+  });
+
+  it('reduces grep the same way, never the raw pattern, path or include filter', () => {
+    const ev = before('grep', { pattern: 'token', path: '/home/SECRET_VALUE/.ssh/id_rsa', include: '*.ts' });
+    expect(ev.shapes).toEqual([{ eventType: 'file.searched', payload: { path_class: 'ssh_key', search_class: 'token_cache' } }]);
+    expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
+  });
+
+  it('reduces apply_patch (opencode\'s patch tool) to the files its headers name, never the diff body', () => {
+    const patchText = [
+      '*** Begin Patch',
+      '*** Update File: src/app.py',
+      '@@ def greet():',
+      '-print("SECRET_VALUE")',
+      '+print("hello")',
+      '*** Add File: new.txt',
+      '+SECRET_VALUE',
+      '*** End Patch',
+    ].join('\n');
+    const ev = before('apply_patch', { patchText });
+    expect(ev.shapes).toEqual([
+      { eventType: 'file.written', payload: { path: 'src/app.py' } },
+      { eventType: 'file.written', payload: { path: 'new.txt' } },
+    ]);
+    expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
+  });
+
+  it('declines to map task and todowrite: their only useful argument is free text', () => {
+    // task's `prompt` is the instructions handed to the subagent; todowrite's
+    // `todos[].content` is the todo item text. Neither has a safe reduction,
+    // so both fall through to the generic {tool, arg_keys} shape untouched.
+    const taskEv = before('task', { description: 'fix bug', prompt: 'Do SECRET_VALUE things', subagent_type: 'general' });
+    expect(taskEv.shapes).toBeUndefined();
+    expect(JSON.stringify(taskEv)).not.toContain('SECRET_VALUE');
+
+    const todoEv = before('todowrite', { todos: [{ id: '1', content: 'SECRET_VALUE todo', status: 'pending' }] });
+    expect(todoEv.shapes).toBeUndefined();
+    expect(JSON.stringify(todoEv)).not.toContain('SECRET_VALUE');
+  });
+
   it('marks every mapped event with the opencode harness', () => {
     expect(before('bash', { command: 'ls' }).meta).toEqual({ harness: 'opencode' });
     expect(normalizeOpencodeToolAfter({ tool: 'bash' }, {}).meta).toEqual({ harness: 'opencode' });
