@@ -198,7 +198,9 @@ computes a keyed digest of the content too (for a Codex `apply_patch`, the
 path each file header names, joined to the session's working directory when
 it is relative, up to 16 per patch, with the number of files it named in
 `count` when that is more); a web fetch records the target's
-host and scheme, never its path or query; and a Claude Code transcript's
+host and scheme, never its path or query; a Claude Code `Skill` call records
+the invoked skill's own name alone, never the arguments it was invoked with;
+and a Claude Code transcript's
 assistant messages contribute `llm.completed` events carrying the model name
 and the input/output token counts, read from the transcript's `message.model`
 and `message.usage` fields plus the entry's id, timestamp and subagent type,
