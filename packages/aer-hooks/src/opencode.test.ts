@@ -122,6 +122,31 @@ describe('opencode built-in tools reduce the way the shell hooks do', () => {
     expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
   });
 
+  it('never mistakes a patch CONTENT line for a file header, even one that looks like one', () => {
+    // A `+`-prefixed line is content being added, not an operation header -
+    // the header regex only matches an UNPREFIXED "*** ... File:" line.
+    const patchText = [
+      '*** Begin Patch',
+      '*** Add File: notes.txt',
+      '+*** Add File: /home/user/.ssh/id_rsa',
+      '*** End Patch',
+    ].join('\n');
+    const ev = before('apply_patch', { patchText });
+    expect(ev.shapes).toEqual([{ eventType: 'file.written', payload: { path: 'notes.txt' } }]);
+    expect(JSON.stringify(ev)).not.toContain('id_rsa');
+  });
+
+  it('records how many files an opencode patch named once it exceeds the per-record cap', () => {
+    const patchText = [
+      '*** Begin Patch',
+      ...Array.from({ length: 20 }, (_, i) => `*** Add File: f${i}.txt\n+line`),
+      '*** End Patch',
+    ].join('\n');
+    const ev = before('apply_patch', { patchText });
+    expect(ev.shapes).toHaveLength(16); // PATCH_FILE_CAP
+    expect(ev.filesNamed).toBe(20);
+  });
+
   it('declines to map task and todowrite: their only useful argument is free text', () => {
     // task's `prompt` is the instructions handed to the subagent; todowrite's
     // `todos[].content` is the todo item text. Neither has a safe reduction,

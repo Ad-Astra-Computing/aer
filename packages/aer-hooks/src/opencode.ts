@@ -24,7 +24,7 @@
 
 import type { HookEvent } from './normalize.js';
 import { asRecord, asString, keysOf, responseIsError } from './normalize.js';
-import { shapesOfToolCall } from './tool-shape.js';
+import { shapesOfToolCall, patchFileCount, PATCH_FILE_CAP } from './tool-shape.js';
 import { recordableToolName } from './tool-name.js';
 
 /** Marks every opencode event, as the shell hooks mark theirs. */
@@ -42,7 +42,7 @@ export const HARNESS_META = { harness: 'opencode' } as const;
  * is invalid, question, shell, read, glob, grep, edit, write, task, fetch,
  * todo, search, skill, apply_patch, execute, lsp, plan. Three deliberately
  * have no entry below:
- *   - "task" (glob-of-work spawner, args: description, prompt, subagent_type,
+ *   - "task" (subagent-dispatch tool, args: description, prompt, subagent_type,
  *     task_id, command, background): `prompt` is the only argument that
  *     makes the event useful, and it is the free-text instructions handed to
  *     the subagent - exactly the shape Claude Code's own equivalent (Task)
@@ -86,10 +86,21 @@ function putShapes(event: HookEvent, tool: string, args: unknown): void {
   const rec = asRecord(args);
   if (alias === undefined || rec === undefined) return;
   const [name, input] = alias(rec);
+  // No `cwd` to pass: opencode's `tool.execute.before` input carries only
+  // {tool, sessionID, callID}, so a relative apply_patch path is recorded as
+  // the patch header wrote it (e.g. "src/app.py"), not resolved to absolute
+  // the way the Codex shell-hook path (which does have a cwd) can.
   const shapes = shapesOfToolCall(name, input);
   if (shapes.length > 0) {
     event.shape = shapes[0];
     event.shapes = shapes;
+  }
+  // Mirrors normalize.ts's putToolFields: once a patch names more files than
+  // PATCH_FILE_CAP, the extra file.written events are silently dropped, so
+  // the true count is recorded separately rather than lost outright.
+  if (name === 'apply_patch' && shapes.length >= PATCH_FILE_CAP) {
+    const named = patchFileCount(input);
+    if (named > shapes.length) event.filesNamed = named;
   }
 }
 
