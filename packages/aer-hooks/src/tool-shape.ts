@@ -148,6 +148,21 @@ export function shapeOfToolCall(tool: string, input: unknown): ToolShape | undef
   return shapesOfToolCall(tool, input)[0];
 }
 
+/**
+ * The raw (unclassified) remote/branch names of a plain, single-branch
+ * `git push` on a shell tool call, for vcs.pushed's before/after ref lookup.
+ * Local-only: see ShellLineReduction.gitPushTarget's comment. Never put on
+ * the wire: the caller uses this only to pick a `git rev-parse` argument
+ * for its own local subprocess call.
+ */
+export function vcsPushTargetOfToolCall(tool: string, input: unknown): { remote: string; branch: string } | undefined {
+  if (!SHELL_TOOLS.has(tool)) return undefined;
+  const args = asRecord(input) ?? {};
+  const command = firstOf(args, COMMAND_KEYS);
+  if (asString(command) === undefined) return undefined;
+  return reduceShellLine(command).gitPushTarget;
+}
+
 /** A ProgramLabel's fields as sent on the wire, one more key than the
  *  closed-set payload keys below allow through: `ai_cli` carries an object,
  *  the sanitizer validates its shape server-side (sanitizeAiCli). */

@@ -62,7 +62,13 @@ function layerDirs(base: string | undefined, projectDir: string | undefined): st
  */
 export { HOOKS_VERSION } from './version.generated.js';
 
-const SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+/**
+ * A bare git object id: 40 lowercase hex (SHA-1) or 64 (SHA-256), nothing
+ * else. Shared with vcs-push-plan.ts's own `git rev-parse` validation
+ * (vcs.pushed's before_ref/after_ref), same shape, same requirement that
+ * nothing but a validated hash ever reaches an emitted payload.
+ */
+export const SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
 /** Read a file only if it is a regular file, never through a link. */
 function readPlainFile(file: string): string | undefined {
