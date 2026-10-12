@@ -18,7 +18,7 @@ import type { EventSink } from '@adastracomputing/aer-emit';
 // harness_agent_id, subagent_events_unattached and events_dropped_budget
 // widen this ahead of the server (ADR-023 B2/B3): see the comment on
 // INGEST_PAYLOAD_KEYS.
-const ALLOWLIST_SHA256 = '396f03fff3dfb7c4ad012d4d11db268bf1b93a5541ca1a56fcc34d99e7dfb367';
+const ALLOWLIST_SHA256 = '6bc5a1bd8dc4de2987426aaf6d1b54e72e40b3c778bd98d8dd740b7b782bc23f';
 
 function collectingSink(): { sink: EventSink; seen: Array<{ type: string; payload: Record<string, unknown> }> } {
   const seen: Array<{ type: string; payload: Record<string, unknown> }> = [];
@@ -84,6 +84,30 @@ const PAYLOADS: Array<{ label: string; raw: Record<string, unknown>; harness?: '
     raw: { conversationId: 'conv_1', executionNum: 1, terminationReason: 'completed', fullyIdle: true },
     harness: 'antigravity', event: 'Stop',
   },
+  // vcs.pushed (git push outcome + before/after ref): the shapesOfToolCall
+  // reduction itself (branch_class/remote_class) is exercised here, same as
+  // every other shape; the before/after ref lookup lives in vcs-push-plan.ts
+  // and is exercised directly by vcs-push-plan.test.ts's round-trip test.
+  {
+    label: 'claude-code PreToolUse (git push)',
+    raw: {
+      session_id: 'ses_1', hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'git push origin feature-SECRET-branch' },
+      cwd: '/repo',
+    },
+  },
+  {
+    label: 'codex PreToolUse (git push --force main)',
+    raw: {
+      session_id: 'ses_2', turn_id: 't1', tool_use_id: 'tu_1', hook_event_name: 'PreToolUse',
+      tool_name: 'shell', tool_input: { command: 'git push --force origin main' },
+    },
+  },
+  {
+    label: 'antigravity PreToolUse (git push)',
+    raw: { conversationId: 'conv_1', stepIdx: 3, toolCall: { name: 'run_command', args: { command: 'git push origin main' } } },
+    harness: 'antigravity', event: 'PreToolUse',
+  },
 ];
 
 describe('every key the hook emits is a key ingest stores', () => {
@@ -92,7 +116,7 @@ describe('every key the hook emits is a key ingest stores', () => {
       const env = withValues ? { AER_HOOK_RECORD_ARGS: '1' } : {};
       const { sink, seen } = collectingSink();
       for (const { raw, harness, event } of PAYLOADS) {
-        emitHookEvent(normalize(raw, harness, env, event), sink, { raw, env });
+        emitHookEvent(normalize(raw, harness, event), sink, { raw, env });
       }
       expect(seen.length).toBeGreaterThan(0);
 
@@ -110,10 +134,10 @@ describe('every key the hook emits is a key ingest stores', () => {
     const env = { AER_HOOK_RECORD_ARGS: '1' };
     const { sink, seen } = collectingSink();
     for (const { raw, harness, event } of PAYLOADS) {
-      emitHookEvent(normalize(raw, harness, env, event), sink, { raw, env });
+      emitHookEvent(normalize(raw, harness, event), sink, { raw, env });
     }
     const wire = JSON.stringify(seen);
-    for (const secret of ['SECRET-FILE', 'SECRET-OUTPUT', 'SECRET-REPLY', 'SECRET-PROMPT']) {
+    for (const secret of ['SECRET-FILE', 'SECRET-OUTPUT', 'SECRET-REPLY', 'SECRET-PROMPT', 'SECRET-branch']) {
       expect(wire).not.toContain(secret);
     }
   });
