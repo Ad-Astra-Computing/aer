@@ -26,7 +26,7 @@
 // nothing; see shared/ingest-allowlist.ts.
 
 import { createHash } from 'node:crypto';
-import { shapesOfToolCall, patchFileCount, PATCH_FILE_CAP, type ToolShape } from './tool-shape.js';
+import { shapesOfToolCall, vcsPushTargetOfToolCall, patchFileCount, PATCH_FILE_CAP, type ToolShape } from './tool-shape.js';
 
 export type HookKind =
   | 'session_start'
@@ -116,6 +116,18 @@ export interface HookEvent {
    * never `shapes`, so a write is never double-reported.
    */
   effectShapes?: ToolShape[] | undefined;
+  /**
+   * vcs.pushed (git push outcome + before/after ref): the raw remote and
+   * local branch name of a plain, single-branch `git push`, computed at
+   * `tool_start` (to drive the pre-push `git rev-parse
+   * refs/remotes/<remote>/<branch>` call) and again at `tool_end` (so the
+   * post-push `git rev-parse <branch>` / reflog fallback still has a target
+   * even if the tool_start stash entry was lost). NEVER emitted: only the
+   * resulting validated hex hash (`before_ref`/`after_ref`) and the
+   * already-classified `remote_class`/`branch_class` ever reach a payload.
+   * See ShellLineReduction.gitPushTarget.
+   */
+  vcsPushTarget?: { remote: string; branch: string } | undefined;
   /**
    * Which permission hook fired, for `kind === 'permission'` only.
    * `PermissionDenied` is specified from the harness docs and has never
@@ -313,6 +325,13 @@ function putToolFields(event: HookEvent, tool: unknown, args: unknown): void {
       const named = patchFileCount(args);
       if (named > shapes.length) event.filesNamed = named;
     }
+    // vcs.pushed: computed at both tool_start (to drive the pre-push
+    // rev-parse) and tool_end (so the plan can still recover remote/branch
+    // if the tool_start stash entry was lost, e.g. a slow push outliving the
+    // stash TTL, or a process restart in between. Pure argv parsing, no I/O,
+    // and never put on an emitted payload itself.
+    const target = vcsPushTargetOfToolCall(name, args);
+    if (target !== undefined) event.vcsPushTarget = target;
   }
 }
 
