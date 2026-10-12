@@ -260,6 +260,27 @@ through a tool shape this package recognises, inside the detected workspace,
 through an allowlisted class. It does not detect or block a credential file
 being written, only decline to digest it. It does not cover file deletion.
 
+## git push outcome (vcs.pushed)
+
+A plain, single-branch `git push [remote] [branch]` (no multi-refspec, no
+`--all`/`--mirror`/`--tags`/`--delete`, no `HEAD:foo` or `:branch` colon
+form) gets a `vcs.pushed` event: the already-classified `remote_class`/
+`branch_class`, an `outcome` of `accepted`/`rejected`/`unknown` from the
+push command's own exit code, and `before_ref`/`after_ref`: a `git
+rev-parse` of the remote-tracking ref run before the push and the local
+branch run after, each sent only when its output is a bare 40- or 64-hex
+git object id. Anything the hook cannot reduce to a single remote and
+branch name still gets the event, just with `outcome: 'unknown'` and both
+refs omitted rather than guessed; a rejected push still reports both refs
+when they resolve, since they are a plain local read, not a claim about
+what the remote now holds. Nothing about the command's arguments, the
+remote or branch NAME, or the push's own stdout/stderr is ever sent, only
+the closed-set classes and the validated hashes.
+
+Per-harness support for the before/after pairing is the same as effects
+recording just above, for the same reason (it needs a stable call id):
+Claude Code and Codex, yes; Antigravity and opencode, not yet.
+
 ## Oversight markers (how much a human was supervising)
 
 Two more event types, needing no configuration, so a completed session's
