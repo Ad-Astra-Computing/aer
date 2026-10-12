@@ -511,3 +511,21 @@ describe('verb/sql_verb/cap_class first-invocation-wins is itself an evasion cla
     expect(backward.labels['setcap']?.cap_class).toBe('sys_admin');
   });
 });
+
+describe('gitPushTarget only survives a line with exactly one invocation (fix, Fable review)', () => {
+  it('a plain, single-invocation git push keeps its target', () => {
+    expect(reduceShellLine('git push origin main').gitPushTarget).toEqual({ remote: 'origin', branch: 'main' });
+  });
+
+  it('a push whose own exit is hidden behind || true is never claimed as this push\'s outcome', () => {
+    expect(reduceShellLine('git push origin main || true').gitPushTarget).toBeUndefined();
+  });
+
+  it('a push piped into another program is never claimed as this push\'s outcome', () => {
+    expect(reduceShellLine('git push origin main 2>&1 | tee log').gitPushTarget).toBeUndefined();
+  });
+
+  it('a push preceded by cd is never resolved against the harness cwd as if it were the push\'s own repo', () => {
+    expect(reduceShellLine('cd sub-repo && git push origin main').gitPushTarget).toBeUndefined();
+  });
+});

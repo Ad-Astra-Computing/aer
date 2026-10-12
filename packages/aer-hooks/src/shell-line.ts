@@ -38,6 +38,21 @@ export interface ShellLineReduction {
    * never stored here or sent on the wire.
    */
   labels: Record<string, ProgramLabel>;
+  /**
+   * The RAW (unclassified) remote and local branch names of a plain, single-
+   * branch `git push [remote] [branch]` on this line, for a caller that needs
+   * to run its own `git rev-parse` locally (vcs.pushed's before/after ref).
+   * NEVER put on the wire: everything else in this module reduces to a
+   * closed-set label precisely so a raw name never has to leave the process,
+   * and this is the one deliberate, documented exception, scoped to a single
+   * local subprocess call the caller makes itself. Absent whenever the push
+   * is not the single-branch, no-refspec-colon, no-multi-ref shape (bare
+   * `git push`, remote-only, `--all`/`--mirror`/`--tags`/`--delete`, a
+   * `HEAD:foo` or `:branch` refspec, or more than one program/invocation
+   * claims it), degrade to `outcome: 'unknown'` in that case rather than
+   * guess.
+   */
+  gitPushTarget?: { remote: string; branch: string };
 }
 
 /**
@@ -892,6 +907,39 @@ function labelGit(args: Word[]): ProgramLabel {
   return {};
 }
 
+/** Flags that make a push NOT a single resolvable branch: a delete, or a
+ *  multi-ref push that cannot be reduced to one before/after ref pair. */
+const GIT_PUSH_MULTI_REF_FLAGS = ['--delete', '-d', '--all', '--mirror', '--tags', '--follow-tags'];
+
+/**
+ * The RAW remote and local branch names of a `git push [remote] [branch]`
+ * invocation, for vcs.pushed's before/after ref lookup (local subprocess use
+ * only, see ShellLineReduction.gitPushTarget. Reuses labelGit's own
+ * argv-parsing primitives and is deliberately narrower than labelGit's
+ * branch_class/remote_class classification: a bare `git push` or a
+ * remote-only `git push origin` both push the CURRENT branch, which
+ * labelGit's own `rest[rest.length-1]` quirk conflates with the remote name
+ * for classification purposes, but that is not a name this function will
+ * hand to a caller to run rev-parse against, so both degrade to `undefined`
+ * here rather than guess at the current branch.
+ */
+function gitPushRawTarget(args: Word[]): { remote: string; branch: string } | undefined {
+  const { positionals, unsafe } = plainPositionals(args);
+  if (unsafe) return undefined;
+  if (positionals[0]?.text !== 'push') return undefined;
+  if (hasFlag(args, ...GIT_PUSH_MULTI_REF_FLAGS)) return undefined;
+  const rest = positionals.slice(1);
+  // Exactly remote + branch: anything else (bare push, remote-only push,
+  // more than one refspec) is not a single resolvable branch.
+  if (rest.length !== 2) return undefined;
+  const [remote, branch] = rest as [Word, Word];
+  if (remote.unsafe || branch.unsafe) return undefined;
+  // A refspec colon form (`HEAD:foo`, `:branch`) names something other than
+  // a plain local branch; never parsed, only rejected.
+  if (remote.text.includes(':') || branch.text.includes(':')) return undefined;
+  return { remote: remote.text, branch: branch.text };
+}
+
 /** aws/gcloud/az/kubectl/terraform/docker (T1/T6/T7/T8): subcommand-pair
  *  verb mapping. Only the combinations the design doc names are matched;
  *  anything else is left unlabelled rather than guessed. */
@@ -1266,6 +1314,11 @@ interface Acc {
   unknown: boolean;
   hostsUnreduced: number;
   labels: Record<string, ProgramLabel>;
+  gitPushTarget?: { remote: string; branch: string };
+  /** Every program invocation on the line, not deduped: gates gitPushTarget
+   *  below, since a compound line's exit status and cwd describe the WHOLE
+   *  line, not just the git push inside it (review finding, M3). */
+  invocations: number;
 }
 
 function note(list: string[], value: string, cap: number): void {
@@ -1342,6 +1395,7 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
     acc.unknown = true;
     return;
   }
+  acc.invocations += 1;
   note(acc.programs, program, MAX_PROGRAMS);
   const targets = hostsFor(program, args);
   for (const h of targets.hosts) note(acc.hosts, h, MAX_HOSTS);
@@ -1353,6 +1407,14 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
     if (GTFOBIN_NAMES.has(program)) label.gtfobin_elevation = true;
   }
   recordLabel(acc, program, label);
+
+  // vcs.pushed before/after ref lookup (local-only, never on the wire): the
+  // first resolvable git push on the line wins, same as every other label
+  // here keeping only its first confident answer.
+  if (program === 'git' && acc.gitPushTarget === undefined && !elevated) {
+    const target = gitPushRawTarget(args);
+    if (target !== undefined) acc.gitPushTarget = target;
+  }
 
   // sudoedit (M2, security review, bodies-off leak): it never runs a
   // program, it opens its positional in $EDITOR, so it must never be
@@ -1485,9 +1547,16 @@ function walk(line: string, acc: Acc, depth: number): void {
  * nothing".
  */
 export function reduceShellLine(line: unknown): ShellLineReduction {
-  const acc: Acc = { programs: [], hosts: [], unknown: false, hostsUnreduced: 0, labels: {} };
+  const acc: Acc = { programs: [], hosts: [], unknown: false, hostsUnreduced: 0, labels: {}, invocations: 0 };
   if (typeof line !== 'string') return { ...acc, unknown: true };
   if (line.length > MAX_SCAN) acc.unknown = true;
   walk(line.slice(0, MAX_SCAN), acc, 0);
+  // A git push target is only a confident claim about the WHOLE line's
+  // outcome and cwd when it is the line's only invocation: `git push || true`,
+  // `git push | tee log` and `cd sub && git push` all run a second program
+  // whose exit status, or cwd, the target would otherwise misattribute.
+  if (acc.gitPushTarget !== undefined && (acc.invocations !== 1 || acc.unknown)) {
+    delete acc.gitPushTarget;
+  }
   return acc;
 }

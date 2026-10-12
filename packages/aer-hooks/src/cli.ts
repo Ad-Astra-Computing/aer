@@ -26,6 +26,7 @@ import {
 import { normalize, type Harness, type HookEvent, type Lifecycle } from './normalize.js';
 import { emitHookEvent, shapesOf } from './core.js';
 import { computeEffectDigestPlan, applyEffectDigestPlan } from './effect-digest-plan.js';
+import { computeVcsPushPlan, applyVcsPushPlan } from './vcs-push-plan.js';
 import {
   loadState,
   saveState,
@@ -386,6 +387,9 @@ function withReportEvidence(
   // PostToolUse that never arrived, same reporting shape as the two counters
   // above.
   if ((state.effectStashesUnattached ?? 0) > 0) out['effect_stashes_unattached'] = state.effectStashesUnattached;
+  // vcs.pushed: a before_ref computed and lost to a PostToolUse that never
+  // arrived, same reporting shape as the two counters above.
+  if ((state.vcsPushStashesUnattached ?? 0) > 0) out['vcs_push_stashes_unattached'] = state.vcsPushStashesUnattached;
   if (phaseHead !== undefined) out['repo_head'] = phaseHead;
   return stripToIngestPayload(out).payload;
 }
@@ -1027,6 +1031,12 @@ async function orchestrateAndEmit(
   const effectPlan = (event.kind === 'tool_start' || event.kind === 'tool_end')
     ? await computeEffectDigestPlan(event, probe?.effectStash, effectKey, now)
     : { kind: 'none' as const };
+  // vcs.pushed (git push outcome + before/after ref): the slow, subprocess-
+  // calling half runs here too, against the same best-effort unlocked `probe`
+  // read, outside any lock: same split as effects recording just above.
+  const vcsPushPlan = (event.kind === 'tool_start' || event.kind === 'tool_end')
+    ? await computeVcsPushPlan(event, probe?.vcsPushStash, process.cwd(), now)
+    : { kind: 'none' as const };
 
   const { ageMs, quietMs } = parseCheckpointMs(env);
   const queued = await withState(ctx, (st, at) => {
@@ -1054,6 +1064,7 @@ async function orchestrateAndEmit(
     }
 
     applyEffectDigestPlan(event, state, effectPlan, at);
+    applyVcsPushPlan(event, state, vcsPushPlan, at);
     const events = buildQueuedEvents(event, state, at, evidence, ctx.storeKey, env, true);
     // The end of a session whose last record a checkpoint already completed:
     // opening a record to hold only this marker would add an empty record to
