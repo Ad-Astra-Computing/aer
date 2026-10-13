@@ -75,6 +75,13 @@ const PAYLOADS: Array<{ label: string; raw: Record<string, unknown>; harness?: '
     },
   },
   {
+    label: 'codex SessionEnd (carries transcript_path, a filesystem path never put on the wire)',
+    raw: {
+      session_id: 'ses_2', hook_event_name: 'SessionEnd', model: 'gpt-6', reason: 'exit',
+      transcript_path: '/home/dev/.codex/sessions/2026/10/12/rollout-SECRET-abc.jsonl',
+    },
+  },
+  {
     label: 'antigravity PreToolUse',
     raw: { conversationId: 'conv_1', stepIdx: 2, modelName: 'gemini', toolCall: { name: 'run_command', args: { command: 'cat /etc/SECRET-FILE' } } },
     harness: 'antigravity', event: 'PreToolUse',
@@ -146,7 +153,7 @@ describe('every key the hook emits is a key ingest stores', () => {
       emitHookEvent(normalize(raw, harness, event), sink, { raw, env });
     }
     const wire = JSON.stringify(seen);
-    for (const secret of ['SECRET-FILE', 'SECRET-OUTPUT', 'SECRET-REPLY', 'SECRET-PROMPT', 'SECRET-branch', 'SECRET-SKILL-ARGS']) {
+    for (const secret of ['SECRET-FILE', 'SECRET-OUTPUT', 'SECRET-REPLY', 'SECRET-PROMPT', 'SECRET-branch', 'SECRET-abc', 'SECRET-SKILL-ARGS']) {
       expect(wire).not.toContain(secret);
     }
   });

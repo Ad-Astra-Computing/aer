@@ -86,10 +86,10 @@ export interface HookEvent {
    */
   cwd?: string | undefined;
   /**
-   * Claude Code's `transcript_path`: the JSONL transcript file for this
-   * harness session. Used ONLY to locate model + token counts for
-   * llm.completed (see claude-code-transcript.ts) - never emitted itself,
-   * and never read for anything but `message.model` / `message.usage`.
+   * The `transcript_path` a harness sends (Claude Code and Codex both do).
+   * Used ONLY to locate model + token counts for llm.completed (see
+   * claude-code-transcript.ts / codex-transcript.ts) - never emitted itself,
+   * and never read for anything but the two harnesses' own usage records.
    */
   transcriptPath?: string | undefined;
   /**
@@ -407,6 +407,11 @@ export function normalizeCodex(payload: unknown, lifecycle: Lifecycle = 1): Hook
   if (sessionRef !== undefined) event.sessionRef = sessionRef;
   const cwd = asString(p['cwd']);
   if (cwd !== undefined) event.cwd = cwd;
+  // Not identifier()-restricted: this is a local filesystem path used only to
+  // open the rollout transcript for reading (see codex-transcript.ts), never
+  // put on the wire. Mirrors normalizeClaudeCode's transcript_path.
+  const transcriptPath = asString(p['transcript_path']);
+  if (transcriptPath !== undefined) event.transcriptPath = transcriptPath;
   event.meta = commonMeta(p, 'codex', kind);
 
   if (kind === 'tool_start' || kind === 'tool_end') {

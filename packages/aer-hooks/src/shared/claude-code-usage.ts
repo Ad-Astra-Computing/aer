@@ -30,7 +30,10 @@ function tokenCount(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.trunc(v) : undefined;
 }
 
-function providerOf(model: string): string | undefined {
+// Exported for reuse by codex-transcript.ts: a Codex transcript's
+// token_usage_record carries no provider of its own, so the caller derives
+// one from the model string this same way.
+export function providerOf(model: string): string | undefined {
   const m = model.toLowerCase();
   if (m.startsWith('claude')) return 'anthropic';
   if (m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) return 'openai';

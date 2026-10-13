@@ -370,6 +370,44 @@ describe('aer-hook Claude Code transcript llm usage', () => {
     expect(second[0]!.payload['output_tokens']).toBe(2);
   });
 
+  it('stays incremental on a third invocation: the transcript offset is never clobbered back to its first value', async () => {
+    // Regression test: buildQueuedEvents used to run the Codex transcript
+    // scanner unconditionally alongside the Claude Code one and apply both
+    // scans' resulting state, even though the Codex scanner is a no-op on a
+    // Claude Code event. Its "no-op" result is the PRIOR state unchanged
+    // (not undefined), so from the third call onward it silently overwrote
+    // the real scanner's freshly-advanced offset with the stale pre-scan
+    // value, freezing the offset and re-emitting every message since.
+    const transcriptPath = path.join(transcriptDir, 't.jsonl');
+    const sid = 'harness-llm-3rd-call';
+    fs.writeFileSync(transcriptPath, assistantLine('msg_1', 'a1') + '\n');
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+
+    fs.appendFileSync(transcriptPath, assistantLine('msg_2', 'a2', 'claude-opus-4-8', 1, 2) + '\n');
+    postedEvents = [];
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+    expect(postedEvents.filter((e) => e.event_type === 'llm.completed')).toHaveLength(1);
+
+    fs.appendFileSync(transcriptPath, assistantLine('msg_3', 'a3', 'claude-opus-4-8', 3, 4) + '\n');
+    postedEvents = [];
+    await runHook(['--harness', 'claude-code'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({ hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath, tool_name: 'Bash', tool_input: {}, tool_response: {} }),
+    });
+    const third = postedEvents.filter((e) => e.event_type === 'llm.completed');
+    expect(third).toHaveLength(1);
+    expect(third[0]!.payload['output_tokens']).toBe(4);
+  });
+
   it('does not re-emit on a re-run against the same unchanged transcript (session_end path)', async () => {
     const transcriptPath = path.join(transcriptDir, 't.jsonl');
     const sid = 'harness-llm-3';
@@ -448,6 +486,76 @@ describe('aer-hook Claude Code transcript llm usage', () => {
     });
     expect(postedEvents.some((e) => e.event_type === 'tool.completed')).toBe(true);
     expect(postedEvents.some((e) => e.event_type === 'llm.completed')).toBe(false);
+  });
+});
+
+// Codex sends no token usage on any hook payload either, but (unlike Claude
+// Code) it carries no model/usage on its transcript's token_usage_record
+// line either: the model comes from the triggering hook event's own
+// `meta.model` (Codex sends `model` on every event), the token counts from
+// the rollout. See codex-transcript.ts / shared/codex-usage.ts.
+describe('aer-hook Codex transcript llm usage', () => {
+  let cacheDir: string;
+  let transcriptDir: string;
+  let postedEvents: Array<{ event_type: string; payload: Record<string, unknown> }>;
+  let fetchImpl: typeof fetch;
+
+  function envWith(): NodeJS.ProcessEnv {
+    return { ...CONFIGURED, XDG_CACHE_HOME: cacheDir } as NodeJS.ProcessEnv;
+  }
+
+  function tokenUsageRecordLine(responseId: string, turnId = 'turn_1', inTok = 12, outTok = 340): string {
+    const usage = { input_tokens: inTok, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: outTok, reasoning_output_tokens: 0, total_tokens: inTok + outTok };
+    return JSON.stringify({
+      timestamp: '2026-10-12T00:00:00.000Z',
+      type: 'token_usage_record',
+      payload: {
+        thread_id: 'thr_1', turn_id: turnId, session_id: 'ses_1', root_turn_id: turnId,
+        response_id: responseId, usage, turn_token_usage: usage, thread_token_usage: usage,
+      },
+    });
+  }
+
+  beforeEach(() => {
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-codex-transcript-'));
+    transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-codex-transcript-file-'));
+    postedEvents = [];
+    fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/sessions')) return jsonResponse({ id: 'sess-1', ingest_token: 'tok-1' });
+      if (url.endsWith('/complete')) return jsonResponse({ ok: true });
+      if (/\/v1\/sessions\/[^/]+\/events$/.test(url) && init?.body) {
+        for (const e of JSON.parse(String(init.body)) as Array<Record<string, unknown>>) {
+          postedEvents.push({ event_type: e['event_type'] as string, payload: e['payload'] as Record<string, unknown> });
+        }
+      }
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    fs.rmSync(transcriptDir, { recursive: true, force: true });
+  });
+
+  it('PostToolUse with a transcript_path emits llm.completed with the hook-event model + rollout token counts', async () => {
+    const transcriptPath = path.join(transcriptDir, 'rollout.jsonl');
+    fs.writeFileSync(transcriptPath, tokenUsageRecordLine('resp_1') + '\n');
+    const sid = 'harness-codex-llm-1';
+
+    await runHook(['--harness', 'codex'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({
+          hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath,
+          model: 'gpt-5.1-codex', turn_id: 'turn_1', tool_use_id: 'tu_1',
+          tool_name: 'shell', tool_input: {}, tool_response: {},
+        }),
+    });
+
+    const llm = postedEvents.find((e) => e.event_type === 'llm.completed');
+    expect(llm).toBeDefined();
+    expect(llm!.payload).toMatchObject({ model: 'gpt-5.1-codex', provider: 'openai', input_tokens: 12, output_tokens: 340, turn_id: 'turn_1' });
   });
 });
 
