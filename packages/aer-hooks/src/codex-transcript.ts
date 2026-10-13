@@ -33,19 +33,19 @@ const MAX_TRACKED_RESPONSE_IDS = 300;
 // headroom without reading the whole file.
 const SESSION_META_READ_BYTES = 256 * 1024;
 
-// A bounded, one-time read of byte 0 of the rollout, independent of the main
-// tailing cursor (which may already be far past line one on a large file).
-// Undefined on any read/parse failure or a first line that is not
-// session_meta: the caller falls back to providerOf(model), never guesses
-// here. Fail-open like every other read in this module.
+// A bounded read of byte 0, independent of the main tailing cursor (which
+// may already be far past line one on a large file). Undefined on failure or
+// a line that is not session_meta yet, so the caller retries next scan - a
+// desirable race-tolerant default - or falls back to providerOf(model).
+// Fail-open like every other read here; stops once the caller caches a hit.
 function readSessionMetaProvider(transcriptPath: string): string | undefined {
   try {
     const fd = fs.openSync(transcriptPath, 'r');
     try {
       const size = Math.min(fs.fstatSync(fd).size, SESSION_META_READ_BYTES);
       const buf = Buffer.alloc(size);
-      fs.readSync(fd, buf, 0, size, 0);
-      const text = buf.toString('utf8');
+      const bytesRead = fs.readSync(fd, buf, 0, size, 0);
+      const text = buf.toString('utf8', 0, bytesRead);
       const newline = text.indexOf('\n');
       const firstLine = newline === -1 ? text : text.slice(0, newline);
       if (firstLine.trim().length === 0) return undefined;

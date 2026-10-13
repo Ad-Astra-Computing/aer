@@ -161,13 +161,20 @@ describe('emitTranscriptLlmUsageForCodex', () => {
   });
 
   it('caches the provider across two calls, not re-reading session_meta every time', () => {
-    fs.writeFileSync(file, sessionMetaLine('openai') + '\n' + tokenUsageRecordLine('resp_1') + '\n');
+    const metaLine = sessionMetaLine('openai');
+    fs.writeFileSync(file, metaLine + '\n' + tokenUsageRecordLine('resp_1') + '\n');
     const { sink: sinkA, seen: seenA } = collectingSink();
     const first = emitTranscriptLlmUsageForCodex(toolEndEvent(file), sinkA, {}, 'hs-1');
     expect(first.state.provider).toBe('openai');
 
-    // A second call starting from the cached state must still resolve the
-    // provider even if the file were somehow unreadable afterward.
+    // Corrupt line one (same byte length, so the tail cursor's offsets into
+    // the REST of the file stay valid) so a second read of session_meta
+    // would fail to parse and return undefined. The only way the second
+    // call still reports 'openai' is if it used the cached state and never
+    // re-read line one at all.
+    const garbageLine = 'x'.repeat(metaLine.length);
+    const contents = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, garbageLine + contents.slice(metaLine.length));
     fs.appendFileSync(file, tokenUsageRecordLine('resp_2') + '\n');
     const { sink: sinkB, seen: seenB } = collectingSink();
     emitTranscriptLlmUsageForCodex(toolEndEvent(file), sinkB, first.state, 'hs-1');

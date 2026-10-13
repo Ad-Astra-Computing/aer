@@ -516,6 +516,15 @@ describe('aer-hook Codex transcript llm usage', () => {
     });
   }
 
+  // Real rollout's first line, trimmed of base_instructions (the full
+  // system prompt, never read or recorded).
+  function sessionMetaLine(provider: string): string {
+    return JSON.stringify({
+      timestamp: '2026-10-06T07:27:16.660Z', ordinal: 0, type: 'session_meta',
+      payload: { session_id: 'ses_1', originator: 'codex_exec', cli_version: '0.155.0', model_provider: provider },
+    });
+  }
+
   beforeEach(() => {
     cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-codex-transcript-'));
     transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hooks-codex-transcript-file-'));
@@ -556,6 +565,60 @@ describe('aer-hook Codex transcript llm usage', () => {
     const llm = postedEvents.find((e) => e.event_type === 'llm.completed');
     expect(llm).toBeDefined();
     expect(llm!.payload).toMatchObject({ model: 'gpt-5.1-codex', provider: 'openai', input_tokens: 12, output_tokens: 340, turn_id: 'turn_1' });
+  });
+
+  it('through the real hook entrypoint, reads the provider off session_meta rather than guessing from the model name', async () => {
+    // A local-provider model name providerOf(model) could never resolve, so
+    // this can only pass by actually reading session_meta, not by a
+    // coincidental prefix match the way the fallback-path test above would
+    // still pass even if the new code path were silently dead.
+    const transcriptPath = path.join(transcriptDir, 'rollout.jsonl');
+    fs.writeFileSync(transcriptPath, sessionMetaLine('ollama') + '\n' + tokenUsageRecordLine('resp_1') + '\n');
+    const sid = 'harness-codex-llm-2';
+
+    await runHook(['--harness', 'codex'], envWith(), {
+      fetch: fetchImpl,
+      readInput: async () =>
+        JSON.stringify({
+          hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath,
+          model: 'llama-3-70b', turn_id: 'turn_1', tool_use_id: 'tu_1',
+          tool_name: 'shell', tool_input: {}, tool_response: {},
+        }),
+    });
+
+    const llm = postedEvents.find((e) => e.event_type === 'llm.completed');
+    expect(llm).toBeDefined();
+    expect(llm!.payload).toMatchObject({ model: 'llama-3-70b', provider: 'ollama', input_tokens: 12, output_tokens: 340 });
+  });
+
+  it('persists the cached provider in the session store across two hook invocations', async () => {
+    const transcriptPath = path.join(transcriptDir, 'rollout.jsonl');
+    const metaLine = sessionMetaLine('ollama');
+    fs.writeFileSync(transcriptPath, metaLine + '\n' + tokenUsageRecordLine('resp_1') + '\n');
+    const sid = 'harness-codex-llm-3';
+    const input = (responseId: string): string => JSON.stringify({
+      hook_event_name: 'PostToolUse', session_id: sid, transcript_path: transcriptPath,
+      model: 'llama-3-70b', turn_id: 'turn_1', tool_use_id: `tu_${responseId}`,
+      tool_name: 'shell', tool_input: {}, tool_response: {},
+    });
+
+    await runHook(['--harness', 'codex'], envWith(), { fetch: fetchImpl, readInput: async () => input('resp_1') });
+
+    // Corrupt session_meta (same byte length, so the token_usage_record
+    // offsets after it stay valid) before the second invocation. Each hook
+    // invocation is a fresh process reading state from disk, so the only way
+    // the second call still reports 'ollama' is a real persisted cache, not
+    // in-memory state.
+    const garbageLine = 'x'.repeat(metaLine.length);
+    const contents = fs.readFileSync(transcriptPath, 'utf8');
+    fs.writeFileSync(transcriptPath, garbageLine + contents.slice(metaLine.length));
+    fs.appendFileSync(transcriptPath, tokenUsageRecordLine('resp_2') + '\n');
+
+    await runHook(['--harness', 'codex'], envWith(), { fetch: fetchImpl, readInput: async () => input('resp_2') });
+
+    const llmEvents = postedEvents.filter((e) => e.event_type === 'llm.completed');
+    expect(llmEvents).toHaveLength(2);
+    expect(llmEvents[1]!.payload).toMatchObject({ provider: 'ollama' });
   });
 });
 

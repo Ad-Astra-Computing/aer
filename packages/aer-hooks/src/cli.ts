@@ -54,6 +54,7 @@ import {
 import {
   scanCodexTranscriptForLlmUsage,
   emitCodexLlmUsageEvents,
+  type CodexTranscriptUsageState,
 } from './codex-transcript.js';
 import { isInvokedDirectly } from './invoked-directly.js';
 import { envWithFile, parseEnvFileFlag } from './env-file.js';
@@ -305,11 +306,15 @@ export interface RunHookDeps {
 }
 
 /** The transcript-tracking fields a state carries, or none for a fresh one. */
-function transcriptStateOf(state: SessionState): TranscriptUsageState {
-  const out: TranscriptUsageState = {};
+// Widened to CodexTranscriptUsageState (a superset of TranscriptUsageState,
+// same field names plus provider) so the one function serves both scanners;
+// scanTranscriptForLlmUsage simply ignores the extra field.
+function transcriptStateOf(state: SessionState): CodexTranscriptUsageState {
+  const out: CodexTranscriptUsageState = {};
   if (state.transcriptPath !== undefined) out.transcriptPath = state.transcriptPath;
   if (state.transcriptOffset !== undefined) out.transcriptOffset = state.transcriptOffset;
   if (state.emittedLlmMessageIds !== undefined) out.emittedLlmMessageIds = state.emittedLlmMessageIds;
+  if (state.provider !== undefined) out.provider = state.provider;
   return out;
 }
 
@@ -434,13 +439,14 @@ function buildQueuedEvents(
   emitHookEvent(event, sink, state, now);
   emitLlmUsageEvents(scan.events, sink, event.sessionRef);
   const codexModel = typeof event.meta?.['model'] === 'string' ? (event.meta['model'] as string) : undefined;
-  emitCodexLlmUsageEvents(codexScan.events, sink, event.sessionRef, codexModel);
+  emitCodexLlmUsageEvents(codexScan.events, sink, event.sessionRef, codexModel, codexScan.state.provider);
   if (scan.state.transcriptPath !== undefined) state.transcriptPath = scan.state.transcriptPath;
   if (scan.state.transcriptOffset !== undefined) state.transcriptOffset = scan.state.transcriptOffset;
   if (scan.state.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = scan.state.emittedLlmMessageIds;
   if (codexScan.state.transcriptPath !== undefined) state.transcriptPath = codexScan.state.transcriptPath;
   if (codexScan.state.transcriptOffset !== undefined) state.transcriptOffset = codexScan.state.transcriptOffset;
   if (codexScan.state.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = codexScan.state.emittedLlmMessageIds;
+  if (codexScan.state.provider !== undefined) state.provider = codexScan.state.provider;
 
   const drops = readDropCounters(storeKey, env);
   const ts = new Date(now).toISOString();

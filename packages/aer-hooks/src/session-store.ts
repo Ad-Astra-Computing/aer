@@ -53,6 +53,8 @@ export interface SessionState {
   transcriptPath?: string;
   transcriptOffset?: number;
   emittedLlmMessageIds?: string[];
+  /** Codex only: read once off session_meta and cached, never re-derived from the model name once set. */
+  provider?: string;
   /** Which harness events the installation wires, carried on every report. */
   eventsRegistered?: string[];
   session?: OpenSession;
@@ -370,6 +372,7 @@ function copyTranscript(p: Record<string, unknown>, s: SessionState): void {
   }
   const ids = p['emittedLlmMessageIds'];
   if (Array.isArray(ids) && ids.every((x) => typeof x === 'string')) s.emittedLlmMessageIds = ids as string[];
+  if (isStr(p['provider'])) s.provider = p['provider'];
 }
 
 function parseState(p: Record<string, unknown>): SessionState | null {
