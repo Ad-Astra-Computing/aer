@@ -224,14 +224,29 @@ export function shapesOfToolCall(tool: string, input: unknown, opts: { cwd?: str
     if (line.unknown) shapes.push(exec(UNKNOWN_COMMAND));
     for (const host of line.hosts) {
       const h = bounded(host);
-      if (h !== undefined) shapes.push({ eventType: 'network.connect', payload: { host: h, source: 'shell' } });
+      if (h === undefined) continue;
+      const payload: Record<string, unknown> = { host: h, source: 'shell' };
+      // via (host provenance, design-doc decision 7): which program on the
+      // line named this host, e.g. `curl` or `git`. Already a closed-ish
+      // identifier the same way `command`'s program name is elsewhere in
+      // this file; never the full command line.
+      // hasOwn, not a bare lookup: hostVia is a Record<string, string>, but a
+      // reader must never trust a prototype-chain hit (e.g. a hostile `host`
+      // value of 'constructor' or 'toString') as a program name (fable
+      // review).
+      const via = Object.hasOwn(line.hostVia, host) ? bounded(line.hostVia[host]) : undefined;
+      if (via !== undefined) payload['via'] = via;
+      shapes.push({ eventType: 'network.connect', payload });
     }
     return shapes;
   }
 
   if (FETCH_TOOLS.has(tool)) {
     const target = urlOf(firstOf(args, URL_KEYS));
-    return target === undefined ? [] : [{ eventType: 'network.connect', payload: target }];
+    // source (design-doc decision 7's gap table): every other network.connect
+    // path (shell, and OTLP's gateway/otlp server-side) carries a source;
+    // a fetch tool's did not.
+    return target === undefined ? [] : [{ eventType: 'network.connect', payload: { ...target, source: 'fetch_tool' } }];
   }
 
   if (tool === SKILL_TOOL) {

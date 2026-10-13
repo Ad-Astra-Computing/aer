@@ -28,7 +28,7 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'duration_ms', 'ok', 'error', 'response_captured', 'request_ref', 'kid', 'canon',
   'capture_point', 'prompt_canon_tag', 'wire_canon', 'wire_canon_tag', 'tool_result_tags',
   'tool_args_tag', 'message_count', 'prompt_bytes', 'retained', 'outcome', 'response_tag',
-  'tool', 'host', 'method', 'status_code', 'url', 'path_redacted', 'scheme',
+  'tool', 'host', 'method', 'status_code', 'url', 'path_redacted', 'scheme', 'via',
   'secure', 'response_bytes', 'command', 'args_redacted', 'pid', 'exit_code',
   'command_known', 'path', 'key', 'rule', 'decision', 'policy_id', 'version',
   'mode', 'limit', 'observed', 'action', 'classes', 'runtime', 'node_version',
