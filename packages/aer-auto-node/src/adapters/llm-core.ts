@@ -319,6 +319,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
         payload: {
           provider: cfg.provider,
           model: req.model,
+          request_ref: requestRef,
           ...(req.streaming ? { streaming: true } : {}),
           ...(req.tools_available != null ? { tools_available: req.tools_available } : {}),
         },
@@ -398,13 +399,14 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
       // Commitment fields (ADR-011): join key + response commitment. Response text
       // is read only on the commitment path, HMACed, and never emitted. Only
       // attached when a commitment key is configured, so no-key bundles are byte
-      // for byte unchanged.
+      // for byte unchanged (apart from request_ref, which rides every llm.*
+      // pair regardless of commitment, so it can join an http.* pair the same
+      // request triggered).
       let commitFields: Record<string, unknown> = {};
       if (commit) {
         const text = safe(() => cfg.extractResponseText?.(response) ?? null);
         const respTag = text != null ? safe(() => responseTag(commit.key, text)) : null;
         commitFields = {
-          request_ref: requestRef,
           outcome: 'ok',
           ...(respTag ? { response_tag: respTag } : { response_captured: false }),
         };
@@ -414,6 +416,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
         payload: {
           provider: cfg.provider,
           ok: true,
+          request_ref: requestRef,
           ...(res?.model ?? req?.model ? { model: res?.model ?? req?.model } : {}),
           ...(req?.streaming ? { streaming: true } : {}),
           ...(res?.input_tokens != null ? { input_tokens: res.input_tokens } : {}),
@@ -458,8 +461,9 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
           provider: cfg.provider,
           ok: false,
           error: true,
+          request_ref: requestRef,
           ...(req?.model ? { model: req.model } : {}),
-          ...(commit ? { request_ref: requestRef, outcome: 'error', response_captured: false } : {}),
+          ...(commit ? { outcome: 'error', response_captured: false } : {}),
         },
       });
     };
@@ -476,6 +480,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
           provider: cfg.provider,
           ok: true,
           streaming: true,
+          request_ref: requestRef,
           ...(model ? { model } : {}),
           ...(acc?.input_tokens != null ? { input_tokens: acc.input_tokens } : {}),
           ...(acc?.output_tokens != null ? { output_tokens: acc.output_tokens } : {}),
@@ -489,7 +494,6 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
           // response_captured:false so an omitted tag is never mistaken for empty.
           ...(commit
             ? {
-                request_ref: requestRef,
                 outcome: 'ok',
                 // Real tag only when text was assembled AND not truncated; the tag
                 // computation is guarded so a throw degrades to response_captured:false.

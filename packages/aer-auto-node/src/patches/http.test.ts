@@ -7,6 +7,7 @@ import { installHttpPatch } from './http.js';
 import type { CollectorEvent } from '../session.js';
 import { createAttestor, type Attestor } from '../attestor.js';
 import type { EgressEnforcement, EgressOnUnavailable } from '../config.js';
+import { CURRENT_LLM_REQUEST_REF } from '../adapters/llm-core.js';
 
 let server: http.Server;
 let port: number;
@@ -90,6 +91,26 @@ describe('installHttpPatch', () => {
     expect(refs.every((r) => typeof r === 'string' && r.length > 0)).toBe(true);
     expect(new Set(refs).size).toBe(refs.length);
     expect(JSON.stringify(events)).not.toContain(canary);
+    uninstall();
+  });
+
+  it('reuses CURRENT_LLM_REQUEST_REF for a node:http call made inside a wrapped SDK call', async () => {
+    const { capture, events } = withCapture();
+    const uninstall = installHttpPatch(capture);
+    const done = (req: http.ClientRequest): Promise<void> => new Promise((resolve, reject) => {
+      req.on('response', (res) => { res.resume(); res.on('end', () => resolve()); });
+      req.on('error', reject);
+      req.end();
+    });
+
+    await CURRENT_LLM_REQUEST_REF.run('llm-ref-1', async () => {
+      await done(http.request({ host: '127.0.0.1', port, path: '/e' }));
+    });
+
+    const requested = events.find((e) => e.event_type === 'http.requested');
+    const completed = events.find((e) => e.event_type === 'http.completed');
+    expect(requested?.payload['request_ref']).toBe('llm-ref-1');
+    expect(completed?.payload['request_ref']).toBe('llm-ref-1');
     uninstall();
   });
 
@@ -354,6 +375,12 @@ describe('installHttpPatch egress enforcement (M2)', () => {
     expect(stub.calls).toHaveLength(0); // original request fn never called
     expect(events.map((e) => e.event_type)).toContain('egress.blocked');
     expect(att.stats.egress_blocked).toBe(1);
+    // egress.blocked IS the close for the http.requested above it, so it
+    // must carry the same request_ref pairHttpAndEgress joins on.
+    const requested = events.find((e) => e.event_type === 'http.requested');
+    const blocked = events.find((e) => e.event_type === 'egress.blocked');
+    expect(typeof requested?.payload['request_ref']).toBe('string');
+    expect(blocked?.payload['request_ref']).toBe(requested?.payload['request_ref']);
     uninstall();
     stub.restore();
   });

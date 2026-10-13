@@ -74,14 +74,17 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor, onReques
           if (!decision.allow) {
             safeCapture(capture, {
               event_type: 'egress.blocked',
-              payload: { host: meta.host, audience: resource.audience, reason: decision.reason ?? 'blocked' },
+              // request_ref: this IS the close for the http.requested already
+              // emitted above, so it must carry the same ref pairHttpAndEgress
+              // joins on (decision 13).
+              payload: { host: meta.host, audience: resource.audience, reason: decision.reason ?? 'blocked', request_ref: requestRef },
             });
             return syntheticBlockedRequest(decision.reason ?? 'blocked');
           }
           if (decision.event === 'would_block' || decision.event === 'unavailable_fail_open') {
             safeCapture(capture, {
               event_type: 'egress.would_block',
-              payload: { host: meta.host, audience: resource.audience, reason: decision.reason ?? 'unavailable', mode: resource.enforcement },
+              payload: { host: meta.host, audience: resource.audience, reason: decision.reason ?? 'unavailable', mode: resource.enforcement, request_ref: requestRef },
             });
           }
           if (token) {

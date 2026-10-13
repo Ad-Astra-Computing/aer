@@ -293,6 +293,12 @@ describe('installFetchPatch', () => {
       expect(orig).not.toHaveBeenCalled(); // no request body left the process
       expect(events.map((e) => e.event_type)).toContain('egress.blocked');
       expect(att.stats.egress_blocked).toBe(1);
+      // egress.blocked IS the close for the http.requested above it, so it
+      // must carry the same request_ref pairHttpAndEgress joins on.
+      const requested = events.find((e) => e.event_type === 'http.requested');
+      const blocked = events.find((e) => e.event_type === 'egress.blocked');
+      expect(typeof requested?.payload['request_ref']).toBe('string');
+      expect(blocked?.payload['request_ref']).toBe(requested?.payload['request_ref']);
       uninstall();
     });
 
