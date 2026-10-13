@@ -51,6 +51,10 @@ import {
   emitLlmUsageEvents,
   type TranscriptUsageState,
 } from './claude-code-transcript.js';
+import {
+  scanCodexTranscriptForLlmUsage,
+  emitCodexLlmUsageEvents,
+} from './codex-transcript.js';
 import { isInvokedDirectly } from './invoked-directly.js';
 import { envWithFile, parseEnvFileFlag } from './env-file.js';
 import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
@@ -420,13 +424,23 @@ function buildQueuedEvents(
 ): OutboxEvent[] {
   const captured: Captured[] = [];
   const sink = captureSink(captured);
-  const scan = numbered ? scanTranscriptForLlmUsage(event, transcriptStateOf(state)) : { events: [], state: {} };
+  // A given session is one harness or the other, never both, so only the
+  // matching scanner runs (see this change's commit message for why running
+  // both unconditionally used to clobber the offset).
+  const isCodex = event.meta?.['harness'] === 'codex';
+  const scan = numbered && !isCodex ? scanTranscriptForLlmUsage(event, transcriptStateOf(state)) : { events: [], state: {} };
+  const codexScan = numbered && isCodex ? scanCodexTranscriptForLlmUsage(event, transcriptStateOf(state)) : { events: [], state: {} };
   state.toolsOpen = nextToolsOpen(state.toolsOpen, event.kind);
   emitHookEvent(event, sink, state, now);
   emitLlmUsageEvents(scan.events, sink, event.sessionRef);
+  const codexModel = typeof event.meta?.['model'] === 'string' ? (event.meta['model'] as string) : undefined;
+  emitCodexLlmUsageEvents(codexScan.events, sink, event.sessionRef, codexModel);
   if (scan.state.transcriptPath !== undefined) state.transcriptPath = scan.state.transcriptPath;
   if (scan.state.transcriptOffset !== undefined) state.transcriptOffset = scan.state.transcriptOffset;
   if (scan.state.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = scan.state.emittedLlmMessageIds;
+  if (codexScan.state.transcriptPath !== undefined) state.transcriptPath = codexScan.state.transcriptPath;
+  if (codexScan.state.transcriptOffset !== undefined) state.transcriptOffset = codexScan.state.transcriptOffset;
+  if (codexScan.state.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = codexScan.state.emittedLlmMessageIds;
 
   const drops = readDropCounters(storeKey, env);
   const ts = new Date(now).toISOString();
