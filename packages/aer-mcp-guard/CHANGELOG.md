@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies
+  - @adastracomputing/aer-resource-node@0.3.2
+
 ## 0.4.0
 
 ### Minor Changes
