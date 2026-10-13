@@ -5,7 +5,7 @@
 // carried forward by the caller.
 
 import * as fs from 'node:fs';
-import { extractClaudeCodeUsage, identifierField } from './shared/claude-code-usage.js';
+import { extractClaudeCodeUsage, identifierField } from './shared/model-usage.js';
 
 /** Per-invocation read cap. A large transcript is read across several hooks. */
 export const MAX_TRANSCRIPT_READ_BYTES = 4 * 1024 * 1024;

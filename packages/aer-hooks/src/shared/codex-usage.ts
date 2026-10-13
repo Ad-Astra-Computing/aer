@@ -8,7 +8,7 @@
 // source files and struct fields this was checked against; re-check them if
 // Codex stops emitting a matching line.
 
-import { identifierField } from './claude-code-usage.js';
+import { identifierField } from './model-usage.js';
 
 export interface CodexUsage {
   responseId: string;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { reduceShellCommand, UNKNOWN_COMMAND } from '../shared/shell-reduce.js';
-import { extractClaudeCodeUsage } from '../shared/claude-code-usage.js';
+import { extractClaudeCodeUsage } from '../shared/model-usage.js';
 
 // Mirror of @aer/schemas event.ts MAX_FIELD_LEN (host/path/tool/model field cap).
 // Inlined rather than imported so the published CLI bundle stays free of the
@@ -138,7 +138,7 @@ export function claudeCodeTranscriptToEvents(
       // Model inference turn → llm.completed (metadata only). We emit the
       // *completed* form since the transcript is post-hoc; token counts are the
       // observed usage, not the prompt. Shared with the aer-hooks live-collector
-      // path (shared/bodies-off/claude-code-usage.ts) so the two never diverge
+      // path (shared/bodies-off/model-usage.ts) so the two never diverge
       // on what counts as bodies-off here.
       const usage = extractClaudeCodeUsage(msg);
       if (usage) {
