@@ -5,7 +5,8 @@ import {
   thumbprintFromPeerCert, thumbprintFromForwardedClientCert, DEFAULT_ISSUER, DEFAULT_JWKS_URL,
   type Jwk, type ReplayStore,
 } from './index.js';
-import { honoAerAttestation } from './hono.js';
+import { honoAerAttestation, type MiddlewareOptions } from './hono.js';
+import { expressAerAttestation, type MiddlewareOptions as ExpressMiddlewareOptions } from './express.js';
 import {
   createInMemoryAttestationSigner, signAttestationJwt, signingKeyIdFromPublicKey, type AttestationClaims,
   createInMemorySigner, signDpopProof, jwkThumbprintFromPublicKey, attestationThumbprint,
@@ -161,6 +162,255 @@ describe('honoAerAttestation', () => {
   });
 });
 
+// The hono/express wrappers build a single static options object at
+// middleware-creation time, outside any request. requireDpop needs the REAL
+// per-request method, URL and DPoP header, which only exist inside the
+// request handler - this suite proves each wrapper wires them through
+// per-request, not from a value fixed at setup time.
+describe('requireDpop through the middleware wrappers', () => {
+  const RPC_ORIGIN = 'https://payments.example.com';
+  const RPC_PATH = '/charge';
+  const freshStore = (): ReplayStore => {
+    const seen = new Map<string, number>();
+    return { checkAndRecord: (jti, exp) => { if (seen.has(jti)) return true; seen.set(jti, exp); return false; } };
+  };
+
+  async function boundToOrigin(jti: string) {
+    const dpopSigner = createInMemorySigner();
+    const jkt = jwkThumbprintFromPublicKey(dpopSigner.publicKey());
+    const { token, jwk } = await mint({ cnf: { jkt } });
+    const proof = await signDpopProof(dpopSigner, {
+      htm: 'POST', htu: `${RPC_ORIGIN}${RPC_PATH}`, iat: NOW_S, jti, ath: attestationThumbprint(token),
+    });
+    return { token, jwk, proof };
+  }
+  const dpopOpts = (jwk: Jwk) => opts(jwk, jwksFetch([jwk]), { requireDpop: true, replayStore: freshStore() });
+
+  describe('honoAerAttestation', () => {
+    it('throws at setup when requireDpop is set without trustedOrigin', async () => {
+      const { jwk } = await mint();
+      expect(() => honoAerAttestation(dpopOpts(jwk))).toThrow(/trustedOrigin/);
+    });
+
+    function ctx(token: string, proof: string, method: string, url: string) {
+      let body: unknown; let status = 0;
+      return {
+        status: () => status,
+        c: {
+          req: {
+            method, url,
+            header: (n: string) => {
+              const k = n.toLowerCase();
+              if (k === 'x-aer-attestation') return token;
+              if (k === 'dpop') return proof;
+              return undefined;
+            },
+          },
+          set: () => {},
+          json: (b: unknown, s: number) => { body = b; status = s; return { body: b, status: s }; },
+        },
+      };
+    }
+
+    it('admits a request whose proof is bound to its real method + URL', async () => {
+      const { token, jwk, proof } = await boundToOrigin('hono-ok');
+      const t = ctx(token, proof, 'POST', `${RPC_ORIGIN}${RPC_PATH}`);
+      let nexted = false;
+      await honoAerAttestation(dpopOpts(jwk), { trustedOrigin: RPC_ORIGIN })(t.c as never, (async () => { nexted = true; }) as never);
+      expect(nexted).toBe(true);
+      expect(t.status()).toBe(0);
+    });
+
+    // A forged-context replay: the proof was bound to a different method. A
+    // middleware that still passed a static (or absent) method/url through
+    // would never catch this.
+    it('denies a proof bound to a different method', async () => {
+      const { token, jwk, proof } = await boundToOrigin('hono-method');
+      const t = ctx(token, proof, 'GET', `${RPC_ORIGIN}${RPC_PATH}`);
+      let nexted = false;
+      await honoAerAttestation(dpopOpts(jwk), { trustedOrigin: RPC_ORIGIN })(t.c as never, (async () => { nexted = true; }) as never);
+      expect(nexted).toBe(false);
+      expect(t.status()).toBe(403);
+    });
+
+    // A forged-context replay: the proof was bound to a different path. The
+    // spoofable Host from c.req.url is ignored once trustedOrigin is pinned.
+    it('denies a proof bound to a different URL, even with Host spoofed to the real origin', async () => {
+      const { token, jwk, proof } = await boundToOrigin('hono-url');
+      const t = ctx(token, proof, 'POST', `https://${new URL(RPC_ORIGIN).host}/other`);
+      let nexted = false;
+      await honoAerAttestation(dpopOpts(jwk), { trustedOrigin: RPC_ORIGIN })(t.c as never, (async () => { nexted = true; }) as never);
+      expect(nexted).toBe(false);
+      expect(t.status()).toBe(403);
+    });
+  });
+
+  describe('expressAerAttestation', () => {
+    async function waitFor(cond: () => boolean, ms = 1000): Promise<void> {
+      for (let i = 0; i < ms / 5 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+    }
+
+    it('throws at setup when requireDpop is set without trustedOrigin', async () => {
+      const { jwk } = await mint();
+      expect(() => expressAerAttestation(dpopOpts(jwk))).toThrow(/trustedOrigin/);
+    });
+
+    function reqres(token: string, proof: string, method: string, originalUrl: string, hostHeader: string) {
+      const req = {
+        method,
+        protocol: 'https',
+        originalUrl,
+        header: (n: string) => {
+          const k = n.toLowerCase();
+          if (k === 'x-aer-attestation') return token;
+          if (k === 'dpop') return proof;
+          if (k === 'host') return hostHeader;
+          return null;
+        },
+      };
+      let statusCode = 0; let jsonBody: unknown;
+      const res = { status: (s: number) => { statusCode = s; return res; }, json: (b: unknown) => { jsonBody = b; return res; } };
+      return { req, res, status: () => statusCode, json: () => jsonBody };
+    }
+
+    it('admits a request whose proof is bound to its real method + URL', async () => {
+      const { token, jwk, proof } = await boundToOrigin('express-ok');
+      const rr = reqres(token, proof, 'POST', RPC_PATH, new URL(RPC_ORIGIN).host);
+      let nexted = false;
+      expressAerAttestation(dpopOpts(jwk), { trustedOrigin: RPC_ORIGIN })(rr.req as never, rr.res as never, (() => { nexted = true; }) as never);
+      await waitFor(() => nexted || rr.status() !== 0);
+      expect(nexted).toBe(true);
+      expect(rr.status()).toBe(0);
+    });
+
+    it('denies a proof bound to a different method', async () => {
+      const { token, jwk, proof } = await boundToOrigin('express-method');
+      const rr = reqres(token, proof, 'GET', RPC_PATH, new URL(RPC_ORIGIN).host);
+      let nexted = false;
+      expressAerAttestation(dpopOpts(jwk), { trustedOrigin: RPC_ORIGIN })(rr.req as never, rr.res as never, (() => { nexted = true; }) as never);
+      await waitFor(() => rr.status() !== 0);
+      expect(nexted).toBe(false);
+      expect(rr.status()).toBe(403);
+    });
+
+    // Host header spoofed to the real origin's authority, while the request
+    // path differs from the one the proof was bound to.
+    it('denies a proof bound to a different URL, even with Host spoofed to the real origin', async () => {
+      const { token, jwk, proof } = await boundToOrigin('express-url');
+      const rr = reqres(token, proof, 'POST', '/other', new URL(RPC_ORIGIN).host);
+      let nexted = false;
+      expressAerAttestation(dpopOpts(jwk), { trustedOrigin: RPC_ORIGIN })(rr.req as never, rr.res as never, (() => { nexted = true; }) as never);
+      await waitFor(() => rr.status() !== 0);
+      expect(nexted).toBe(false);
+      expect(rr.status()).toBe(403);
+    });
+
+    // Without a pinned trustedOrigin, requireDpop must refuse to construct at
+    // all - deriving htu from the Host header would let a captured proof be
+    // replayed across deployments by spoofing Host to the proof's real origin.
+    it('a request bound to a different deployment (unpinned fallback) is never reachable: setup throws', () => {
+      const jwk: Jwk = { kty: 'OKP', crv: 'Ed25519', kid: 'x', x: 'AAAA' };
+      expect(() => expressAerAttestation(dpopOpts(jwk))).toThrow(/trustedOrigin/);
+    });
+
+    // A malformed request-target must deny (403), never escape the try as an
+    // uncaught synchronous throw (would otherwise become an attacker-
+    // triggerable 500, and contradict failOpen).
+    it('denies rather than throws on a request-target the URL parser rejects', async () => {
+      const { jwk } = await mint();
+      const req = {
+        method: 'POST',
+        protocol: 'https',
+        originalUrl: 'http://[not-a-host/x', // unparseable authority
+        header: (n: string) => (n.toLowerCase() === 'host' ? new URL(RPC_ORIGIN).host : null),
+      };
+      let statusCode = 0; let threw: unknown;
+      const res = { status: (s: number) => { statusCode = s; return res; }, json: () => res };
+      try {
+        expressAerAttestation(opts(jwk, jwksFetch([jwk])))(req as never, res as never, (() => {}) as never);
+        await waitFor(() => statusCode !== 0);
+      } catch (err) { threw = err; }
+      expect(threw).toBeUndefined();
+      expect(statusCode).toBe(403);
+    });
+
+    // The htu derived for a plain, single-slash request must match the path
+    // Express itself routes on - no `//`-authority reinterpretation.
+    it('binds htu to the verbatim origin-form path, not a URL-reparsed one', async () => {
+      const { token, jwk, proof } = await boundToOrigin('express-verbatim-path');
+      // boundToOrigin binds the proof to RPC_PATH ("/charge"); a request whose
+      // originalUrl carries a query string must still match on path alone.
+      const rr = reqres(token, proof, 'POST', `${RPC_PATH}?x=1`, new URL(RPC_ORIGIN).host);
+      let nexted = false;
+      expressAerAttestation(dpopOpts(jwk), { trustedOrigin: RPC_ORIGIN })(rr.req as never, rr.res as never, (() => { nexted = true; }) as never);
+      await waitFor(() => nexted || rr.status() !== 0);
+      expect(nexted).toBe(true);
+      expect(rr.status()).toBe(0);
+    });
+  });
+
+  describe('requireMtls is refused through the middleware (no per-request thumbprint to check against)', () => {
+    it('hono: throws at setup, even for a plain-JS caller the type system would not catch', async () => {
+      const { jwk } = await mint();
+      const unchecked = { ...opts(jwk, jwksFetch([jwk])), requireMtls: true } as unknown as MiddlewareOptions;
+      expect(() => honoAerAttestation(unchecked)).toThrow(/requireMtls/);
+    });
+
+    it('express: throws at setup, even for a plain-JS caller the type system would not catch', async () => {
+      const { jwk } = await mint();
+      const unchecked = { ...opts(jwk, jwksFetch([jwk])), requireMtls: true } as unknown as ExpressMiddlewareOptions;
+      expect(() => expressAerAttestation(unchecked)).toThrow(/requireMtls/);
+    });
+  });
+
+  describe('trustedOrigin validation', () => {
+    it('hono: throws at setup on a trustedOrigin that is not a bare origin', async () => {
+      const { jwk } = await mint();
+      expect(() => honoAerAttestation(dpopOpts(jwk), { trustedOrigin: 'not a url' })).toThrow(/trustedOrigin/);
+      expect(() => honoAerAttestation(dpopOpts(jwk), { trustedOrigin: `${RPC_ORIGIN}/base` })).toThrow(/trustedOrigin/);
+      expect(() => honoAerAttestation(dpopOpts(jwk), { trustedOrigin: `${RPC_ORIGIN}?x=1` })).toThrow(/trustedOrigin/);
+    });
+
+    it('express: throws at setup on a trustedOrigin that is not a bare origin', async () => {
+      const { jwk } = await mint();
+      expect(() => expressAerAttestation(dpopOpts(jwk), { trustedOrigin: 'not a url' })).toThrow(/trustedOrigin/);
+      expect(() => expressAerAttestation(dpopOpts(jwk), { trustedOrigin: `${RPC_ORIGIN}/base` })).toThrow(/trustedOrigin/);
+    });
+
+    it('accepts a bare origin with a trailing slash', async () => {
+      const { jwk } = await mint();
+      expect(() => honoAerAttestation(dpopOpts(jwk), { trustedOrigin: `${RPC_ORIGIN}/` })).not.toThrow();
+    });
+  });
+
+  describe('failOpen reports the denial reason via onFailOpen', () => {
+    it('hono', async () => {
+      const { jwk } = await mint();
+      let reported: string | undefined;
+      const mw = honoAerAttestation({ ...opts(jwk, jwksFetch([jwk])), failOpen: true, onFailOpen: (r) => { reported = r; } });
+      let nexted = false;
+      const c = { req: { header: () => undefined }, set: () => {}, json: () => ({}) };
+      await mw(c as never, (async () => { nexted = true; }) as never);
+      expect(nexted).toBe(true);
+      expect(reported).toBe('missing_token');
+    });
+
+    it('express', async () => {
+      const { jwk } = await mint();
+      let reported: string | undefined;
+      const req = { header: () => null };
+      let nexted = false;
+      const res = { status: () => res, json: () => res };
+      expressAerAttestation({ ...opts(jwk, jwksFetch([jwk])), failOpen: true, onFailOpen: (r) => { reported = r; } })(
+        req as never, res as never, (() => { nexted = true; }) as never,
+      );
+      await new Promise((r) => setTimeout(r, 20));
+      expect(nexted).toBe(true);
+      expect(reported).toBe('missing_token');
+    });
+  });
+});
+
 describe('verifyAttestation with introspection', () => {
   const withIntrospect = (jwk: Jwk, introspectImpl: typeof fetch, over: Record<string, unknown> = {}) =>
     opts(jwk, jwksFetch([jwk]), {
@@ -219,6 +469,33 @@ describe('verifyAttestation with introspection', () => {
     const down = vi.fn(async () => { throw new Error('down'); }) as unknown as typeof fetch;
     const c = await verifyAttestation(token, withIntrospect(jwk, down, { onUnavailable: 'fail-open' }));
     expect(c).toMatchObject({ agent_session_id: 's' });
+  });
+
+  it('does not grow the introspection cache without bound across many distinct tokens', async () => {
+    // One process-local cache is keyed by raw token. A long-running resource
+    // server that introspects many distinct tokens over its lifetime must not
+    // accumulate one entry per token forever. Same signer/jwk throughout (only
+    // `jti` varies) so this exercises the introspection cache in isolation,
+    // not JWKS refetch behavior.
+    const signer = createInMemoryAttestationSigner();
+    const kid = signingKeyIdFromPublicKey(signer.publicKey());
+    const jwk: Jwk = { kty: 'OKP', crv: 'Ed25519', use: 'sig', alg: 'EdDSA', kid, x: Buffer.from(signer.publicKey()).toString('base64url') };
+    const impl = introspectFetch({ active: true });
+    const N = 3000;
+    for (let i = 0; i < N; i++) {
+      const now = NOW_MS + i * 1000; // 1s apart; default active-verdict TTL is 10s
+      const nowSec = Math.floor(now / 1000);
+      const token = await signAttestationJwt(signer, kid, claims({ jti: `j-${i}`, iat: nowSec, nbf: nowSec, exp: nowSec + 300 }));
+      await verifyAttestation(token, opts(jwk, jwksFetch([jwk]), {
+        now: () => now,
+        introspect: { url: INTROSPECT_URL, verifierKey: 'aerv_test', fetchImpl: impl },
+      }));
+    }
+    // Reaching into the private field is the only way to observe memory
+    // growth without changing the public API surface.
+    const size = (introspectionCache as unknown as { entries: Map<string, unknown> }).entries.size;
+    expect(size).toBeLessThan(N);
+    expect(size).toBeLessThan(600); // well under one entry per distinct token seen
   });
 });
 
