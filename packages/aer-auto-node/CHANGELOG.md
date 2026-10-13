@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0
+
+### Minor Changes
+
+- [`2d90bca`](https://github.com/Ad-Astra-Computing/aer/commit/2d90bcacafcbe913de610238ecde43b6c57b6cba) - Stamp a fresh `request_ref` on every `http.requested`/`http.completed`/
+  `egress.blocked`/`egress.would_block` event from the generic fetch and
+  `node:http`/`node:https` patches, so the server can pair concurrent requests
+  to the same host by call instead of by host+method+arrival-order alone.
+  `llm.requested`/`llm.completed` now carry a `request_ref` on every call, not
+  only when a content-commitment key is configured. When an HTTP call is an
+  LLM provider SDK's own underlying request, it carries the SAME `request_ref`
+  as that call's `llm.requested`/`llm.completed` pair, so the two can be
+  joined.
+
 ## 0.6.0
 
 ### Minor Changes

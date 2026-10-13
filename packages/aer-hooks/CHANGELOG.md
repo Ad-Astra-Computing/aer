@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.0
+
+### Minor Changes
+
+- [`dc90df9`](https://github.com/Ad-Astra-Computing/aer/commit/dc90df9ed6f64d75682ff68a170b38c4c7a71c86) - Record which program on a shell line named each host a `network.connect`
+  shape carries (a `via` key, e.g. `curl` or `git`), so `curl host && git
+  clone host` on the same line no longer loses which tool actually reached
+  the network. A fetch-tool call (`WebFetch` and its harness equivalents) now
+  also carries `source: 'fetch_tool'` on its `network.connect` shape, matching
+  the `source` every other network path already reports. Both fixes live in
+  the shared reduction `opencode`, Claude Code and Codex all route through, so
+  every harness gets them for free.
+
 ## 0.12.0
 
 ### Minor Changes
