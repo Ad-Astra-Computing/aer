@@ -295,11 +295,24 @@ const INTROSPECT_ACTIVE_DEFAULT_SEC = 10;
 const INTROSPECT_ACTIVE_MAX_SEC = 30;
 const INTROSPECT_INACTIVE_DEFAULT_SEC = 5;
 
+// One entry per distinct token ever introspected, so without a bound this
+// grows forever on a long-running process. Sweep expired entries
+// periodically (cheap: most calls just bump a counter), with a hard cap as a
+// backstop. Keyed by sha256(token), not the raw token, so a usable
+// credential doesn't sit around in this cache's memory.
+const INTROSPECT_SWEEP_EVERY_CALLS = 500;
+const INTROSPECT_MAX_ENTRIES = 50_000;
+// A cap-triggered sweep evicts down to this fraction of the cap, not back to
+// exactly the cap, so a sustained workload at the cap doesn't pay a full
+// sweep on every call.
+const INTROSPECT_LOW_WATER_FRACTION = 0.9;
+
 class IntrospectionCache {
   private entries = new Map<string, IntrospectionEntry>();
+  private callsSinceSweep = 0;
 
   /** Reset (tests). */
-  reset(): void { this.entries.clear(); }
+  reset(): void { this.entries.clear(); this.callsSinceSweep = 0; }
 
   async check(
     token: string,
@@ -307,7 +320,9 @@ class IntrospectionCache {
     opts: IntrospectOptions,
     nowMs: number,
   ): Promise<{ active: boolean; reason?: string }> {
-    const cached = this.entries.get(token);
+    this.sweep(nowMs);
+    const key = await cacheKeyFor(token);
+    const cached = this.entries.get(key);
     if (cached && cached.expiresAt > nowMs) {
       return cached.reason !== undefined ? { active: cached.active, reason: cached.reason } : { active: cached.active };
     }
@@ -337,9 +352,36 @@ class IntrospectionCache {
 
     const entry: IntrospectionEntry = { active, expiresAt };
     if (body.reason !== undefined) entry.reason = body.reason;
-    this.entries.set(token, entry);
+    this.entries.set(key, entry);
     return body.reason !== undefined ? { active, reason: body.reason } : { active };
   }
+
+  /**
+   * Bound memory: every call bumps a counter, and only every
+   * `INTROSPECT_SWEEP_EVERY_CALLS`-th call (or any call once the map is
+   * already at the hard cap) pays for a sweep - cheap on the hot path. A
+   * sweep drops expired entries, then, as a backstop against a burst of
+   * distinct still-live tokens between sweeps, evicts the soonest-expiring
+   * entries down to a low-water mark (below the cap, not back to exactly the
+   * cap) so a sustained workload sitting at the cap doesn't pay a full sweep
+   * on every single call.
+   */
+  private sweep(nowMs: number): void {
+    if (++this.callsSinceSweep < INTROSPECT_SWEEP_EVERY_CALLS && this.entries.size < INTROSPECT_MAX_ENTRIES) return;
+    this.callsSinceSweep = 0;
+    for (const [key, entry] of this.entries) if (entry.expiresAt <= nowMs) this.entries.delete(key);
+    const target = Math.floor(INTROSPECT_MAX_ENTRIES * INTROSPECT_LOW_WATER_FRACTION);
+    const over = this.entries.size - target;
+    if (over > 0) {
+      const soonest = [...this.entries.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+      for (let i = 0; i < over; i++) this.entries.delete(soonest[i]![0]);
+    }
+  }
+}
+
+/** sha256(token), base64url - see the note above INTROSPECT_SWEEP_EVERY_CALLS. */
+async function cacheKeyFor(token: string): Promise<string> {
+  return sha256b64url(new TextEncoder().encode(token));
 }
 
 export const introspectionCache = new IntrospectionCache();
