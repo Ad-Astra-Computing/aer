@@ -158,6 +158,17 @@ describe('normalizeCodex', () => {
     expect(e.ok).toBe(true);
   });
 
+  it('carries transcript_path for locating llm usage, never as identifier-shaped meta', () => {
+    const e = normalizeCodex({ ...codexPreToolUse, transcript_path: '/home/user/.codex/sessions/2026/10/12/rollout-x.jsonl' });
+    expect(e.transcriptPath).toBe('/home/user/.codex/sessions/2026/10/12/rollout-x.jsonl');
+    expect(e.meta).not.toHaveProperty('transcript_path');
+    expect(e.meta).not.toHaveProperty('transcriptPath');
+  });
+
+  it('leaves transcriptPath undefined when the payload has none', () => {
+    expect(normalizeCodex(codexPostToolUse).transcriptPath).toBeUndefined();
+  });
+
   it('records the files a real apply_patch call writes, against the session cwd', () => {
     // The payload Codex 0.158 sends for apply_patch: the whole patch rides in
     // tool_input.command, file content included.
