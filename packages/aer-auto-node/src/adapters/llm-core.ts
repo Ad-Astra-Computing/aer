@@ -238,6 +238,11 @@ const REQUEST_GATE = new AsyncLocalStorage<Promise<void>>();
 // This call's request_ref, exposed for the wrapped SDK invocation's duration.
 // The generic fetch/http patches check it first, so a provider's own HTTP
 // call shares the id of the llm.requested/llm.completed pair that made it.
+// Theoretical caveat: an SDK that lazily spins up a long-lived
+// dispatcher/queue on its FIRST call, from inside that call's run() scope,
+// could have later calls' fetches inherit call #1's ref instead of their
+// own (ALS follows async-resource init context, not call boundaries). Worst
+// case is mis-attribution, not a leak, and no known SDK does this.
 export const CURRENT_LLM_REQUEST_REF = new AsyncLocalStorage<string>();
 const PREPARE_PATCHED = Symbol.for('adastra.aer.adapter.prepareOptions');
 
