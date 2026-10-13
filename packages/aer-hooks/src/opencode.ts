@@ -24,7 +24,7 @@
 
 import type { HookEvent } from './normalize.js';
 import { asRecord, asString, keysOf, responseIsError } from './normalize.js';
-import { shapesOfToolCall } from './tool-shape.js';
+import { shapesOfToolCall, patchFileCount, PATCH_FILE_CAP } from './tool-shape.js';
 import { recordableToolName } from './tool-name.js';
 
 /** Marks every opencode event, as the shell hooks mark theirs. */
@@ -35,6 +35,37 @@ export const HARNESS_META = { harness: 'opencode' } as const;
  * the tool the shared reduction already knows. The reduction is the privacy
  * boundary: a command line becomes its program names and hosts, a file tool
  * its path, a fetch its host. Nothing else of the input is passed on.
+ *
+ * Confirmed against @opencode-ai/{plugin,sdk}@1.18.31 (the pinned release,
+ * tag v1.18.31 of the opencode source) built-in tool registry
+ * (packages/opencode/src/tool/registry.ts): the full built-in id list there
+ * is invalid, question, shell, read, glob, grep, edit, write, task, fetch,
+ * todo, search, skill, apply_patch, execute, lsp, plan. Three deliberately
+ * have no entry below:
+ *   - "task" (subagent-dispatch tool, args: description, prompt, subagent_type,
+ *     task_id, command, background): `prompt` is the only argument that
+ *     makes the event useful, and it is the free-text instructions handed to
+ *     the subagent - exactly the shape Claude Code's own equivalent (Task)
+ *     also leaves unmapped here. Falls through to the generic {tool,
+ *     arg_keys} shape.
+ *   - "todo" (wire name "todowrite", args: todos, each a {content, status,
+ *     ...} record): `content` is the free-text todo item itself; there is no
+ *     reduction of a todo list that is not either empty or a content leak.
+ *     Falls through to the generic shape, same as Claude Code's own
+ *     TodoWrite.
+ *   - "list": does not exist as an opencode built-in at this pinned version
+ *     (checked the full registry above) - nothing to map.
+ * grep/glob/apply_patch map below because each has an established safe
+ * reduction already shipped for another harness's identically-shaped tool:
+ * glob/grep mirror Claude Code's own Glob/Grep (GLOB_TOOLS/GREP_TOOLS in
+ * tool-shape.ts - path/pattern classification only, never the raw pattern or
+ * path), and opencode's "apply_patch" tool uses the exact same "*** Begin
+ * Patch"/"*** Add File:"/"*** Update File:"/"*** Delete File:"/"*** Move
+ * to:" envelope Codex's own apply_patch uses (confirmed against opencode's
+ * apply_patch.ts and apply_patch.txt at the same pinned tag), so it reduces
+ * through the same header-only file-path extraction (PATCH_TOOL in
+ * tool-shape.ts): the diff body is never read, only each operation's file
+ * path.
  */
 const SHAPE_ALIASES: Readonly<Record<string, (args: Record<string, unknown>) => [string, Record<string, unknown>]>> = {
   bash: (a) => ['Bash', { command: a['command'] }],
@@ -42,6 +73,12 @@ const SHAPE_ALIASES: Readonly<Record<string, (args: Record<string, unknown>) => 
   write: (a) => ['Write', { file_path: a['filePath'] }],
   edit: (a) => ['Edit', { file_path: a['filePath'] }],
   webfetch: (a) => ['WebFetch', { url: a['url'] }],
+  glob: (a) => ['Glob', { pattern: a['pattern'], path: a['path'] }],
+  grep: (a) => ['Grep', { pattern: a['pattern'], path: a['path'] }],
+  // opencode's own tool id, matching PATCH_TOOL in tool-shape.ts exactly; the
+  // tool's one argument (`patchText`) is renamed to `command` because that is
+  // the field name the shared patch-header reduction reads.
+  apply_patch: (a) => ['apply_patch', { command: a['patchText'] }],
 };
 
 function putShapes(event: HookEvent, tool: string, args: unknown): void {
@@ -49,10 +86,21 @@ function putShapes(event: HookEvent, tool: string, args: unknown): void {
   const rec = asRecord(args);
   if (alias === undefined || rec === undefined) return;
   const [name, input] = alias(rec);
+  // No `cwd` to pass: opencode's `tool.execute.before` input carries only
+  // {tool, sessionID, callID}, so a relative apply_patch path is recorded as
+  // the patch header wrote it (e.g. "src/app.py"), not resolved to absolute
+  // the way the Codex shell-hook path (which does have a cwd) can.
   const shapes = shapesOfToolCall(name, input);
   if (shapes.length > 0) {
     event.shape = shapes[0];
     event.shapes = shapes;
+  }
+  // Mirrors normalize.ts's putToolFields: once a patch names more files than
+  // PATCH_FILE_CAP, the extra file.written events are silently dropped, so
+  // the true count is recorded separately rather than lost outright.
+  if (name === 'apply_patch' && shapes.length >= PATCH_FILE_CAP) {
+    const named = patchFileCount(input);
+    if (named > shapes.length) event.filesNamed = named;
   }
 }
 
