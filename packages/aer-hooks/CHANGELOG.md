@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.1
+
+### Patch Changes
+
+- [`1e09da6`](https://github.com/Ad-Astra-Computing/aer/commit/1e09da6174461d98bc8ffc4515436d17268f9058) - Read Codex usage events' provider off the real session_meta field instead of guessing it from the model name, fixing provider attribution for sessions routed through a non-OpenAI backend (for example --oss/local-provider).
+
 ## 0.13.0
 
 ### Minor Changes
