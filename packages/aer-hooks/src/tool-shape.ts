@@ -57,6 +57,24 @@ const SEARCH_CLASS_PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [/secret/i, 'secrets_dir'],
   [/wallet/i, 'wallet'],
 ];
+// Claude Code's Skill tool. Its tool_input carries the invoked skill's name
+// under `skill`; any other argument it sends is the skill's own arguments,
+// which must never reach the wire (bodies-off).
+const SKILL_TOOL = 'Skill';
+// Same bound the server enforces on skill.invoked's `skill` field (see
+// isSafeName in the API repo's packages/schemas/src/event.ts): a free-form
+// display name, bounded only on length and control characters, never the
+// identifier()-style pattern a closed-set label would need.
+const SKILL_NAME_MAX_LEN = 256;
+// eslint-disable-next-line no-control-regex
+const SKILL_NAME_FORBIDDEN_CONTROL = /[\u0000-\u001f\u007f]/;
+
+function skillName(v: unknown): string | undefined {
+  const s = asString(v);
+  if (s === undefined || s.length > SKILL_NAME_MAX_LEN || SKILL_NAME_FORBIDDEN_CONTROL.test(s)) return undefined;
+  return s;
+}
+
 // Codex writes every file through this one tool, whose only argument is the
 // patch text.
 const PATCH_TOOL = 'apply_patch';
@@ -214,6 +232,11 @@ export function shapesOfToolCall(tool: string, input: unknown, opts: { cwd?: str
   if (FETCH_TOOLS.has(tool)) {
     const target = urlOf(firstOf(args, URL_KEYS));
     return target === undefined ? [] : [{ eventType: 'network.connect', payload: target }];
+  }
+
+  if (tool === SKILL_TOOL) {
+    const skill = skillName(args['skill']);
+    return skill === undefined ? [] : [{ eventType: 'skill.invoked', payload: { skill } }];
   }
 
   if (tool === PATCH_TOOL) return patchedFiles(args['command'], opts.cwd !== undefined && isAbsolute(opts.cwd) ? opts.cwd : undefined);

@@ -168,6 +168,25 @@ describe('what a tool call reduces to', () => {
     expect(shapeOfToolCall('TodoWrite', { todos: [] })).toBeUndefined();
   });
 
+  it('reduces a Skill call to the skill name, never its arguments', () => {
+    expect(shapeOfToolCall('Skill', { skill: 'pdf', args: 'SECRET prompt text' }))
+      .toEqual({ eventType: 'skill.invoked', payload: { skill: 'pdf' } });
+    expect(JSON.stringify(shapeOfToolCall('Skill', { skill: 'pdf', args: 'SECRET' }))).not.toContain('SECRET');
+  });
+
+  it('says nothing for a Skill call with no readable name', () => {
+    expect(shapeOfToolCall('Skill', { args: 'x' })).toBeUndefined();
+    expect(shapeOfToolCall('Skill', { skill: 42 })).toBeUndefined();
+    expect(shapeOfToolCall('Skill', {})).toBeUndefined();
+    expect(shapeOfToolCall('Skill', null)).toBeUndefined();
+  });
+
+  it('drops a Skill name that is too long or carries a control character, rather than truncating it', () => {
+    expect(shapeOfToolCall('Skill', { skill: 'x'.repeat(256) })).toBeDefined();
+    expect(shapeOfToolCall('Skill', { skill: 'x'.repeat(257) })).toBeUndefined();
+    expect(shapeOfToolCall('Skill', { skill: 'pdf\u0000tool' })).toBeUndefined();
+  });
+
   it('says nothing rather than guessing from a missing or wrong-typed field', () => {
     expect(shapeOfToolCall('Bash', {})).toBeUndefined();
     expect(shapeOfToolCall('Bash', { command: 42 })).toBeUndefined();
@@ -183,6 +202,7 @@ describe('what a tool call reduces to', () => {
       shapeOfToolCall('WebFetch', { url: 'https://x.example.com/a' }),
       shapeOfToolCall('Write', { file_path: '/a/b' }),
       shapeOfToolCall('mcp__srv__tool', {}),
+      shapeOfToolCall('Skill', { skill: 'pdf' }),
     ];
     for (const shape of shapes) {
       for (const key of Object.keys(shape?.payload ?? {})) {
