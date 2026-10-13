@@ -27,10 +27,10 @@ const VENDORED = new Map([
     ],
   ],
   [
-    'shared/bodies-off/claude-code-usage.ts',
+    'shared/bodies-off/model-usage.ts',
     [
-      'apps/cli/src/shared/claude-code-usage.ts',
-      'packages/aer-hooks/src/shared/claude-code-usage.ts',
+      'apps/cli/src/shared/model-usage.ts',
+      'packages/aer-hooks/src/shared/model-usage.ts',
     ],
   ],
 ]);

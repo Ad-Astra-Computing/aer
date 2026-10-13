@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import type { HookEvent } from './normalize.js';
 import { tailCodexTranscript, type CodexUsageEvent } from './codex-transcript-tail.js';
-import { providerOf } from './shared/claude-code-usage.js';
+import { providerOf } from './shared/model-usage.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 
 /** How many response ids to remember per harness session, to bound the store. */
