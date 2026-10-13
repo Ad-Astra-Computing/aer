@@ -17,6 +17,10 @@ export interface CodexUsage {
   outputTokens?: number;
 }
 
+export interface CodexSessionMeta {
+  provider: string;
+}
+
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -46,4 +50,20 @@ export function extractCodexUsage(entry: unknown): CodexUsage | undefined {
   const outputTokens = tokenCount(usage?.['output_tokens']);
   if (outputTokens !== undefined) out.outputTokens = outputTokens;
   return out;
+}
+
+// Reads the vendor off a rollout's session_meta line, written once as the
+// first line of every rollout file. Checked against real local sessions
+// (~/.codex/sessions/**/*.jsonl): payload.model_provider is a plain string
+// ("openai"), set once per session, never guessed from the model name. This
+// is the real source of truth providerOf exists only to approximate for a
+// transcript that predates this field or was truncated before line one.
+export function extractCodexSessionMeta(entry: unknown): CodexSessionMeta | undefined {
+  const e = isObj(entry) ? entry : undefined;
+  if (!e || e['type'] !== 'session_meta') return undefined;
+  const payload = isObj(e['payload']) ? e['payload'] : undefined;
+  if (!payload) return undefined;
+  const provider = identifierField(payload['model_provider']);
+  if (!provider) return undefined;
+  return { provider };
 }

@@ -8,7 +8,7 @@
 // These fixtures mirror that shape exactly.
 
 import { describe, it, expect } from 'vitest';
-import { extractCodexUsage } from './codex-usage.js';
+import { extractCodexUsage, extractCodexSessionMeta } from './codex-usage.js';
 
 function tokenUsageRecordLine(opts: Partial<{
   responseId: string;
@@ -83,5 +83,44 @@ describe('extractCodexUsage', () => {
     };
     const out = extractCodexUsage(line);
     expect(JSON.stringify(out)).not.toContain('SECRET-BUDGET');
+  });
+});
+
+// Trimmed from a real local rollout's session_meta line (first line of
+// ~/.codex/sessions/2026/10/06/rollout-...jsonl): base_instructions (the
+// full system prompt) and every other field this function does not read are
+// left out, since this is a fixture shape check, not a content fixture.
+function sessionMetaLine(provider: unknown): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    session_id: 'ses_1',
+    originator: 'codex_exec',
+    cli_version: '0.155.0',
+  };
+  if (provider !== undefined) payload['model_provider'] = provider;
+  return { timestamp: '2026-10-06T07:27:16.660Z', ordinal: 0, type: 'session_meta', payload };
+}
+
+describe('extractCodexSessionMeta', () => {
+  it('reads the provider off a real session_meta shape', () => {
+    expect(extractCodexSessionMeta(sessionMetaLine('openai'))).toEqual({ provider: 'openai' });
+  });
+
+  it('is undefined for any other rollout item type (never reads turn_context or a response_item)', () => {
+    expect(extractCodexSessionMeta({ type: 'turn_context', payload: { model: 'gpt-6-sol' } })).toBeUndefined();
+    expect(extractCodexSessionMeta({ type: 'response_item', payload: {} })).toBeUndefined();
+  });
+
+  it('is undefined for a non-object, a non-object payload, or a missing/malformed provider', () => {
+    expect(extractCodexSessionMeta(null)).toBeUndefined();
+    expect(extractCodexSessionMeta({ type: 'session_meta', payload: 'x' })).toBeUndefined();
+    expect(extractCodexSessionMeta(sessionMetaLine(undefined))).toBeUndefined();
+    expect(extractCodexSessionMeta(sessionMetaLine('free text with spaces'))).toBeUndefined();
+  });
+
+  it('never reads base_instructions or anything else off the record', () => {
+    const line = sessionMetaLine('openai');
+    (line['payload'] as Record<string, unknown>)['base_instructions'] = { text: 'SECRET-SYSTEM-PROMPT' };
+    const out = extractCodexSessionMeta(line);
+    expect(JSON.stringify(out)).not.toContain('SECRET-SYSTEM-PROMPT');
   });
 });
