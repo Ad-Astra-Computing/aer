@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.0
+
+### Minor Changes
+
+- [`336149a`](https://github.com/Ad-Astra-Computing/aer/commit/336149af6df9b4ade1f62d2b4049ce36b64902cd) - Record a Claude Code Skill call as a new skill.invoked event, carrying the
+  invoked skill's own name only, never the arguments it was invoked with. A
+  Skill call still gets the usual tool.started/tool.completed events alongside
+  it; this adds the typed, bodies-off-safe detail the server already has a
+  schema for.
+
 ## 0.10.0
 
 ### Minor Changes

@@ -18,7 +18,7 @@ import type { EventSink } from '@adastracomputing/aer-emit';
 // harness_agent_id, subagent_events_unattached and events_dropped_budget
 // widen this ahead of the server (ADR-023 B2/B3): see the comment on
 // INGEST_PAYLOAD_KEYS.
-const ALLOWLIST_SHA256 = '6bc5a1bd8dc4de2987426aaf6d1b54e72e40b3c778bd98d8dd740b7b782bc23f';
+const ALLOWLIST_SHA256 = 'eb77ef00c72adcaab3d06ace8f59582767d5c7e31746e8622813a854455458e8';
 
 function collectingSink(): { sink: EventSink; seen: Array<{ type: string; payload: Record<string, unknown> }> } {
   const seen: Array<{ type: string; payload: Record<string, unknown> }> = [];
@@ -115,6 +115,15 @@ const PAYLOADS: Array<{ label: string; raw: Record<string, unknown>; harness?: '
     raw: { conversationId: 'conv_1', stepIdx: 3, toolCall: { name: 'run_command', args: { command: 'git push origin main' } } },
     harness: 'antigravity', event: 'PreToolUse',
   },
+  // skill.invoked: the skill name only, never the arguments it was invoked with.
+  {
+    label: 'claude-code PreToolUse (Skill)',
+    raw: {
+      session_id: 'ses_1', hook_event_name: 'PreToolUse', tool_name: 'Skill',
+      tool_input: { skill: 'pdf', args: 'SECRET-SKILL-ARGS' },
+      cwd: '/repo',
+    },
+  },
 ];
 
 describe('every key the hook emits is a key ingest stores', () => {
@@ -144,8 +153,26 @@ describe('every key the hook emits is a key ingest stores', () => {
       emitHookEvent(normalize(raw, harness, event), sink, { raw, env });
     }
     const wire = JSON.stringify(seen);
-    for (const secret of ['SECRET-FILE', 'SECRET-OUTPUT', 'SECRET-REPLY', 'SECRET-PROMPT', 'SECRET-branch', 'SECRET-abc']) {
+    for (const secret of ['SECRET-FILE', 'SECRET-OUTPUT', 'SECRET-REPLY', 'SECRET-PROMPT', 'SECRET-branch', 'SECRET-abc', 'SECRET-SKILL-ARGS']) {
       expect(wire).not.toContain(secret);
     }
+  });
+
+  it('emits skill.invoked with the skill name only, never the args key', () => {
+    const { sink, seen } = collectingSink();
+    emitHookEvent(
+      normalize({
+        session_id: 'ses_1', hook_event_name: 'PreToolUse', tool_name: 'Skill',
+        tool_input: { skill: 'pdf', args: 'SECRET-SKILL-ARGS' }, cwd: '/repo',
+      }),
+      sink,
+    );
+    const skillInvoked = seen.find((e) => e.type === 'skill.invoked');
+    expect(skillInvoked?.payload['skill']).toBe('pdf');
+    expect(skillInvoked?.payload['tool']).toBe('Skill');
+    expect(JSON.stringify(skillInvoked?.payload)).not.toContain('SECRET-SKILL-ARGS');
+    expect(Object.keys(skillInvoked?.payload ?? {}).sort()).toEqual(
+      ['arg_keys', 'harness', 'session_ref', 'skill', 'tool'],
+    );
   });
 });
