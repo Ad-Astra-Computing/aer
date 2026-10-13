@@ -112,6 +112,20 @@ describe('the hosts a network client was pointed at', () => {
     expect(r.hostVia).toEqual({ 'host.example': 'curl' });
   });
 
+  it('a hostname shaped like an Object.prototype key never pollutes hostVia (fable review)', () => {
+    // __proto__ itself is rejected as a hostname before it ever reaches
+    // hostVia (HOSTNAME_RE requires a leading [a-z0-9]), but a label that IS
+    // a valid hostname and also a normal Object.prototype member name
+    // (constructor, toString, valueOf, hasownproperty) must still become an
+    // own, string-valued entry rather than a silent read-through to the
+    // inherited function.
+    const r = reduceShellLine('curl http://constructor/x');
+    expect(r.hosts).toEqual(['constructor']);
+    expect(Object.hasOwn(r.hostVia, 'constructor')).toBe(true);
+    expect(r.hostVia['constructor']).toBe('curl');
+    expect(reduceShellLine('curl http://__proto__/x').hosts).toEqual([]);
+  });
+
   it('refuses a target it cannot know, and counts it', () => {
     expect(hosts('curl "$URL"')).toEqual([]);
     expect(hosts('ssh $HOST')).toEqual([]);

@@ -1566,7 +1566,15 @@ function walk(line: string, acc: Acc, depth: number): void {
  * nothing".
  */
 export function reduceShellLine(line: unknown): ShellLineReduction {
-  const acc: Acc = { programs: [], hosts: [], hostVia: {}, unknown: false, hostsUnreduced: 0, labels: {}, invocations: 0 };
+  const acc: Acc = {
+    programs: [], hosts: [],
+    // No-prototype object: a plain {} lets `hostVia['__proto__'] = program`
+    // silently hit Object.prototype's setter instead of creating an own
+    // property. cleanHost's HOSTNAME_RE blocks that key today, but this
+    // guards the next host-extraction path too.
+    hostVia: Object.create(null) as Record<string, string>,
+    unknown: false, hostsUnreduced: 0, labels: {}, invocations: 0,
+  };
   if (typeof line !== 'string') return { ...acc, unknown: true };
   if (line.length > MAX_SCAN) acc.unknown = true;
   walk(line.slice(0, MAX_SCAN), acc, 0);

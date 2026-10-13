@@ -1,7 +1,8 @@
 // The payload keys AER ingest will actually store. Every other key is dropped
 // at POST /v1/sessions/:id/events, so a client that sends one pays the privacy
 // cost and gets nothing in the record. Source of truth is
-// BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
+// BODIES_OFF_PAYLOAD_KEYS in the API repo; the two sets are not expected to
+// be identical (see below) and there is no shared digest pinning them equal.
 //
 // The server allows four keys this package does not yet send: also_ran,
 // hosts_unreduced, resources_seen, prompts_seen (skill now sent below; via
@@ -10,9 +11,10 @@
 // changing this file or the server's allowlist, since the two repos have
 // no shared CI to catch drift automatically.
 //
-// harness_agent_id, subagent_events_unattached and events_dropped_budget are
-// listed ahead of the server allowlist, which strips and counts them until it
-// accepts them; listing them now avoids a second client release.
+// harness_agent_id, subagent_events_unattached and events_dropped_budget were
+// originally listed ahead of the server allowlist, which stripped and counted
+// them until it accepted them (ADR-023 B2/B3); the server allowlist now also
+// carries all three, so this package no longer leads the server on them.
 //
 // decided_by and approvals_unresolved (P0-1 oversight markers) are aer-hooks
 // only; a key this package never sends is harmless.

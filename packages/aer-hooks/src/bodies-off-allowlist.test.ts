@@ -12,14 +12,12 @@ import { emitHookEvent } from './core.js';
 import { normalize } from './normalize.js';
 import type { EventSink } from '@adastracomputing/aer-emit';
 
-// Pinned against BODIES_OFF_PAYLOAD_KEYS in the API repo (packages/schemas/
-// src/event.ts), which carries the same digest in its own test. A change on
-// either side turns both red, so the two copies cannot drift in silence.
-// harness_agent_id, subagent_events_unattached and events_dropped_budget
-// widen this ahead of the server (ADR-023 B2/B3): see the comment on
-// INGEST_PAYLOAD_KEYS. `via` (host provenance decision 7) is new here and
-// already allowlisted server-side, per the design doc's "server first"
-// delivery; this pin moves to match.
+// A self-consistency pin on INGEST_PAYLOAD_KEYS alone, not a digest shared
+// with the server: the two sides' key sets differ on purpose (see the
+// comment on INGEST_PAYLOAD_KEYS) and the API repo has no matching pin to
+// compare against. This only catches an accidental key change here. The
+// real cross-repo guard is scripts/check-client-allowlist-parity.mjs in the
+// monorepo; run it after changing INGEST_PAYLOAD_KEYS.
 const ALLOWLIST_SHA256 = 'e73d838543880feded28803da7ba78f27e4521d14af91b9e5aa5b82f7426efff';
 
 function collectingSink(): { sink: EventSink; seen: Array<{ type: string; payload: Record<string, unknown> }> } {

@@ -230,7 +230,11 @@ export function shapesOfToolCall(tool: string, input: unknown, opts: { cwd?: str
       // line named this host, e.g. `curl` or `git`. Already a closed-ish
       // identifier the same way `command`'s program name is elsewhere in
       // this file; never the full command line.
-      const via = bounded(line.hostVia[host]);
+      // hasOwn, not a bare lookup: hostVia is a Record<string, string>, but a
+      // reader must never trust a prototype-chain hit (e.g. a hostile `host`
+      // value of 'constructor' or 'toString') as a program name (fable
+      // review).
+      const via = Object.hasOwn(line.hostVia, host) ? bounded(line.hostVia[host]) : undefined;
       if (via !== undefined) payload['via'] = via;
       shapes.push({ eventType: 'network.connect', payload });
     }
