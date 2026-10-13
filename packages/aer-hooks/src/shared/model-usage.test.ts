@@ -37,4 +37,17 @@ describe('providerOf', () => {
   it('returns undefined for an unrecognized model, never a guess', () => {
     expect(providerOf('nonexistent-model-xyz')).toBeUndefined();
   });
+
+  it('does not let a codename token steal a differently-prefixed model', () => {
+    // 'sol'/'luna' must be a token match, not a substring, and gemini is
+    // checked before the codename fallback, not after.
+    expect(providerOf('gemini-sol-flash')).toBe('google');
+  });
+
+  it('does not let a codename substring false-positive on an unrelated vendor', () => {
+    // Upstage's real Solar family; the '-solar' substring must never match
+    // the '-sol' codename token.
+    expect(providerOf('upstage-solar-pro')).toBeUndefined();
+    expect(providerOf('some-lunar-x')).toBeUndefined();
+  });
 });

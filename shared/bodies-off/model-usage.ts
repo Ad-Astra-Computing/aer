@@ -51,8 +51,11 @@ export function providerOf(model: string): string | undefined {
   const m = model.toLowerCase();
   if (m.startsWith('claude')) return 'anthropic';
   if (m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) return 'openai';
-  if (OPENAI_CODENAMES.some((name) => m === name || m.includes(`-${name}`))) return 'openai';
   if (m.startsWith('gemini')) return 'google';
+  // Least specific signal, checked last: a '.'/'-' delimited token match, not
+  // a substring, so 'solar-pro' (Upstage) and 'lunar-x' never false-positive.
+  const tokens = m.split(/[-.]/);
+  if (OPENAI_CODENAMES.some((name) => tokens.includes(name))) return 'openai';
   return undefined;
 }
 
