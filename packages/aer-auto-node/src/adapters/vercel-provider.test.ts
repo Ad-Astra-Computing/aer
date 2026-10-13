@@ -105,7 +105,8 @@ describe('doGenerate', () => {
     const model = new FakeModel();
     await wrap(model, 'doGenerate', capture)({ prompt: [{ role: 'user', content: SECRET }] });
     expect(types(events)).toEqual(['llm.requested', 'llm.completed', 'tool.selected']);
-    expect(events[1]!.payload).toEqual({ provider: 'openai', model: 'mx-model-2026', ok: true, input_tokens: 11, output_tokens: 7, stop_reason: 'tool-calls' });
+    expect(events[1]!.payload).toMatchObject({ provider: 'openai', model: 'mx-model-2026', ok: true, input_tokens: 11, output_tokens: 7, stop_reason: 'tool-calls' });
+    expect(events[1]!.payload['request_ref']).toBe(events[0]!.payload['request_ref']); // joins the llm.requested above it
     expect(events[2]!.payload).toEqual({ provider: 'openai', tool: 'lookup' });
     expect(JSON.stringify(events)).not.toContain(SECRET);
   });
@@ -122,7 +123,8 @@ describe('doStream', () => {
     expect(parts.map((p) => (p as { type: string }).type)).toEqual(['stream-start', 'text-delta', 'tool-call', 'finish']);
     expect((parts[1] as { delta: string }).delta).toBe(SECRET);
     expect(types(events)).toEqual(['llm.requested', 'llm.completed', 'tool.selected']);
-    expect(events[1]!.payload).toEqual({ provider: 'openai', model: 'mx-model', ok: true, streaming: true, usage_observed: true, input_tokens: 11, output_tokens: 7, stop_reason: 'stop' });
+    expect(events[1]!.payload).toMatchObject({ provider: 'openai', model: 'mx-model', ok: true, streaming: true, usage_observed: true, input_tokens: 11, output_tokens: 7, stop_reason: 'stop' });
+    expect(events[1]!.payload['request_ref']).toBe(events[0]!.payload['request_ref']); // joins the llm.requested above it
     expect(events[2]!.payload).toEqual({ provider: 'openai', tool: 'lookup' });
     expect(JSON.stringify(events)).not.toContain(SECRET);
   });
