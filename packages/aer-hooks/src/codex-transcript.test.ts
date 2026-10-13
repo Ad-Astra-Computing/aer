@@ -21,6 +21,15 @@ function tokenUsageRecordLine(responseId: string, opts: Partial<{ turnId: string
   });
 }
 
+// Real rollout's first line, trimmed of base_instructions (the full system
+// prompt, never read or recorded).
+function sessionMetaLine(provider: string): string {
+  return JSON.stringify({
+    timestamp: '2026-10-06T07:27:16.660Z', ordinal: 0, type: 'session_meta',
+    payload: { session_id: 'ses_1', originator: 'codex_exec', cli_version: '0.155.0', model_provider: provider },
+  });
+}
+
 function collectingSink(): { sink: EventSink; seen: Array<{ type: string; payload: Record<string, unknown>; id?: string }> } {
   const seen: Array<{ type: string; payload: Record<string, unknown>; id?: string }> = [];
   return {
@@ -131,5 +140,46 @@ describe('emitTranscriptLlmUsageForCodex', () => {
     const { sink, seen } = collectingSink();
     emitTranscriptLlmUsageForCodex(toolEndEvent(file), sink, {}, 'hs-1');
     expect(JSON.stringify(seen)).not.toContain('SECRET-PROMPT');
+  });
+
+  it('reads the real provider off session_meta rather than guessing from the model name', () => {
+    // A deliberately mismatched model so a providerOf(model) guess and the
+    // real session_meta value would disagree if the fallback were used.
+    fs.writeFileSync(file, sessionMetaLine('openai') + '\n' + tokenUsageRecordLine('resp_1') + '\n');
+    const { sink, seen } = collectingSink();
+    emitTranscriptLlmUsageForCodex(toolEndEvent(file, 'some-future-model-name'), sink, {}, 'hs-1');
+    expect(seen[0]!.payload['provider']).toBe('openai');
+  });
+
+  it('reads a non-openai provider off session_meta too, not just the common case', () => {
+    // Codex supports --oss/local-provider routing; providerOf(model) would
+    // return undefined for a local model name like this.
+    fs.writeFileSync(file, sessionMetaLine('ollama') + '\n' + tokenUsageRecordLine('resp_1') + '\n');
+    const { sink, seen } = collectingSink();
+    emitTranscriptLlmUsageForCodex(toolEndEvent(file, 'llama-3-70b'), sink, {}, 'hs-1');
+    expect(seen[0]!.payload['provider']).toBe('ollama');
+  });
+
+  it('caches the provider across two calls, not re-reading session_meta every time', () => {
+    fs.writeFileSync(file, sessionMetaLine('openai') + '\n' + tokenUsageRecordLine('resp_1') + '\n');
+    const { sink: sinkA, seen: seenA } = collectingSink();
+    const first = emitTranscriptLlmUsageForCodex(toolEndEvent(file), sinkA, {}, 'hs-1');
+    expect(first.state.provider).toBe('openai');
+
+    // A second call starting from the cached state must still resolve the
+    // provider even if the file were somehow unreadable afterward.
+    fs.appendFileSync(file, tokenUsageRecordLine('resp_2') + '\n');
+    const { sink: sinkB, seen: seenB } = collectingSink();
+    emitTranscriptLlmUsageForCodex(toolEndEvent(file), sinkB, first.state, 'hs-1');
+    expect(seenB[0]!.payload['provider']).toBe('openai');
+  });
+
+  it('falls back to providerOf(model) when the transcript has no session_meta line', () => {
+    // Every pre-existing test fixture in this file omits session_meta; this
+    // pins that the fallback still fires rather than leaving provider unset.
+    fs.writeFileSync(file, tokenUsageRecordLine('resp_1') + '\n');
+    const { sink, seen } = collectingSink();
+    emitTranscriptLlmUsageForCodex(toolEndEvent(file, 'gpt-5.1-codex'), sink, {}, 'hs-1');
+    expect(seen[0]!.payload['provider']).toBe('openai');
   });
 });

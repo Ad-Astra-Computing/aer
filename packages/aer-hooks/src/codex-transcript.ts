@@ -8,6 +8,11 @@
 // hook event's own `meta.model`, which Codex sends on every event. No model
 // on that event means no llm.completed is emitted for this call, since
 // `model` is a required field on the wire shape, never sent as a guess.
+//
+// The provider, by contrast, IS in the rollout: session_meta's
+// payload.model_provider, written once as the file's first line. Read once
+// and cached in state.provider; providerOf(model) only covers a transcript
+// that predates this field or was truncated before line one.
 
 import type { EventSink } from '@adastracomputing/aer-emit';
 import { createHash } from 'node:crypto';
@@ -15,10 +20,43 @@ import * as fs from 'node:fs';
 import type { HookEvent } from './normalize.js';
 import { tailCodexTranscript, type CodexUsageEvent } from './codex-transcript-tail.js';
 import { providerOf } from './shared/model-usage.js';
+import { extractCodexSessionMeta } from './shared/codex-usage.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
 
 /** How many response ids to remember per harness session, to bound the store. */
 const MAX_TRACKED_RESPONSE_IDS = 300;
+
+// session_meta is always the rollout's first line and carries the real
+// provider (payload.model_provider), checked against real local sessions.
+// The system prompt embedded in it (base_instructions) is the largest field
+// and runs ~22 KB on every local sample seen; this bound leaves over 10x
+// headroom without reading the whole file.
+const SESSION_META_READ_BYTES = 256 * 1024;
+
+// A bounded, one-time read of byte 0 of the rollout, independent of the main
+// tailing cursor (which may already be far past line one on a large file).
+// Undefined on any read/parse failure or a first line that is not
+// session_meta: the caller falls back to providerOf(model), never guesses
+// here. Fail-open like every other read in this module.
+function readSessionMetaProvider(transcriptPath: string): string | undefined {
+  try {
+    const fd = fs.openSync(transcriptPath, 'r');
+    try {
+      const size = Math.min(fs.fstatSync(fd).size, SESSION_META_READ_BYTES);
+      const buf = Buffer.alloc(size);
+      fs.readSync(fd, buf, 0, size, 0);
+      const text = buf.toString('utf8');
+      const newline = text.indexOf('\n');
+      const firstLine = newline === -1 ? text : text.slice(0, newline);
+      if (firstLine.trim().length === 0) return undefined;
+      return extractCodexSessionMeta(JSON.parse(firstLine))?.provider;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The first read of a transcript the hook has not seen before (the hook was
@@ -44,6 +82,8 @@ export interface CodexTranscriptUsageState {
   transcriptPath?: string;
   transcriptOffset?: number;
   emittedLlmMessageIds?: string[];
+  /** Read once off session_meta and cached; providerOf(model) is the fallback. */
+  provider?: string;
 }
 
 export interface CodexTranscriptUsageResult {
@@ -57,10 +97,10 @@ function deterministicEventId(sessionRef: string, responseId: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
-function toPayload(usage: CodexUsageEvent, sessionRef: string | undefined, model: string): Record<string, unknown> {
+function toPayload(usage: CodexUsageEvent, sessionRef: string | undefined, model: string, provider: string | undefined): Record<string, unknown> {
   const payload: Record<string, unknown> = { model, ok: true, source: 'harness_transcript' };
-  const provider = providerOf(model);
-  if (provider !== undefined) payload['provider'] = provider;
+  const resolvedProvider = provider ?? providerOf(model);
+  if (resolvedProvider !== undefined) payload['provider'] = resolvedProvider;
   if (usage.inputTokens !== undefined) payload['input_tokens'] = usage.inputTokens;
   if (usage.outputTokens !== undefined) payload['output_tokens'] = usage.outputTokens;
   if (sessionRef !== undefined) payload['session_ref'] = sessionRef;
@@ -98,10 +138,16 @@ export function scanCodexTranscriptForLlmUsage(event: HookEvent, prior: CodexTra
     const result = tailCodexTranscript({ transcriptPath, offset, emittedResponseIds, startsMidLine });
     const events = sameFile ? result.events : result.events.slice(-FIRST_SCAN_MAX_EVENTS);
     const nextIds = [...emittedResponseIds, ...events.map((e) => e.responseId)].slice(-MAX_TRACKED_RESPONSE_IDS);
+    // Cached once found; a session has one provider for its whole life, so a
+    // session_meta already read is never re-read.
+    const provider = (sameFile ? prior.provider : undefined) ?? readSessionMetaProvider(transcriptPath);
 
     return {
       events,
-      state: { transcriptPath, transcriptOffset: result.nextOffset, emittedLlmMessageIds: nextIds },
+      state: {
+        transcriptPath, transcriptOffset: result.nextOffset, emittedLlmMessageIds: nextIds,
+        ...(provider !== undefined ? { provider } : {}),
+      },
     };
   } catch {
     return { events: [], state: prior };
@@ -119,12 +165,13 @@ export function emitCodexLlmUsageEvents(
   sink: EventSink,
   sessionRef: string | undefined,
   model: string | undefined,
+  provider?: string,
 ): number {
   if (model === undefined || events.length === 0) return 0;
   let emitted = 0;
   try {
     for (const usage of events) {
-      const { payload } = stripToIngestPayload(toPayload(usage, sessionRef, model));
+      const { payload } = stripToIngestPayload(toPayload(usage, sessionRef, model, provider));
       const eventId = deterministicEventId(sessionRef ?? usage.responseId, usage.responseId);
       void sink.emit('llm.completed', payload, eventId);
       emitted += 1;
@@ -149,6 +196,6 @@ export function emitTranscriptLlmUsageForCodex(
   sessionRef: string | undefined,
 ): CodexTranscriptUsageResult {
   const scan = scanCodexTranscriptForLlmUsage(event, prior);
-  const emitted = emitCodexLlmUsageEvents(scan.events, sink, sessionRef, modelOf(event));
+  const emitted = emitCodexLlmUsageEvents(scan.events, sink, sessionRef, modelOf(event), scan.state.provider);
   return { emitted, state: scan.state };
 }
