@@ -38,17 +38,10 @@ function tokenCount(v: unknown): number | undefined {
 // token_usage_record carries no provider of its own, so the caller derives
 // one from the model string this same way.
 //
-// This maps a MODEL to the company that trained it, never to the harness/
-// product that surfaced the call (that's `meta.harness`, set independently
-// per event: 'claude-code' | 'codex' | 'opencode' | 'antigravity'). A Gemini
-// model is provider 'google' regardless of which harness ran it - Antigravity
-// is Google's own agent product and a harness, not a provider, and today
-// emits no per-call model/token data at all to map here (confirmed dead end,
-// see the Antigravity usage-metadata doc). o1/o3/o4 stay listed even though
-// o1 is superseded: an older transcript can still reference it, and a prefix
-// check costs nothing to keep. gpt-5.1-codex and similar Codex-branded model
-// names already match the 'gpt' prefix, so they correctly resolve to
-// 'openai' here; 'codex' itself is a harness label, never a provider.
+// Maps a MODEL to its vendor, never to the harness/product that ran it
+// (that's `meta.harness`, set independently per event). o1/o3/o4 stay listed
+// even though o1 is superseded, since an old transcript can still reference
+// it and the check costs nothing to keep.
 export function providerOf(model: string): string | undefined {
   const m = model.toLowerCase();
   if (m.startsWith('claude')) return 'anthropic';
