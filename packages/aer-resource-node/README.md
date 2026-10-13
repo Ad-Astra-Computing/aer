@@ -128,7 +128,38 @@ app.use('/protected', expressAerAttestation({ audience: 'mcp://payments-prod' })
 
 Both read `X-AER-Attestation` (set `allowBearer: true` to also accept
 `Authorization: Bearer`), are **fail-closed (403)** by default, and accept
-`failOpen: true` to log-and-continue.
+`failOpen: true` to continue instead of denying (pass `onFailOpen` to log the
+denial reason yourself; the middleware does not log on its own). Each
+request's real method, URL and `DPoP` header are wired into `verifyAttestation`
+automatically, so `requireDpop` works correctly through either helper without
+you doing anything extra.
+
+`requireMtls` is not available through either helper: there is no per-request
+client-certificate thumbprint to read from a generic middleware context. Call
+`verifyAttestation` directly and pass `mtlsThumbprint` from
+`thumbprintFromPeerCert` or `thumbprintFromForwardedClientCert`.
+
+To turn on `requireDpop` through either helper, also pass your resource's
+real public origin as `trustedOrigin`:
+
+```ts
+app.use('/protected/*', honoAerAttestation(
+  { audience: 'mcp://payments-prod', requireDpop: true },
+  { trustedOrigin: 'https://payments.example.com' },
+));
+```
+
+```ts
+app.use('/protected', expressAerAttestation(
+  { audience: 'mcp://payments-prod', requireDpop: true },
+  { trustedOrigin: 'https://payments.example.com' },
+));
+```
+
+This is required, and each helper throws at setup if it is missing: the `Host`
+header a server sees is set by the client, so building the DPoP URL from it
+would let someone replay a captured proof at a different deployment by
+spoofing `Host` to match the proof's real origin.
 
 ## What it proves (and doesn't)
 
