@@ -105,6 +105,14 @@ describe('extractCodexSessionMeta', () => {
     expect(extractCodexSessionMeta(sessionMetaLine('openai'))).toEqual({ provider: 'openai' });
   });
 
+  it('passes through any provider value verbatim, never an allowlist of known ones', () => {
+    // A future vendor rename or backend generation this package has never
+    // seen must still resolve correctly, since this field is read directly
+    // off the transcript rather than matched against a known-name list.
+    expect(extractCodexSessionMeta(sessionMetaLine('openai-gen8'))).toEqual({ provider: 'openai-gen8' });
+    expect(extractCodexSessionMeta(sessionMetaLine('ollama'))).toEqual({ provider: 'ollama' });
+  });
+
   it('is undefined for any other rollout item type (never reads turn_context or a response_item)', () => {
     expect(extractCodexSessionMeta({ type: 'turn_context', payload: { model: 'gpt-6-sol' } })).toBeUndefined();
     expect(extractCodexSessionMeta({ type: 'response_item', payload: {} })).toBeUndefined();

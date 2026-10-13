@@ -12,12 +12,22 @@ describe('providerOf', () => {
     'gpt-4o', 'gpt-5', 'gpt-5.1-codex', 'gpt-5.3-codex', 'gpt-5.5', 'gpt-5.6',
     'gpt-5.6-astra', 'gpt-5.6-sol', 'gpt-5-codex', 'gpt-6-astra', 'gpt-6-sol',
     'gpt-astra',
+    // The live model picker's full current list, checked directly:
+    // gpt-6-astra/sol/luna and gpt-5.6-sol/terra/luna.
+    'gpt-6-luna', 'gpt-5.6-terra', 'gpt-5.6-luna',
   ])('resolves a real gpt-prefixed Codex model (%s) to openai', (model) => {
     expect(providerOf(model)).toBe('openai');
   });
 
-  it.each(['astra', 'codex-astra'])(
+  it.each(['astra', 'codex-astra', 'terra'])(
     'resolves a bare OpenAI codename with no gpt prefix (%s) to openai',
+    (model) => {
+      expect(providerOf(model)).toBe('openai');
+    },
+  );
+
+  it.each(['codex', 'codex-sol', 'codex-luna'])(
+    'resolves a codex-prefixed model with no gpt prefix (%s) to openai',
     (model) => {
       expect(providerOf(model)).toBe('openai');
     },
