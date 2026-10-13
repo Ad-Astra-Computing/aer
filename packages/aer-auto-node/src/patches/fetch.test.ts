@@ -70,6 +70,28 @@ describe('installFetchPatch', () => {
     expect(types).toEqual(['http.requested', 'http.completed']);
     expect(events[0]?.payload).toMatchObject({ host: 'api.openai.com', method: 'POST' });
     expect(events[1]?.payload).toMatchObject({ host: 'api.openai.com', status: 200 });
+    // request_ref (decision 13): stable across the request/completion pair.
+    const ref = events[0]?.payload['request_ref'];
+    expect(typeof ref).toBe('string');
+    expect(events[1]?.payload['request_ref']).toBe(ref);
+    uninstall();
+  });
+
+  it('gives two concurrent fetches to the same host different request_ref values', async () => {
+    const orig = vi.fn(async () => new Response('ok', { status: 200 }));
+    globalThis.fetch = orig as unknown as typeof fetch;
+    const { capture, events } = withCapture();
+    const uninstall = installFetchPatch(capture);
+
+    await Promise.all([
+      globalThis.fetch('https://x.test/a'),
+      globalThis.fetch('https://x.test/b'),
+    ]);
+
+    const requested = events.filter((e) => e.event_type === 'http.requested');
+    expect(requested).toHaveLength(2);
+    const refs = requested.map((e) => e.payload['request_ref']);
+    expect(refs[0]).not.toBe(refs[1]);
     uninstall();
   });
 
@@ -108,11 +130,15 @@ describe('installFetchPatch', () => {
     await globalThis.fetch(new URL(`https://x.test/a/${canary}`));
     await globalThis.fetch(new Request(`https://x.test/b/${canary}?q=${canary}`, { method: 'PUT' }));
     const requested = events.filter((e) => e.event_type === 'http.requested');
-    expect(requested.map((e) => e.payload)).toEqual([
+    expect(requested.map((e) => ({ host: e.payload['host'], method: e.payload['method'] }))).toEqual([
       { host: 'x.test:8443', method: 'GET' },
       { host: 'x.test', method: 'GET' },
       { host: 'x.test', method: 'PUT' },
     ]);
+    // each call still gets its own opaque request_ref (decision 13)
+    const refs = requested.map((e) => e.payload['request_ref']);
+    expect(refs.every((r) => typeof r === 'string' && r.length > 0)).toBe(true);
+    expect(new Set(refs).size).toBe(refs.length);
     expect(JSON.stringify(events)).not.toContain(canary);
     expect(JSON.stringify(events)).not.toContain('/users');
     uninstall();

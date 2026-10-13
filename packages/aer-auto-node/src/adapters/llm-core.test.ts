@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { wrapCreate, patchMethod, patchIntact, type ProviderConfig } from './llm-core.js';
 import { openaiConfig } from './openai.js';
 import { commitmentKeyFromString, deriveKid, canonicalizeRequest, promptCanonTag, responseTag, wireBodyTag, toolArgsTag, toolResultTag, CANON_VERSION } from '../commitment.js';
+import { installFetchPatch } from '../patches/fetch.js';
 import type { CollectorEvent } from '../session.js';
 
 // A minimal provider config for exercising the generic wrapper.
@@ -412,6 +413,60 @@ describe('wrapCreate: content commitment slice 2 (ADR-011)', () => {
     const completed = events.find((e) => e.event_type === 'llm.completed')!.payload;
     expect(completed['response_tag']).toBeUndefined();
     expect(JSON.stringify(events)).not.toContain('secret');
+  });
+});
+
+describe('wrapCreate + installFetchPatch integration (decision 10)', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    const g = globalThis as Record<symbol, unknown>;
+    delete g[Symbol.for('adastra.aer.patched.fetch')];
+    delete g[Symbol.for('adastra.aer.original.fetch')];
+  });
+
+  it('stamps the provider HTTP call made inside the wrapped SDK call with the SAME request_ref as the llm.* pair', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const { capture, events } = capt();
+    const uninstallFetch = installFetchPatch(capture);
+
+    const key = commitmentKeyFromString('a'.repeat(64));
+    const commit = key ? { key, kid: deriveKid(key) } : undefined;
+
+    // Simulates an SDK's create() making its own underlying fetch call.
+    const original = async () => {
+      await globalThis.fetch('https://api.testllm.example/v1/completions');
+      return { model: 'm', usage: { in: 1, out: 1 } };
+    };
+    const wrapped = wrapCreate(original, cfg, capture, undefined, undefined, commit);
+    await wrapped({ model: 'm' });
+    await Promise.resolve();
+    uninstallFetch();
+
+    const llmCompleted = events.find((e) => e.event_type === 'llm.completed')?.payload;
+    const httpRequested = events.find((e) => e.event_type === 'http.requested')?.payload;
+    const httpCompleted = events.find((e) => e.event_type === 'http.completed')?.payload;
+    expect(typeof llmCompleted?.['request_ref']).toBe('string');
+    expect(httpRequested?.['request_ref']).toBe(llmCompleted?.['request_ref']);
+    expect(httpCompleted?.['request_ref']).toBe(llmCompleted?.['request_ref']);
+  });
+
+  it('mints its own request_ref for a fetch made OUTSIDE any wrapped SDK call', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const { capture, events } = capt();
+    const uninstallFetch = installFetchPatch(capture);
+
+    const original = async () => ({ model: 'm', usage: { in: 1, out: 1 } });
+    const wrapped = wrapCreate(original, cfg, capture);
+    await wrapped({ model: 'm' });
+    await Promise.resolve();
+
+    await globalThis.fetch('https://unrelated.example/');
+    uninstallFetch();
+
+    const unrelatedRequested = events.filter((e) => e.event_type === 'http.requested');
+    expect(unrelatedRequested).toHaveLength(1);
+    expect(typeof unrelatedRequested[0]?.payload['request_ref']).toBe('string');
   });
 });
 

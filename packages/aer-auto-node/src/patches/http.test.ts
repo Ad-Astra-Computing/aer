@@ -57,8 +57,9 @@ describe('installHttpPatch', () => {
 
     const req = events.find((e) => e.event_type === 'http.requested');
     const done = events.find((e) => e.event_type === 'http.completed');
-    expect(req?.payload).toEqual({ host: `127.0.0.1:${port}`, method: 'GET' });
-    expect(done?.payload).toMatchObject({ status: 200 });
+    expect(req?.payload).toMatchObject({ host: `127.0.0.1:${port}`, method: 'GET' });
+    expect(typeof req?.payload['request_ref']).toBe('string');
+    expect(done?.payload).toMatchObject({ status: 200, request_ref: req?.payload['request_ref'] });
     uninstall();
   });
 
@@ -78,12 +79,16 @@ describe('installHttpPatch', () => {
     await done(http.request(new URL(`http://u:${canary}@127.0.0.1:${port}/c/${canary}#${canary}`)));
     await done(http.request(`http://127.0.0.1:${port}/d/${canary}`, { method: 'POST' }));
     const requested = events.filter((e) => e.event_type === 'http.requested');
-    expect(requested.map((e) => e.payload)).toEqual([
+    expect(requested.map((e) => ({ host: e.payload['host'], method: e.payload['method'] }))).toEqual([
       { host: `127.0.0.1:${port}`, method: 'GET' },
       { host: `127.0.0.1:${port}`, method: 'GET' },
       { host: `127.0.0.1:${port}`, method: 'GET' },
       { host: `127.0.0.1:${port}`, method: 'POST' },
     ]);
+    // each call still gets its own opaque request_ref (decision 13)
+    const refs = requested.map((e) => e.payload['request_ref']);
+    expect(refs.every((r) => typeof r === 'string' && r.length > 0)).toBe(true);
+    expect(new Set(refs).size).toBe(refs.length);
     expect(JSON.stringify(events)).not.toContain(canary);
     uninstall();
   });

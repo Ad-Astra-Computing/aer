@@ -6,12 +6,14 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import { randomUUID } from 'node:crypto';
 import { Writable } from 'node:stream';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { CollectorEvent } from '../session.js';
 import type { Attestor } from '../attestor.js';
 import { safeHost } from '../redaction.js';
 import { looksLikeModelCall } from '../adapters/coverage.js';
+import { CURRENT_LLM_REQUEST_REF } from '../adapters/llm-core.js';
 import type { RequestObserver } from './index.js';
 import { responseBytesField } from './response-size.js';
 
@@ -42,9 +44,13 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor, onReques
     function wrapped(this: unknown, ...args: unknown[]): ClientRequest {
       const meta = safeExtract(args);
       const start = Date.now();
+      // request_ref (decision 10/13): see fetch.ts's currentRequestRef for
+      // the rationale. Reuse the enclosing LLM adapter's ref when this call
+      // is its underlying HTTP request; else mint a fresh per-call id.
+      const requestRef = currentRequestRef();
       safeCapture(capture, {
         event_type: 'http.requested',
-        payload: { host: meta.host, method: meta.method },
+        payload: { host: meta.host, method: meta.method, request_ref: requestRef },
       });
       if (onRequest) {
         try {
@@ -99,6 +105,7 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor, onReques
               host: meta.host,
               status: res.statusCode ?? 0,
               duration_ms: Date.now() - start,
+              request_ref: requestRef,
               ...responseBytesField(res.headers['content-length']),
             },
           });
@@ -106,7 +113,7 @@ export function installHttpPatch(capture: Capture, attestor?: Attestor, onReques
         req.once('error', () => {
           safeCapture(capture, {
             event_type: 'http.completed',
-            payload: { host: meta.host, status: 0, error: true, duration_ms: Date.now() - start },
+            payload: { host: meta.host, status: 0, error: true, duration_ms: Date.now() - start, request_ref: requestRef },
           });
         });
       } catch {
@@ -253,4 +260,18 @@ function syntheticBlockedRequest(reason: string): ClientRequest {
 
 function safeCapture(capture: Capture, event: CollectorEvent): void {
   try { capture(event); } catch { /* never break the host request */ }
+}
+
+/**
+ * The id to stamp as this call's request_ref (decision 10/13): the enclosing
+ * LLM adapter's own request_ref when this request is that adapter's
+ * underlying HTTP call, else a fresh id minted for this call alone. Never
+ * throws.
+ */
+function currentRequestRef(): string {
+  try {
+    return CURRENT_LLM_REQUEST_REF.getStore() ?? randomUUID();
+  } catch {
+    return randomUUID();
+  }
 }

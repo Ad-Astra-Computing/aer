@@ -5,10 +5,12 @@
 // runs and its result/error is passed through), no bodies/headers, and a URL
 // is recorded as its host only: never its path, query or userinfo.
 
+import { randomUUID } from 'node:crypto';
 import type { CollectorEvent } from '../session.js';
 import type { Attestor } from '../attestor.js';
 import { safeHost } from '../redaction.js';
 import { looksLikeModelCall } from '../adapters/coverage.js';
+import { CURRENT_LLM_REQUEST_REF } from '../adapters/llm-core.js';
 import type { RequestObserver } from './index.js';
 import { responseBytesField } from './response-size.js';
 
@@ -41,9 +43,15 @@ export function installFetchPatch(capture: Capture, attestor?: Attestor, onReque
   ): Promise<Response> {
     const meta = safeExtract(input, init);
     const start = Date.now();
+    // request_ref (decision 10/13): when this call runs inside a
+    // CURRENT_LLM_REQUEST_REF-wrapped LLM provider call, reuse ITS ref so the
+    // http.* events join the llm.* pair that triggered them; otherwise mint
+    // a fresh per-call id so concurrent same-host requests pair correctly
+    // (decision 13) instead of by host+method+arrival-order alone.
+    const requestRef = currentRequestRef();
     safeCapture(capture, {
       event_type: 'http.requested',
-      payload: { host: meta.host, method: meta.method },
+      payload: { host: meta.host, method: meta.method, request_ref: requestRef },
     });
     observe(onRequest, meta.host, meta.path);
     // Attestation injection: HTTPS + configured protected hosts only. Build a
@@ -92,6 +100,7 @@ export function installFetchPatch(capture: Capture, attestor?: Attestor, onReque
           host: meta.host,
           status: res.status,
           duration_ms: Date.now() - start,
+          request_ref: requestRef,
           ...responseBytesField(res.headers.get('content-length')),
         },
       });
@@ -99,7 +108,7 @@ export function installFetchPatch(capture: Capture, attestor?: Attestor, onReque
     } catch (err) {
       safeCapture(capture, {
         event_type: 'http.completed',
-        payload: { host: meta.host, status: 0, error: true, duration_ms: Date.now() - start },
+        payload: { host: meta.host, status: 0, error: true, duration_ms: Date.now() - start, request_ref: requestRef },
       });
       throw err;
     }
@@ -315,4 +324,17 @@ function safeCapture(capture: Capture, event: CollectorEvent): void {
 function observe(onRequest: RequestObserver | undefined, host: string, path: string): void {
   if (!onRequest) return;
   try { onRequest(host, looksLikeModelCall(path)); } catch { /* never break the host request */ }
+}
+
+/**
+ * The id to stamp as this call's request_ref (decision 10/13): the enclosing
+ * LLM adapter's own request_ref when this fetch is that adapter's underlying
+ * HTTP call, else a fresh id minted for this call alone. Never throws.
+ */
+function currentRequestRef(): string {
+  try {
+    return CURRENT_LLM_REQUEST_REF.getStore() ?? randomUUID();
+  } catch {
+    return randomUUID();
+  }
 }
