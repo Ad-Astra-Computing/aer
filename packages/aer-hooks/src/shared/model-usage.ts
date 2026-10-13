@@ -1,5 +1,9 @@
-// Read the model and token counts off a Claude Code transcript assistant
-// message, never `message.content` (prompt/completion text, tool args).
+// Model/provider identification shared across every transcript harness this
+// repo reads, plus the Claude Code-specific assistant-message extractor.
+// `identifierField` and `providerOf` are harness-agnostic and reused by
+// codex-transcript.ts; `extractClaudeCodeUsage` reads Claude Code's own
+// assistant-message shape (`message.model`, `message.usage.*`) specifically,
+// never `message.content` (prompt/completion text, tool args).
 //
 // SOURCE OF TRUTH; scripts/check-vendored.mjs fails the build on drift.
 
@@ -33,6 +37,11 @@ function tokenCount(v: unknown): number | undefined {
 // Exported for reuse by codex-transcript.ts: a Codex transcript's
 // token_usage_record carries no provider of its own, so the caller derives
 // one from the model string this same way.
+//
+// Maps a MODEL to its vendor, never to the harness/product that ran it
+// (that's `meta.harness`, set independently per event). o1/o3/o4 stay listed
+// even though o1 is superseded, since an old transcript can still reference
+// it and the check costs nothing to keep.
 export function providerOf(model: string): string | undefined {
   const m = model.toLowerCase();
   if (m.startsWith('claude')) return 'anthropic';
