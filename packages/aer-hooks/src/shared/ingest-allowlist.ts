@@ -1,20 +1,17 @@
 // The payload keys AER ingest will actually store. Every other key is dropped
 // at POST /v1/sessions/:id/events, so a client that sends one pays the privacy
 // cost and gets nothing in the record. Source of truth is
-// BODIES_OFF_PAYLOAD_KEYS in the API repo; the two sets are not expected to
-// be identical (see below) and there is no shared digest pinning them equal.
+// BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
 //
-// The server allows four keys this package does not yet send: also_ran,
-// hosts_unreduced, resources_seen, prompts_seen (skill now sent below; via
-// is sent now too, see host provenance decision 7).
+// The server allows five keys this package does not yet send: also_ran,
+// hosts_unreduced, via, resources_seen, prompts_seen (skill now sent below).
 // Run scripts/check-client-allowlist-parity.mjs in the monorepo after
 // changing this file or the server's allowlist, since the two repos have
 // no shared CI to catch drift automatically.
 //
-// harness_agent_id, subagent_events_unattached and events_dropped_budget were
-// originally listed ahead of the server allowlist, which stripped and counted
-// them until it accepted them (ADR-023 B2/B3); the server allowlist now also
-// carries all three, so this package no longer leads the server on them.
+// harness_agent_id, subagent_events_unattached and events_dropped_budget are
+// listed ahead of the server allowlist, which strips and counts them until it
+// accepts them; listing them now avoids a second client release.
 //
 // decided_by and approvals_unresolved (P0-1 oversight markers) are aer-hooks
 // only; a key this package never sends is harmless.
@@ -31,7 +28,7 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'duration_ms', 'ok', 'error', 'response_captured', 'request_ref', 'kid', 'canon',
   'capture_point', 'prompt_canon_tag', 'wire_canon', 'wire_canon_tag', 'tool_result_tags',
   'tool_args_tag', 'message_count', 'prompt_bytes', 'retained', 'outcome', 'response_tag',
-  'tool', 'host', 'method', 'status_code', 'url', 'path_redacted', 'scheme',
+  'tool', 'host', 'method', 'status_code', 'url', 'path_redacted', 'scheme', 'via',
   'secure', 'response_bytes', 'command', 'args_redacted', 'pid', 'exit_code',
   'command_known', 'path', 'key', 'rule', 'decision', 'policy_id', 'version',
   'mode', 'limit', 'observed', 'action', 'classes', 'runtime', 'node_version',
@@ -66,10 +63,6 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'env_set_class', 'history_cleared', 'interpreter_inline', 'ai_cli',
   // Claude Code Skill-tool invocation (skill.invoked): the skill name only.
   'skill',
-  // Host provenance decision 7: which program on a shell line named a given
-  // host on its network.connect shape (e.g. 'curl', 'git'). A bare program
-  // name, the same shape `command` already carries elsewhere in this file.
-  'via',
 ]);
 
 export interface StripResult {
