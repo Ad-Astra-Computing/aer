@@ -446,6 +446,44 @@ export function normalizeCodex(payload: unknown, lifecycle: Lifecycle = 1): Hook
  * payload, unlike the other two harnesses; each registration passes it on argv.
  * Fields are camelCase and the tool call is nested, so none of the Claude Code
  * mapping is reusable.
+ *
+ * Unlike Claude Code and Codex, there is no llm.completed path for
+ * Antigravity. Checked 12 Oct 2026, re-verifying the harness-docs fetch dated
+ * 2026-09-21 at the top of this file:
+ *   - The documented common fields across every hook (PreToolUse,
+ *     PostToolUse, PreInvocation, PostInvocation, Stop) carry `modelName`
+ *     but no token count, and none of the five fires at a model-call
+ *     boundary where a Gemini `usageMetadata` object would appear.
+ *   - Every hook also carries `transcriptPath`, pointing at a
+ *     `transcript.jsonl` the docs describe only by location, never by
+ *     schema. A third-party parser that actually reads real
+ *     `transcript.jsonl` content (jerrywu001/cc-sessions-viewer,
+ *     `src-tauri/src/agents/agy.rs`, commit 5bf4343 as of this check)
+ *     documents in its own code comments that step records carry no
+ *     token/usage/model field either, and fills a zero placeholder in its
+ *     usage summary for exactly that reason. This is corroborating evidence
+ *     from a third party, not an authoritative source; re-check it directly
+ *     if that repo has since changed or disappeared.
+ *   - The one usage-shaped surface, `/usage` (alias `/quota`), is an
+ *     interactive-only TUI panel: no JSON flag, no non-interactive
+ *     invocation, and it reports a rolling quota rather than a per-call
+ *     count a hook could attribute to one llm.completed event.
+ *   - No documented OTel/telemetry export was found either. gemini-cli
+ *     ships one with token metrics, so Antigravity plausibly could too, but
+ *     even if so it would be process-level telemetry, not attributable to a
+ *     single hook event, and resting a public package's bodies-off contract
+ *     on an undocumented stream would repeat the same unverifiable-schema
+ *     problem as the transcript. Re-check this if Antigravity ever
+ *     documents one.
+ * Antigravity is related to the separate, open-source gemini-cli project,
+ * whose own `BeforeModel`/`AfterModel` hooks DO carry
+ * `llm_response.usageMetadata.totalTokenCount` (see its
+ * `docs/hooks/reference.md`) -- but Antigravity's documented hook set has no
+ * equivalent model-level hook, so that capability is not exposed here. This
+ * is a genuine dead end, not a gap to paper over: do not add a transcript
+ * scanner or a guessed usage field for Antigravity without first finding a
+ * real, verifiable source for a token count on some hook or file this
+ * harness actually emits.
  */
 export function normalizeAntigravity(payload: unknown, eventName: string): HookEvent {
   const p = asRecord(payload) ?? {};
