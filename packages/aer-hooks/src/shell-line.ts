@@ -24,6 +24,15 @@ export interface ShellLineReduction {
   programs: string[];
   /** Distinct hosts a network client was pointed at, in order. */
   hosts: string[];
+  /**
+   * Which program on the line named each host in `hosts` (host provenance,
+   * design-doc decision 7's `via` key). Keyed by host, one entry per entry
+   * in `hosts`. When two different programs on the line name the same host
+   * (`curl host && git clone host`), the first program to name it wins,
+   * matching the order `programs` is already built in, rather than emitting
+   * a second event for the same host.
+   */
+  hostVia: Record<string, string>;
   /** Some part of the line could not be read, so the lists may be incomplete. */
   unknown: boolean;
   /**
@@ -1311,6 +1320,8 @@ function mergeLabel(into: ProgramLabel, from: ProgramLabel): ProgramLabel {
 interface Acc {
   programs: string[];
   hosts: string[];
+  /** See ShellLineReduction.hostVia. */
+  hostVia: Record<string, string>;
   unknown: boolean;
   hostsUnreduced: number;
   labels: Record<string, ProgramLabel>;
@@ -1398,7 +1409,15 @@ function readProgram(word: Word, args: Word[], acc: Acc, depth: number, elevated
   acc.invocations += 1;
   note(acc.programs, program, MAX_PROGRAMS);
   const targets = hostsFor(program, args);
-  for (const h of targets.hosts) note(acc.hosts, h, MAX_HOSTS);
+  for (const h of targets.hosts) {
+    // The first program on the line to name a host wins `via`: later
+    // invocations of `note` below are no-ops for a host already present, so
+    // checking `includes` here before that call mirrors the same ordering
+    // rather than letting a later program overwrite the first one's claim.
+    const isFirstClaim = acc.hosts.length < MAX_HOSTS && !acc.hosts.includes(h);
+    note(acc.hosts, h, MAX_HOSTS);
+    if (isFirstClaim) acc.hostVia[h] = program;
+  }
   acc.hostsUnreduced += targets.unreduced;
 
   const label = ownLabel(program, args);
@@ -1547,7 +1566,7 @@ function walk(line: string, acc: Acc, depth: number): void {
  * nothing".
  */
 export function reduceShellLine(line: unknown): ShellLineReduction {
-  const acc: Acc = { programs: [], hosts: [], unknown: false, hostsUnreduced: 0, labels: {}, invocations: 0 };
+  const acc: Acc = { programs: [], hosts: [], hostVia: {}, unknown: false, hostsUnreduced: 0, labels: {}, invocations: 0 };
   if (typeof line !== 'string') return { ...acc, unknown: true };
   if (line.length > MAX_SCAN) acc.unknown = true;
   walk(line.slice(0, MAX_SCAN), acc, 0);

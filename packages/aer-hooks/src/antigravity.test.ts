@@ -48,7 +48,7 @@ describe('normalizeAntigravity', () => {
     expect(JSON.stringify(e)).not.toContain('SECRET');
     expect(e.shapes).toEqual([
       { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
-      { eventType: 'network.connect', payload: { host: 'api.example', source: 'shell' } },
+      { eventType: 'network.connect', payload: { host: 'api.example', source: 'shell', via: 'curl' } },
     ]);
   });
 

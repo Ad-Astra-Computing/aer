@@ -17,8 +17,10 @@ import type { EventSink } from '@adastracomputing/aer-emit';
 // either side turns both red, so the two copies cannot drift in silence.
 // harness_agent_id, subagent_events_unattached and events_dropped_budget
 // widen this ahead of the server (ADR-023 B2/B3): see the comment on
-// INGEST_PAYLOAD_KEYS.
-const ALLOWLIST_SHA256 = 'eb77ef00c72adcaab3d06ace8f59582767d5c7e31746e8622813a854455458e8';
+// INGEST_PAYLOAD_KEYS. `via` (host provenance decision 7) is new here and
+// already allowlisted server-side, per the design doc's "server first"
+// delivery; this pin moves to match.
+const ALLOWLIST_SHA256 = 'e73d838543880feded28803da7ba78f27e4521d14af91b9e5aa5b82f7426efff';
 
 function collectingSink(): { sink: EventSink; seen: Array<{ type: string; payload: Record<string, unknown> }> } {
   const seen: Array<{ type: string; payload: Record<string, unknown> }> = [];

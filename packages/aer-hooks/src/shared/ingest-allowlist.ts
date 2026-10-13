@@ -3,8 +3,9 @@
 // cost and gets nothing in the record. Source of truth is
 // BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
 //
-// The server allows five keys this package does not yet send: also_ran,
-// hosts_unreduced, via, resources_seen, prompts_seen (skill now sent below).
+// The server allows four keys this package does not yet send: also_ran,
+// hosts_unreduced, resources_seen, prompts_seen (skill now sent below; via
+// is sent now too, see host provenance decision 7).
 // Run scripts/check-client-allowlist-parity.mjs in the monorepo after
 // changing this file or the server's allowlist, since the two repos have
 // no shared CI to catch drift automatically.
@@ -63,6 +64,10 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'env_set_class', 'history_cleared', 'interpreter_inline', 'ai_cli',
   // Claude Code Skill-tool invocation (skill.invoked): the skill name only.
   'skill',
+  // Host provenance decision 7: which program on a shell line named a given
+  // host on its network.connect shape (e.g. 'curl', 'git'). A bare program
+  // name, the same shape `command` already carries elsewhere in this file.
+  'via',
 ]);
 
 export interface StripResult {
