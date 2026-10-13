@@ -443,6 +443,13 @@ function buildQueuedEvents(
   if (scan.state.transcriptPath !== undefined) state.transcriptPath = scan.state.transcriptPath;
   if (scan.state.transcriptOffset !== undefined) state.transcriptOffset = scan.state.transcriptOffset;
   if (scan.state.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = scan.state.emittedLlmMessageIds;
+  // A Codex session has one provider for its life, but a stale one must not
+  // survive a transcript_path change: a new file with no readable
+  // session_meta (yet) would otherwise inherit the previous file's cached
+  // value on the next scan, since sameFile would then read true against it.
+  if (codexScan.state.transcriptPath !== undefined && codexScan.state.transcriptPath !== state.transcriptPath) {
+    delete state.provider;
+  }
   if (codexScan.state.transcriptPath !== undefined) state.transcriptPath = codexScan.state.transcriptPath;
   if (codexScan.state.transcriptOffset !== undefined) state.transcriptOffset = codexScan.state.transcriptOffset;
   if (codexScan.state.emittedLlmMessageIds !== undefined) state.emittedLlmMessageIds = codexScan.state.emittedLlmMessageIds;
