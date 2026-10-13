@@ -65,9 +65,19 @@ describe('opencode built-in tools reduce the way the shell hooks do', () => {
     expect(ev.shapes).toEqual([
       { eventType: 'process.exec', payload: { command: 'cat', command_known: true } },
       { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
-      { eventType: 'network.connect', payload: { host: 'example.com', source: 'shell' } },
+      { eventType: 'network.connect', payload: { host: 'example.com', source: 'shell', via: 'curl' } },
     ]);
     expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
+  });
+
+  it('carries the via program through for opencode bash too (host provenance decision 9/parity)', () => {
+    const ev = before('bash', { command: 'curl https://api.github.com && git clone https://github.com/foo/bar' });
+    expect(ev.shapes).toEqual([
+      { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
+      { eventType: 'process.exec', payload: { command: 'git', command_known: true } },
+      { eventType: 'network.connect', payload: { host: 'api.github.com', source: 'shell', via: 'curl' } },
+      { eventType: 'network.connect', payload: { host: 'github.com', source: 'shell', via: 'git' } },
+    ]);
   });
 
   it('records the path a file tool touched, never the content', () => {
@@ -81,7 +91,7 @@ describe('opencode built-in tools reduce the way the shell hooks do', () => {
 
   it('records the host a fetch reached, never its path or query', () => {
     const ev = before('webfetch', { url: 'https://docs.example.org/private/SECRET_VALUE?q=SECRET_VALUE', format: 'text' });
-    expect(ev.shapes).toEqual([{ eventType: 'network.connect', payload: { host: 'docs.example.org', scheme: 'https' } }]);
+    expect(ev.shapes).toEqual([{ eventType: 'network.connect', payload: { host: 'docs.example.org', scheme: 'https', source: 'fetch_tool' } }]);
     expect(JSON.stringify(ev)).not.toContain('SECRET_VALUE');
   });
 

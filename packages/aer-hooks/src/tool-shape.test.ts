@@ -22,7 +22,7 @@ describe('what a tool call reduces to', () => {
 
   it('reduces a fetch to the host, never the path or the query', () => {
     expect(shapeOfToolCall('WebFetch', { url: 'https://api.example.com/v2/x?token=SECRET', prompt: 'p' }))
-      .toEqual({ eventType: 'network.connect', payload: { host: 'api.example.com', scheme: 'https' } });
+      .toEqual({ eventType: 'network.connect', payload: { host: 'api.example.com', scheme: 'https', source: 'fetch_tool' } });
   });
 
   it('claims no request method for a fetch, since the hook never sees the request', () => {
@@ -41,9 +41,17 @@ describe('what a tool call reduces to', () => {
       { eventType: 'process.exec', payload: { command: 'cd', command_known: true } },
       { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
       { eventType: 'process.exec', payload: { command: 'sh', command_known: true } },
-      { eventType: 'network.connect', payload: { host: 'evil.example', source: 'shell' } },
+      { eventType: 'network.connect', payload: { host: 'evil.example', source: 'shell', via: 'curl' } },
     ]);
     expect(JSON.stringify(shapes)).not.toContain('SECRET');
+  });
+
+  it('stamps a shell network.connect shape with which program named the host (host provenance decision 7)', () => {
+    const shapes = shapesOfToolCall('Bash', { command: 'curl https://api.github.com && git clone https://github.com/foo/bar' });
+    expect(shapes.filter((s) => s.eventType === 'network.connect')).toEqual([
+      { eventType: 'network.connect', payload: { host: 'api.github.com', source: 'shell', via: 'curl' } },
+      { eventType: 'network.connect', payload: { host: 'github.com', source: 'shell', via: 'git' } },
+    ]);
   });
 
   it('never sends a connection without a host, even when a client target cannot be read', () => {
@@ -89,7 +97,7 @@ describe('what a tool call reduces to', () => {
     expect(shapesOfToolCall('run_command', { CommandLine: 'cat a.txt && curl -s https://agy.example/SECRET', Cwd: '/w' })).toEqual([
       { eventType: 'process.exec', payload: { command: 'cat', command_known: true } },
       { eventType: 'process.exec', payload: { command: 'curl', command_known: true } },
-      { eventType: 'network.connect', payload: { host: 'agy.example', source: 'shell' } },
+      { eventType: 'network.connect', payload: { host: 'agy.example', source: 'shell', via: 'curl' } },
     ]);
     expect(shapeOfToolCall('view_file', { AbsolutePath: '/w/a.txt', StartLine: 1 }))
       .toEqual({ eventType: 'file.opened', payload: { path: '/w/a.txt' } });
@@ -98,7 +106,7 @@ describe('what a tool call reduces to', () => {
     expect(shapeOfToolCall('replace_file_content', { TargetFile: '/w/b.txt', ReplacementContent: 'SECRET' }))
       .toEqual({ eventType: 'file.written', payload: { path: '/w/b.txt' } });
     expect(shapeOfToolCall('read_url_content', { Url: 'https://docs.example.com/SECRET?q=SECRET' }))
-      .toEqual({ eventType: 'network.connect', payload: { host: 'docs.example.com', scheme: 'https' } });
+      .toEqual({ eventType: 'network.connect', payload: { host: 'docs.example.com', scheme: 'https', source: 'fetch_tool' } });
   });
 
   it('records each file a Codex patch touches, never the patch', () => {
