@@ -204,7 +204,11 @@ and a Claude Code transcript's
 assistant messages contribute `llm.completed` events carrying the model name
 and the input/output token counts, read from the transcript's `message.model`
 and `message.usage` fields plus the entry's id, timestamp and subagent type,
-never the prompt or completion text. Every payload, whatever tool produced it, is filtered against the set
+never the prompt or completion text. A Codex rollout transcript contributes
+the same `llm.completed` event from its `token_usage_record` lines, each
+carrying only a response id, a turn id and input/output token counts; the
+model comes from the hook event itself (Codex sends it on every event), since
+the rollout line carries none. Every payload, whatever tool produced it, is filtered against the set
 of keys AER ingest stores before it is sent, so a value the record could not
 hold never reaches the wire either.
 
