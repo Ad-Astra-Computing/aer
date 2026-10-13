@@ -39,13 +39,19 @@ function tokenCount(v: unknown): number | undefined {
 // one from the model string this same way.
 //
 // Maps a MODEL to its vendor, never to the harness/product that ran it
-// (that's `meta.harness`, set independently per event). o1/o3/o4 stay listed
-// even though o1 is superseded, since an old transcript can still reference
-// it and the check costs nothing to keep.
+// (that's `meta.harness`, set independently per event). Checked against real
+// local Codex session history (gpt-4o through gpt-6-sol): no o1/o3/o4 model
+// ever appears, but a bare codename ('astra', 'codex-astra') does, alongside
+// the gpt-prefixed form ('gpt-6-astra') - the 'gpt' prefix alone misses the
+// bare form. o1/o3/o4 stay listed anyway since a non-Codex OpenAI API caller
+// could still report one directly.
+const OPENAI_CODENAMES = ['astra', 'sol', 'luna'];
+
 export function providerOf(model: string): string | undefined {
   const m = model.toLowerCase();
   if (m.startsWith('claude')) return 'anthropic';
   if (m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) return 'openai';
+  if (OPENAI_CODENAMES.some((name) => m === name || m.includes(`-${name}`))) return 'openai';
   if (m.startsWith('gemini')) return 'google';
   return undefined;
 }
