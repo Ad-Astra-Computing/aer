@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { wrapCreate, patchMethod, patchIntact, type ProviderConfig } from './llm-core.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { wrapCreate, patchMethod, patchIntact, CURRENT_LLM_REQUEST_REF, type ProviderConfig } from './llm-core.js';
 import { openaiConfig } from './openai.js';
 import { commitmentKeyFromString, deriveKid, canonicalizeRequest, promptCanonTag, responseTag, wireBodyTag, toolArgsTag, toolResultTag, CANON_VERSION } from '../commitment.js';
+import { installFetchPatch } from '../patches/fetch.js';
 import type { CollectorEvent } from '../session.js';
 
 // A minimal provider config for exercising the generic wrapper.
@@ -285,14 +286,18 @@ describe('wrapCreate: content commitment (ADR-009)', () => {
     expect(JSON.stringify(completed)).not.toContain('Hello!'); // text never emitted
   });
 
-  it('emits NO commitment fields when no key is configured (byte-identical to before)', async () => {
+  it('emits NO commitment fields when no key is configured, but still carries request_ref', async () => {
     const { capture, events } = capt();
     const wrapped = wrapCreate(async () => okResponse, openaiConfig, capture);
     await wrapped(req);
     await Promise.resolve();
     expect(events.map((e) => e.event_type)).toEqual(['llm.requested', 'llm.completed']);
+    const requested = events[0]!.payload;
     const completed = events[1]!.payload;
-    expect(completed['request_ref']).toBeUndefined();
+    // request_ref rides every llm.* pair regardless of commitment (decision
+    // 10), so the pair can be joined to the http.* call it triggers.
+    expect(typeof requested['request_ref']).toBe('string');
+    expect(completed['request_ref']).toBe(requested['request_ref']);
     expect(completed['response_tag']).toBeUndefined();
     expect(completed['outcome']).toBeUndefined();
   });
@@ -412,6 +417,121 @@ describe('wrapCreate: content commitment slice 2 (ADR-011)', () => {
     const completed = events.find((e) => e.event_type === 'llm.completed')!.payload;
     expect(completed['response_tag']).toBeUndefined();
     expect(JSON.stringify(events)).not.toContain('secret');
+  });
+});
+
+describe('wrapCreate + installFetchPatch integration (decision 10)', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    const g = globalThis as Record<symbol, unknown>;
+    delete g[Symbol.for('adastra.aer.patched.fetch')];
+    delete g[Symbol.for('adastra.aer.original.fetch')];
+  });
+
+  it('stamps the provider HTTP call made inside the wrapped SDK call with the SAME request_ref as the llm.* pair', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const { capture, events } = capt();
+    const uninstallFetch = installFetchPatch(capture);
+
+    const key = commitmentKeyFromString('a'.repeat(64));
+    const commit = key ? { key, kid: deriveKid(key) } : undefined;
+
+    // Simulates an SDK's create() making its own underlying fetch call.
+    const original = async () => {
+      await globalThis.fetch('https://api.testllm.example/v1/completions');
+      return { model: 'm', usage: { in: 1, out: 1 } };
+    };
+    const wrapped = wrapCreate(original, cfg, capture, undefined, undefined, commit);
+    await wrapped({ model: 'm' });
+    await Promise.resolve();
+    uninstallFetch();
+
+    const llmCompleted = events.find((e) => e.event_type === 'llm.completed')?.payload;
+    const httpRequested = events.find((e) => e.event_type === 'http.requested')?.payload;
+    const httpCompleted = events.find((e) => e.event_type === 'http.completed')?.payload;
+    expect(typeof llmCompleted?.['request_ref']).toBe('string');
+    expect(httpRequested?.['request_ref']).toBe(llmCompleted?.['request_ref']);
+    expect(httpCompleted?.['request_ref']).toBe(llmCompleted?.['request_ref']);
+  });
+
+  it('mints its own request_ref for a fetch made OUTSIDE any wrapped SDK call', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const { capture, events } = capt();
+    const uninstallFetch = installFetchPatch(capture);
+
+    const original = async () => ({ model: 'm', usage: { in: 1, out: 1 } });
+    const wrapped = wrapCreate(original, cfg, capture);
+    await wrapped({ model: 'm' });
+    await Promise.resolve();
+
+    await globalThis.fetch('https://unrelated.example/');
+    uninstallFetch();
+
+    const unrelatedRequested = events.filter((e) => e.event_type === 'http.requested');
+    expect(unrelatedRequested).toHaveLength(1);
+    expect(typeof unrelatedRequested[0]?.payload['request_ref']).toBe('string');
+  });
+
+  // No commitment key configured: llm.* events still carry request_ref
+  // (decision 10 holds for every tenant, not only one with a commitment key).
+  it('joins the HTTP call to its llm.* pair even with no commitment key configured', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const { capture, events } = capt();
+    const uninstallFetch = installFetchPatch(capture);
+
+    const original = async () => {
+      await globalThis.fetch('https://api.testllm.example/v1/completions');
+      return { model: 'm', usage: { in: 1, out: 1 } };
+    };
+    const wrapped = wrapCreate(original, cfg, capture);
+    await wrapped({ model: 'm' });
+    await Promise.resolve();
+    uninstallFetch();
+
+    const llmRequested = events.find((e) => e.event_type === 'llm.requested')?.payload;
+    const llmCompleted = events.find((e) => e.event_type === 'llm.completed')?.payload;
+    const httpRequested = events.find((e) => e.event_type === 'http.requested')?.payload;
+    expect(typeof llmRequested?.['request_ref']).toBe('string');
+    expect(llmCompleted?.['request_ref']).toBe(llmRequested?.['request_ref']);
+    expect(httpRequested?.['request_ref']).toBe(llmRequested?.['request_ref']);
+  });
+
+  // Two concurrent wrapped LLM calls: each one's underlying HTTP call must
+  // carry ITS OWN call's request_ref, never the other's (no ALS bleed).
+  it('keeps two concurrent wrapped LLM calls from bleeding request_ref into each other', async () => {
+    const seen: Array<{ fetchRef: string | undefined }> = [];
+    globalThis.fetch = (async (input: string) => {
+      const ref = CURRENT_LLM_REQUEST_REF.getStore();
+      seen.push({ fetchRef: ref });
+      await new Promise((r) => setTimeout(r, input.includes('slow') ? 10 : 0));
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const { capture, events } = capt();
+    const uninstallFetch = installFetchPatch(capture);
+
+    const original = async (opts: { model: string; url: string }) => {
+      await globalThis.fetch(opts.url);
+      return { model: opts.model, usage: { in: 1, out: 1 } };
+    };
+    const wrapped = wrapCreate(original, cfg, capture);
+    await Promise.all([
+      wrapped({ model: 'slow-model', url: 'https://x.test/slow' }),
+      wrapped({ model: 'fast-model', url: 'https://x.test/fast' }),
+    ]);
+    await Promise.resolve();
+    uninstallFetch();
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]?.fetchRef).not.toBe(seen[1]?.fetchRef);
+    const llmCompleted = events.filter((e) => e.event_type === 'llm.completed');
+    const httpRequested = events.filter((e) => e.event_type === 'http.requested');
+    expect(llmCompleted).toHaveLength(2);
+    expect(httpRequested).toHaveLength(2);
+    // Each http.requested's ref must match SOME llm.completed's ref, 1:1.
+    const llmRefs = llmCompleted.map((e) => e.payload['request_ref']).sort();
+    const httpRefs = httpRequested.map((e) => e.payload['request_ref']).sort();
+    expect(httpRefs).toEqual(llmRefs);
   });
 });
 

@@ -234,6 +234,16 @@ export function settleBy(p: Promise<void>, until: number): Promise<void> {
 // async context of that one call, so the client's prepareOptions finds it
 // however the SDK copies the request body on the way.
 const REQUEST_GATE = new AsyncLocalStorage<Promise<void>>();
+
+// This call's request_ref, exposed for the wrapped SDK invocation's duration.
+// The generic fetch/http patches check it first, so a provider's own HTTP
+// call shares the id of the llm.requested/llm.completed pair that made it.
+// Theoretical caveat: an SDK that lazily spins up a long-lived
+// dispatcher/queue on its FIRST call, from inside that call's run() scope,
+// could have later calls' fetches inherit call #1's ref instead of their
+// own (ALS follows async-resource init context, not call boundaries). Worst
+// case is mis-attribution, not a leak, and no known SDK does this.
+export const CURRENT_LLM_REQUEST_REF = new AsyncLocalStorage<string>();
 const PREPARE_PATCHED = Symbol.for('adastra.aer.adapter.prepareOptions');
 
 /**
@@ -296,11 +306,12 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
   return function wrapped(this: unknown, ...args: unknown[]): unknown {
     const req = safe(() => cfg.extractRequest(args));
     let policy = resolvePolicy(policySource);
-    // Content commitment (ADR-011): mint a client-side correlation id per attempt
-    // so the prompt commitment and the completion can be joined in the bundle.
-    // A retry re-enters wrapped() and mints a fresh request_ref (a retry is a real
-    // re-submission), so concurrent/retried calls never collide.
-    const requestRef = commit ? randomUUID() : undefined;
+    // Mint a client-side correlation id per attempt: joins the optional
+    // prompt commitment to the completion, and lets fetch/http patches stamp
+    // this call's own HTTP request with the same id (CURRENT_LLM_REQUEST_REF
+    // below). A retry re-enters wrapped() with a fresh id, since a retry is a
+    // real re-submission.
+    const requestRef = randomUUID();
 
     // Usage-policy pre-call gate (P3). The ONLY case enforcement throws into the
     // host is a block-mode blocking violation, thrown BEFORE the SDK call so the
@@ -313,6 +324,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
         payload: {
           provider: cfg.provider,
           model: req.model,
+          request_ref: requestRef,
           ...(req.streaming ? { streaming: true } : {}),
           ...(req.tools_available != null ? { tools_available: req.tools_available } : {}),
         },
@@ -392,13 +404,14 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
       // Commitment fields (ADR-011): join key + response commitment. Response text
       // is read only on the commitment path, HMACed, and never emitted. Only
       // attached when a commitment key is configured, so no-key bundles are byte
-      // for byte unchanged.
+      // for byte unchanged (apart from request_ref, which rides every llm.*
+      // pair regardless of commitment, so it can join an http.* pair the same
+      // request triggered).
       let commitFields: Record<string, unknown> = {};
       if (commit) {
         const text = safe(() => cfg.extractResponseText?.(response) ?? null);
         const respTag = text != null ? safe(() => responseTag(commit.key, text)) : null;
         commitFields = {
-          request_ref: requestRef,
           outcome: 'ok',
           ...(respTag ? { response_tag: respTag } : { response_captured: false }),
         };
@@ -408,6 +421,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
         payload: {
           provider: cfg.provider,
           ok: true,
+          request_ref: requestRef,
           ...(res?.model ?? req?.model ? { model: res?.model ?? req?.model } : {}),
           ...(req?.streaming ? { streaming: true } : {}),
           ...(res?.input_tokens != null ? { input_tokens: res.input_tokens } : {}),
@@ -452,8 +466,9 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
           provider: cfg.provider,
           ok: false,
           error: true,
+          request_ref: requestRef,
           ...(req?.model ? { model: req.model } : {}),
-          ...(commit ? { request_ref: requestRef, outcome: 'error', response_captured: false } : {}),
+          ...(commit ? { outcome: 'error', response_captured: false } : {}),
         },
       });
     };
@@ -470,6 +485,7 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
           provider: cfg.provider,
           ok: true,
           streaming: true,
+          request_ref: requestRef,
           ...(model ? { model } : {}),
           ...(acc?.input_tokens != null ? { input_tokens: acc.input_tokens } : {}),
           ...(acc?.output_tokens != null ? { output_tokens: acc.output_tokens } : {}),
@@ -483,7 +499,6 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
           // response_captured:false so an omitted tag is never mistaken for empty.
           ...(commit
             ? {
-                request_ref: requestRef,
                 outcome: 'ok',
                 // Real tag only when text was assembled AND not truncated; the tag
                 // computation is guarded so a throw degrades to response_captured:false.
@@ -511,7 +526,9 @@ export function wrapCreate(original: AnyFn, cfg: ProviderConfig, capture: Captur
 
     let result: unknown;
     try {
-      result = gate ? REQUEST_GATE.run(gate, () => original.apply(this, args)) : original.apply(this, args);
+      result = CURRENT_LLM_REQUEST_REF.run(requestRef, () =>
+        gate ? REQUEST_GATE.run(gate, () => original.apply(this, args)) : original.apply(this, args),
+      );
     } catch (err) {
       emitError();
       throw err;
