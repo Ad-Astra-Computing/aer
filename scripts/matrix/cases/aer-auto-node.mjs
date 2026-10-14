@@ -252,7 +252,13 @@ export default function register(registry) {
       c.assert.match(e.payload.args_redacted ?? '', /^<\d+ args redacted>$/, 'args redacted');
     }
     const q = byType(sink.events(), 'http.requested')[0];
-    c.assert.equal(JSON.stringify(Object.keys(q.payload).sort()), JSON.stringify(['host', 'method']), 'http.requested carries only host and method');
+    // request_ref (decision 10/13, #108) is an opaque correlation id minted
+    // per call, not content, so it joins host/method rather than replacing them.
+    c.assert.equal(JSON.stringify(Object.keys(q.payload).sort()), JSON.stringify(['host', 'method', 'request_ref']), 'http.requested carries only host, method and request_ref');
+    // Its only source is randomUUID(): a v4 shape, never a model name or any
+    // other string a future regression could stuff in without tripping the
+    // canary scan above.
+    c.assert.match(q.payload.request_ref ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, 'request_ref is not a v4 UUID');
   });
 
   t.case('redaction: a URL is recorded as its host only (README and AGENTS.md claim)', async (c) => {
