@@ -11,6 +11,9 @@ import {
   normalizeOpencodeToolAfter,
   normalizeOpencodeEvent,
   normalizeOpencodeMessage,
+  parseOpencodePermissionUpdated,
+  parseOpencodePermissionReplied,
+  mapOpencodePermissionResponse,
 } from './opencode.js';
 
 // A realistic assistant message.updated (bodies-off: the model/tokens live on the
@@ -269,5 +272,121 @@ describe('normalizeOpencodeMessage', () => {
     const llm = normalizeOpencodeMessage(assistantMessage({ tokens: { input: -5, output: 'lots' } }));
     expect(llm!.inputTokens).toBeUndefined();
     expect(llm!.outputTokens).toBeUndefined();
+  });
+});
+
+// Oversight markers: opencode's bus events. The pinned SDK's type
+// declarations and a live run of the real binary disagree on field names
+// (see opencode.ts); both shapes are tested below. Only the ids/response are
+// ever read, never permission/patterns/metadata/type/title.
+describe('parseOpencodePermissionUpdated', () => {
+  it('reads the permission id, session id and call id off the type-declared permission.updated shape', () => {
+    const u = parseOpencodePermissionUpdated({
+      type: 'permission.updated',
+      properties: {
+        id: 'perm_1', type: 'bash', sessionID: 'ses_1', messageID: 'msg_1',
+        callID: 'call_1', title: 'Run bash', metadata: {}, time: { created: 1 },
+      },
+    });
+    expect(u).toEqual({ permissionId: 'perm_1', sessionRef: 'ses_1', callId: 'call_1' });
+  });
+
+  it('reads the permission id, session id and NESTED call id off the observed-live permission.asked shape', () => {
+    const u = parseOpencodePermissionUpdated({
+      type: 'permission.asked',
+      properties: {
+        id: 'per_1', sessionID: 'ses_1', permission: 'bash', patterns: ['ls'],
+        metadata: { command: 'ls' }, always: ['ls *'], tool: { messageID: 'msg_1', callID: 'call_1' },
+      },
+    });
+    expect(u).toEqual({ permissionId: 'per_1', sessionRef: 'ses_1', callId: 'call_1' });
+  });
+
+  it('omits callId when opencode does not send one, in either shape', () => {
+    const updated = parseOpencodePermissionUpdated({
+      type: 'permission.updated',
+      properties: { id: 'perm_2', type: 'edit', sessionID: 'ses_1', messageID: 'msg_1', title: 't', metadata: {}, time: { created: 1 } },
+    });
+    expect(updated).toEqual({ permissionId: 'perm_2', sessionRef: 'ses_1' });
+
+    const asked = parseOpencodePermissionUpdated({
+      type: 'permission.asked',
+      properties: { id: 'per_2', sessionID: 'ses_1', permission: 'edit', patterns: [], metadata: {}, tool: { messageID: 'msg_1' } },
+    });
+    expect(asked).toEqual({ permissionId: 'per_2', sessionRef: 'ses_1' });
+  });
+
+  it('returns null for unrelated events, or one missing an id', () => {
+    expect(parseOpencodePermissionUpdated({ type: 'session.idle', properties: {} })).toBeNull();
+    expect(parseOpencodePermissionUpdated({ type: 'permission.updated', properties: {} })).toBeNull();
+    expect(parseOpencodePermissionUpdated({ type: 'permission.asked', properties: {} })).toBeNull();
+    expect(parseOpencodePermissionUpdated(null)).toBeNull();
+    expect(() => parseOpencodePermissionUpdated(null)).not.toThrow();
+  });
+
+  it('never carries permission, patterns, type, title or metadata through, only the ids', () => {
+    const updated = parseOpencodePermissionUpdated({
+      type: 'permission.updated',
+      properties: {
+        id: 'perm_1', type: 'bash', sessionID: 'ses_1', messageID: 'msg_1', callID: 'call_1',
+        pattern: 'rm -rf SECRET', title: 'SECRET-TITLE', metadata: { arg: 'SECRET' }, time: { created: 1 },
+      },
+    });
+    expect(JSON.stringify(updated)).not.toContain('SECRET');
+
+    const asked = parseOpencodePermissionUpdated({
+      type: 'permission.asked',
+      properties: {
+        id: 'per_1', sessionID: 'ses_1', permission: 'bash', patterns: ['rm -rf SECRET'],
+        metadata: { command: 'SECRET' }, always: ['SECRET'], tool: { messageID: 'msg_1', callID: 'call_1' },
+      },
+    });
+    expect(JSON.stringify(asked)).not.toContain('SECRET');
+  });
+});
+
+describe('parseOpencodePermissionReplied', () => {
+  it('reads the permission id, session id and response off the type-declared permissionID/response shape', () => {
+    const r = parseOpencodePermissionReplied({
+      type: 'permission.replied',
+      properties: { sessionID: 'ses_1', permissionID: 'perm_1', response: 'once' },
+    });
+    expect(r).toEqual({ permissionId: 'perm_1', sessionRef: 'ses_1', response: 'once' });
+  });
+
+  it('reads the permission id, session id and response off the observed-live requestID/reply shape', () => {
+    const r = parseOpencodePermissionReplied({
+      type: 'permission.replied',
+      properties: { sessionID: 'ses_1', requestID: 'per_1', reply: 'reject' },
+    });
+    expect(r).toEqual({ permissionId: 'per_1', sessionRef: 'ses_1', response: 'reject' });
+  });
+
+  it('prefers requestID/reply over permissionID/response when (implausibly) both are present', () => {
+    const r = parseOpencodePermissionReplied({
+      type: 'permission.replied',
+      properties: { sessionID: 'ses_1', requestID: 'live_id', reply: 'once', permissionID: 'old_id', response: 'reject' },
+    });
+    expect(r).toEqual({ permissionId: 'live_id', sessionRef: 'ses_1', response: 'once' });
+  });
+
+  it('returns null for unrelated events, or one missing a permission id/response in either shape', () => {
+    expect(parseOpencodePermissionReplied({ type: 'permission.updated', properties: {} })).toBeNull();
+    expect(parseOpencodePermissionReplied({ type: 'permission.replied', properties: { permissionID: 'perm_1' } })).toBeNull();
+    expect(parseOpencodePermissionReplied({ type: 'permission.replied', properties: { requestID: 'per_1' } })).toBeNull();
+    expect(parseOpencodePermissionReplied({ type: 'permission.replied', properties: { response: 'once' } })).toBeNull();
+    expect(parseOpencodePermissionReplied(null)).toBeNull();
+  });
+});
+
+describe('mapOpencodePermissionResponse', () => {
+  it('maps once/always to allowed and reject to denied', () => {
+    expect(mapOpencodePermissionResponse('once')).toBe('allowed');
+    expect(mapOpencodePermissionResponse('always')).toBe('allowed');
+    expect(mapOpencodePermissionResponse('reject')).toBe('denied');
+  });
+
+  it('drops an unrecognised response rather than guessing a decision', () => {
+    expect(mapOpencodePermissionResponse('whatever')).toBeUndefined();
   });
 });

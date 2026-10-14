@@ -133,8 +133,21 @@ export interface HookEvent {
    * `PermissionDenied` is specified from the harness docs and has never
    * been observed firing on a live probe (see core.ts's correlation
    * comments); `PermissionRequest` is the probed, common case.
+   *
+   * `resolved` is opencode-only (parseOpencodePermission* in opencode.ts, consumed by opencode-plugin.ts):
+   * unlike Claude Code/Codex, opencode's `permission.replied` bus event already
+   * names the permission it resolves (no digest matching needed), so the caller
+   * resolves the decision itself and this event just carries it, in
+   * `approvalDecision`, straight through to `approval.decided`.
    */
-  permissionHook?: 'request' | 'denied' | undefined;
+  permissionHook?: 'request' | 'denied' | 'resolved' | undefined;
+  /**
+   * The decision for a `permissionHook: 'resolved'` event (opencode only).
+   * `decided_by` is always `'prompted'` for this path: opencode never fires a
+   * `permission.*` bus event for a request a static config denied without
+   * reaching a person, so a `'policy'` decided_by is not observable here.
+   */
+  approvalDecision?: 'allowed' | 'denied' | undefined;
 }
 
 export type Harness = 'claude-code' | 'codex' | 'antigravity';
