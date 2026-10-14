@@ -278,6 +278,14 @@ export function emitHookEvent(
             send('approval.decided', { decision: 'denied', decided_by: 'policy' });
           }
         }
+        if (event.permissionHook === 'resolved' && event.approvalDecision !== undefined) {
+          // opencode only: the caller already resolved which call this decision
+          // belongs to (permission.replied names its permission id directly, no
+          // digest matching needed) and set it as tool_use_id in `event.meta`,
+          // which rides along via `common`. decided_by is always 'prompted': see
+          // the HookEvent.permissionHook doc comment in normalize.ts.
+          send('approval.decided', { decision: event.approvalDecision, decided_by: 'prompted' });
+        }
         return sent;
       }
       case 'turn_start': {

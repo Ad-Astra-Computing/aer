@@ -8,15 +8,20 @@
 // FAIL-OPEN: every hook is wrapped so a sink or mapping error can never break or
 // slow opencode. Emission itself is already best-effort in the sink.
 
+import type { HookEvent } from './normalize.js';
 import { createHttpSink, resolveSinkOptionsFromEnv, type EventSink, type HttpSinkOptions } from '@adastracomputing/aer-emit';
 import { emitHookEvent } from './core.js';
 import { HOOKS_VERSION } from './version.generated.js';
 import { TOOL_NAME_PLACEHOLDER } from './tool-name.js';
+import { MAX_APPROVAL_TRACKING_ENTRIES } from './session-store.js';
 import {
   normalizeOpencodeToolBefore,
   normalizeOpencodeToolAfter,
   normalizeOpencodeEvent,
   normalizeOpencodeMessage,
+  parseOpencodePermissionUpdated,
+  parseOpencodePermissionReplied,
+  mapOpencodePermissionResponse,
   HARNESS_META,
   type OpencodeToolBeforeInput,
   type OpencodeToolBeforeOutput,
@@ -73,6 +78,13 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
   // sighting, llm.completed once when the message reaches a terminal state. The
   // same message.updated fires many times as the response streams.
   const msgState = new Map<string, { req: Set<string>; done: Set<string> }>();
+  // Oversight markers: per-session permissionID -> callID, stashed from
+  // permission.updated so permission.replied (which carries only permissionID,
+  // not callID) can resolve the tool_use_id to attribute its decision to.
+  // Bounded the same way the shell hooks bound their own open-call/pending-
+  // approval maps (session-store.ts), since this plugin runs for the whole
+  // opencode process and has no disk-backed state to fall back to.
+  const permCallIds = new Map<string, Map<string, string>>();
   // exactOptionalPropertyTypes: only carry env when it was actually provided.
 
   const ensure = (ref?: string): EventSink => {
@@ -88,10 +100,48 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
   const closeOne = async (ref?: string): Promise<void> => {
     const key = ref ?? SINGLE;
     msgState.delete(key);
+    permCallIds.delete(key);
     const sink = sinks.get(key);
     if (!sink) return;
     sinks.delete(key);
     try { await sink.close(); } catch { /* best-effort complete */ }
+  };
+
+  // permission.updated: remember this permission's call id (if opencode sent
+  // one) so the matching permission.replied can find it. Not a decision point:
+  // this reads the bus `event`, never the separate decision-making
+  // `permission.ask` plugin hook.
+  const stashPermissionCallId = (ref: string | undefined, permissionId: string, callId: string | undefined): void => {
+    if (callId === undefined) return;
+    const key = ref ?? SINGLE;
+    let m = permCallIds.get(key);
+    if (!m) { m = new Map(); permCallIds.set(key, m); }
+    m.set(permissionId, callId);
+    if (m.size > MAX_APPROVAL_TRACKING_ENTRIES) {
+      const oldest = m.keys().next().value;
+      if (oldest !== undefined) m.delete(oldest);
+    }
+  };
+
+  // permission.replied: resolve the tool_use_id (the stashed callID, or the
+  // permission id itself when opencode never sent one, or never saw the
+  // matching permission.updated at all) and emit approval.decided through the
+  // shared pipeline. decided_by is always 'prompted': opencode has no
+  // permission.* event for a request a static config denied without a person.
+  const resolvePermissionReply = (ref: string | undefined, permissionId: string, response: string): void => {
+    const decision = mapOpencodePermissionResponse(response);
+    if (decision === undefined) return; // unmapped response: don't guess
+    const key = ref ?? SINGLE;
+    const toolUseId = permCallIds.get(key)?.get(permissionId) ?? permissionId;
+    permCallIds.get(key)?.delete(permissionId);
+    const event: HookEvent = {
+      kind: 'permission',
+      permissionHook: 'resolved',
+      approvalDecision: decision,
+      meta: { ...HARNESS_META, tool_use_id: toolUseId },
+    };
+    if (ref !== undefined) event.sessionRef = ref;
+    emitHookEvent(event, ensure(ref));
   };
 
   // Emit llm.requested/llm.completed from an assistant message, deduped by id.
@@ -146,6 +196,12 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
         // message.updated carries LLM model + token usage (never session lifecycle).
         const llm = normalizeOpencodeMessage(event);
         if (llm) { emitLlm(llm); return; }
+        // Oversight markers: permission.updated/permission.replied, opencode's
+        // only tool-approval signal (see parseOpencodePermission* in opencode.ts).
+        const permUpdate = parseOpencodePermissionUpdated(event);
+        if (permUpdate) { stashPermissionCallId(permUpdate.sessionRef, permUpdate.permissionId, permUpdate.callId); return; }
+        const permReply = parseOpencodePermissionReplied(event);
+        if (permReply) { resolvePermissionReply(permReply.sessionRef, permReply.permissionId, permReply.response); return; }
         const ev = normalizeOpencodeEvent(event);
         if (ev.kind === 'other') return;
         emitHookEvent(ev, ensure(ev.sessionRef));
@@ -156,6 +212,7 @@ export function createAerOpencodeHooks(deps: AerOpencodeDeps): OpencodeHooks {
       const live = [...sinks.entries()];
       sinks.clear();
       msgState.clear();
+      permCallIds.clear();
       // `opencode run` ends by disposing its plugins, never by deleting the
       // session, so the record gets its end marker here.
       // Bounded: an AER API that never answers must not hold opencode's exit.

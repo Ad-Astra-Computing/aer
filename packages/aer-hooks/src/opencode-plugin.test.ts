@@ -230,6 +230,147 @@ describe('the session aerOpencodePlugin opens', () => {
   });
 });
 
+// Oversight markers (the one harness-docs gap found with zero coverage):
+// opencode's `permission.updated` / `permission.replied` bus events -> approval.decided.
+// The reply carries only {permissionID, response}, not the callID needed for
+// tool_use_id, so permission.updated's (optional) callID has to be stashed and
+// looked up by permission id when the reply arrives.
+describe('oversight markers (permission.updated/permission.replied -> approval.decided)', () => {
+  function permissionUpdated(over: Record<string, unknown> = {}): unknown {
+    return {
+      type: 'permission.updated',
+      properties: {
+        id: 'perm_1', type: 'bash', sessionID: 's1', messageID: 'm1',
+        callID: 'call_1', title: 't', metadata: {}, time: { created: 1 },
+        ...over,
+      },
+    };
+  }
+  function permissionReplied(over: Record<string, unknown> = {}): unknown {
+    return { type: 'permission.replied', properties: { sessionID: 's1', permissionID: 'perm_1', response: 'once', ...over } };
+  }
+
+  it('emits approval.decided with the correlated callID as tool_use_id', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+
+    await hooks.event!({ event: permissionUpdated() });
+    await hooks.event!({ event: permissionReplied() });
+
+    const approval = sinks[0]!.emitted.find((e) => e.type === 'approval.decided');
+    expect(approval).toBeDefined();
+    expect(approval!.payload).toMatchObject({ tool_use_id: 'call_1', decision: 'allowed', decided_by: 'prompted' });
+  });
+
+  it('maps a reject response to denied', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: permissionUpdated() });
+    await hooks.event!({ event: permissionReplied({ response: 'reject' }) });
+    const approval = sinks[0]!.emitted.find((e) => e.type === 'approval.decided');
+    expect(approval!.payload).toMatchObject({ tool_use_id: 'call_1', decision: 'denied', decided_by: 'prompted' });
+  });
+
+  it('falls back to the permission id as tool_use_id when opencode never sends a callID', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: permissionUpdated({ id: 'perm_2', callID: undefined }) });
+    await hooks.event!({ event: permissionReplied({ permissionID: 'perm_2' }) });
+    const approval = sinks[0]!.emitted.find((e) => e.type === 'approval.decided');
+    expect(approval!.payload).toMatchObject({ tool_use_id: 'perm_2', decision: 'allowed', decided_by: 'prompted' });
+  });
+
+  it('never leaks the permission type, pattern, title or metadata, only the closed-set decision', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: permissionUpdated({
+      id: 'perm_3', callID: 'call_3', pattern: 'rm -rf SECRET', title: 'SECRET-TITLE', metadata: { arg: 'SECRET' },
+    }) });
+    await hooks.event!({ event: permissionReplied({ permissionID: 'perm_3' }) });
+    const wire = JSON.stringify(sinks[0]!.emitted);
+    expect(wire).not.toContain('SECRET');
+  });
+
+  it('drops an unmappable response rather than guessing a decision', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: permissionUpdated() });
+    await hooks.event!({ event: permissionReplied({ response: 'unknown-thing' }) });
+    expect(sinks[0]?.emitted.find((e) => e.type === 'approval.decided')).toBeUndefined();
+  });
+
+  it('never throws when permission.replied arrives with no matching permission.updated', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await expect(hooks.event!({ event: permissionReplied({ permissionID: 'never-seen' }) })).resolves.toBeUndefined();
+    // No open call: falls back to the permission id itself, same as the no-callID case.
+    const approval = sinks[0]?.emitted.find((e) => e.type === 'approval.decided');
+    expect(approval?.payload).toMatchObject({ tool_use_id: 'never-seen', decision: 'allowed' });
+  });
+
+  it('keeps two sessions\' pending permissions separate, resolving only the one actually replied to', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: permissionUpdated({ id: 'p1', sessionID: 's1', callID: 'c1' }) });
+    await hooks.event!({ event: permissionUpdated({ id: 'p2', sessionID: 's2', callID: 'c2' }) });
+    // Only s2's permission is replied to; s1's never resolves and opens no sink
+    // at all (stashing a permission.updated alone creates no AER session).
+    await hooks.event!({ event: permissionReplied({ permissionID: 'p2', sessionID: 's2', response: 'reject' }) });
+    expect(sinks).toHaveLength(1);
+    expect(sinks[0]!.emitted.find((e) => e.type === 'approval.decided')?.payload).toMatchObject({ tool_use_id: 'c2', decision: 'denied' });
+    // s1's stash is untouched by s2's reply: replying to p1 later still resolves to c1.
+    await hooks.event!({ event: permissionReplied({ permissionID: 'p1', sessionID: 's1', response: 'once' }) });
+    expect(sinks).toHaveLength(2);
+    expect(sinks[1]!.emitted.find((e) => e.type === 'approval.decided')?.payload).toMatchObject({ tool_use_id: 'c1', decision: 'allowed' });
+  });
+});
+
+// Regression: the real binary's wire shape (see opencode.ts), not the
+// pinned SDK's type declarations. Without reading this shape too,
+// approval.decided never fired against a real opencode session at all.
+describe('oversight markers, observed-live wire shape (permission.asked / requestID+reply)', () => {
+  function permissionAsked(over: Record<string, unknown> = {}): unknown {
+    return {
+      type: 'permission.asked',
+      properties: {
+        id: 'per_1', sessionID: 's1', permission: 'bash', patterns: ['ls'],
+        metadata: { command: 'ls' }, always: ['ls *'], tool: { messageID: 'm1', callID: 'call_1' },
+        ...over,
+      },
+    };
+  }
+  function permissionReplied(over: Record<string, unknown> = {}): unknown {
+    return { type: 'permission.replied', properties: { sessionID: 's1', requestID: 'per_1', reply: 'once', ...over } };
+  }
+
+  it('emits approval.decided with the callID nested under tool as tool_use_id', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: permissionAsked() });
+    await hooks.event!({ event: permissionReplied() });
+    const approval = sinks[0]!.emitted.find((e) => e.type === 'approval.decided');
+    expect(approval?.payload).toMatchObject({ tool_use_id: 'call_1', decision: 'allowed', decided_by: 'prompted' });
+  });
+
+  it('maps a reject reply to denied', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: permissionAsked() });
+    await hooks.event!({ event: permissionReplied({ reply: 'reject' }) });
+    expect(sinks[0]!.emitted.find((e) => e.type === 'approval.decided')?.payload).toMatchObject({ tool_use_id: 'call_1', decision: 'denied' });
+  });
+
+  it('never leaks permission, patterns, metadata or tool.messageID, only the closed-set decision', async () => {
+    const { opener, sinks } = fakeSinkFactory();
+    const hooks = createAerOpencodeHooks({ base: BASE, openSink: opener });
+    await hooks.event!({ event: permissionAsked({
+      patterns: ['rm -rf SECRET'], metadata: { command: 'SECRET' }, always: ['SECRET'], tool: { messageID: 'SECRET-MSG', callID: 'call_1' },
+    }) });
+    await hooks.event!({ event: permissionReplied() });
+    expect(JSON.stringify(sinks[0]!.emitted)).not.toContain('SECRET');
+  });
+});
+
 describe('aerOpencodePlugin', () => {
   it('returns empty (no-op) hooks when emit is unconfigured', async () => {
     const hooks = await aerOpencodePlugin(undefined, undefined, {} as NodeJS.ProcessEnv);

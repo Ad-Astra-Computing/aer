@@ -18,12 +18,15 @@
 //       modelID / providerID / tokens{input,output,...} / time.completed / error;
 //       this is where opencode surfaces LLM model + token usage (bodies-off - the
 //       message CONTENT lives in separate message.part.updated events we never read).
+//     permission.asked / permission.replied ← opencode's only tool-approval
+//       signal. The real wire shape disagrees with the pinned SDK's type
+//       declarations (see the commit message); both are read below.
 //
 // Native plugin capture beats MCP-only for opencode: it also catches non-MCP
 // tools (bash/read/write/edit) the MCP recorder never sees.
 
 import type { HookEvent } from './normalize.js';
-import { asRecord, asString, keysOf, responseIsError } from './normalize.js';
+import { asRecord, asString, identifier, keysOf, responseIsError } from './normalize.js';
 import { shapesOfToolCall, patchFileCount, PATCH_FILE_CAP } from './tool-shape.js';
 import { recordableToolName } from './tool-name.js';
 
@@ -242,4 +245,74 @@ export function normalizeOpencodeEvent(event: unknown): HookEvent {
   if (kind !== 'other') out.meta = { ...HARNESS_META };
   if (kind !== 'other' && sessionRef !== undefined) out.sessionRef = sessionRef;
   return out;
+}
+
+/** A `permission.asked`/`permission.updated` event, reduced to the three ids this needs. */
+export interface OpencodePermissionUpdate {
+  sessionRef?: string;
+  permissionId: string;
+  /** Absent when opencode never attached a call id to this permission. */
+  callId?: string;
+}
+
+/** A `permission.replied` event, reduced to the ids plus the raw (unmapped) response. */
+export interface OpencodePermissionReply {
+  sessionRef?: string;
+  permissionId: string;
+  /** "once" | "always" | "reject" observed; pass to mapOpencodePermissionResponse. */
+  response: string;
+}
+
+/**
+ * `permission.asked` (live) or `permission.updated` (type-declared) → the
+ * permission id, session and call id. callID sits under `tool` in the live
+ * shape, top-level in the declared one; both are read. Never reads
+ * permission/patterns/title/metadata, which can carry tool arguments.
+ */
+export function parseOpencodePermissionUpdated(event: unknown): OpencodePermissionUpdate | null {
+  const e = asRecord(event);
+  const type = asString(e?.['type']);
+  if (type !== 'permission.asked' && type !== 'permission.updated') return null;
+  const props = asRecord(e?.['properties']);
+  const permissionId = identifier(props?.['id']);
+  if (permissionId === undefined) return null;
+  const out: OpencodePermissionUpdate = { permissionId };
+  const sessionRef = asString(props?.['sessionID']);
+  if (sessionRef !== undefined) out.sessionRef = sessionRef;
+  const callId = identifier(props?.['callID']) ?? identifier(asRecord(props?.['tool'])?.['callID']);
+  if (callId !== undefined) out.callId = callId;
+  return out;
+}
+
+/**
+ * `permission.replied` → the permission id, its session and the raw response
+ * string. The pinned SDK's type declarations name the fields `permissionID`/
+ * `response`; a live run of the actual 1.18.33/1.19.0 binary showed the real
+ * wire names them `requestID`/`reply` instead - both are read, requestID/
+ * reply preferred since that is what was actually observed. Never reads
+ * anything else.
+ */
+export function parseOpencodePermissionReplied(event: unknown): OpencodePermissionReply | null {
+  const e = asRecord(event);
+  if (asString(e?.['type']) !== 'permission.replied') return null;
+  const props = asRecord(e?.['properties']);
+  const permissionId = identifier(props?.['requestID']) ?? identifier(props?.['permissionID']);
+  const response = asString(props?.['reply']) ?? asString(props?.['response']);
+  if (permissionId === undefined || response === undefined) return null;
+  const out: OpencodePermissionReply = { permissionId, response };
+  const sessionRef = asString(props?.['sessionID']);
+  if (sessionRef !== undefined) out.sessionRef = sessionRef;
+  return out;
+}
+
+/**
+ * opencode's REST reply body enum ("once" | "always" | "reject") → the closed
+ * `approval.decided.decision` set. Anything else is dropped (returns
+ * undefined) rather than guessed at, the same "don't assert a decision you
+ * didn't actually observe" rule core.ts's PostToolUseFailure handling follows.
+ */
+export function mapOpencodePermissionResponse(response: string): 'allowed' | 'denied' | undefined {
+  if (response === 'once' || response === 'always') return 'allowed';
+  if (response === 'reject') return 'denied';
+  return undefined;
 }
