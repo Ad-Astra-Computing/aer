@@ -40,17 +40,20 @@ function tokenCount(v: unknown): number | undefined {
 //
 // Maps a MODEL to its vendor, never to the harness/product that ran it
 // (that's `meta.harness`, set independently per event). Checked against real
-// local Codex session history (gpt-4o through gpt-6-sol): no o1/o3/o4 model
-// ever appears, but a bare codename ('astra', 'codex-astra') does, alongside
-// the gpt-prefixed form ('gpt-6-astra') - the 'gpt' prefix alone misses the
-// bare form. o1/o3/o4 stay listed anyway since a non-Codex OpenAI API caller
-// could still report one directly.
-const OPENAI_CODENAMES = ['astra', 'sol', 'luna'];
+// local Codex session history AND the live model picker's full list
+// (gpt-6-astra/sol/luna, gpt-5.6-sol/terra/luna): every gpt-prefixed form
+// already resolves through the gpt check below regardless of codename, but a
+// bare codename ('astra', 'codex-astra') also appears in real data, hence
+// this list as a fallback. o1/o3/o4 stay listed anyway since a non-Codex
+// OpenAI API caller could still report one directly.
+const OPENAI_CODENAMES = ['astra', 'sol', 'luna', 'terra'];
 
 export function providerOf(model: string): string | undefined {
   const m = model.toLowerCase();
   if (m.startsWith('claude')) return 'anthropic';
-  if (m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) return 'openai';
+  if (m.startsWith('gpt') || m.startsWith('codex') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) return 'openai';
+  // Antigravity runs on Gemini (see normalizeAntigravity in normalize.ts)
+  // but that's a harness fact, not a vendor one: it never calls this.
   if (m.startsWith('gemini')) return 'google';
   // Least specific signal, checked last: a '.'/'-' delimited token match, not
   // a substring, so 'solar-pro' (Upstage) and 'lunar-x' never false-positive.
