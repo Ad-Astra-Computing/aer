@@ -178,8 +178,3 @@ These invariants hold everywhere and breaking one is a defect, not a tradeoff:
 Treat all external input and model output as hostile until validated. No secret
 enters the repository, a commit, a log line or a test fixture. Pin every
 third-party action to a full commit SHA.
-
-Commits: imperative subject, lowercase, under about 50 characters, no trailing
-period, `feat(scope):` and `fix:` prefixes. A body only when the why is not
-obvious. Sign every commit. Never name an AI agent in commit, branch or pull
-request text. See [CONTRIBUTING.md](./CONTRIBUTING.md).
