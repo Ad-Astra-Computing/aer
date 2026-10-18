@@ -437,4 +437,37 @@ describe('verifyAerBundle is agnostic to bundle-schema additions', () => {
     expect(res.ok).toBe(false);
     expect(res.checks.hash_match).toBe(false);
   });
+
+  // Named fixture for the 18 Oct 2026 host-provenance bundle attribute
+  // (observations.host_bases / host_basis_rules, GraphNodeAttrs.host_basis).
+  // The earlier design doc assumed this needed a verifier release first; it
+  // does not, since this verifier never parses a bundle against a schema.
+  it('verifies a bundle carrying host_basis node attrs and observations.host_bases', async () => {
+    const signer = createInMemorySigner();
+    const bundle = await signBundle(signer, {
+      ...BODY,
+      observations: {
+        ...BODY.observations,
+        host_bases: [{ host: 'api.openai.com', bases: ['observed'] }],
+        host_basis_rules: 'v1',
+      },
+      execution_graph: {
+        nodes: [
+          {
+            id: 'n1',
+            type: 'http.requested',
+            timestamp: '2026-10-18T00:00:00.000Z',
+            payload_digest: 'c'.repeat(64),
+            attrs: { seq: 1, host_basis: 'observed' },
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    const res = await verifyAerBundle(bundle, { publicKeyHex: bytesToHex(signer.publicKey()) });
+    expect(res.ok).toBe(true);
+    expect(res.checks.hash_match).toBe(true);
+    expect(res.checks.signature_valid).toBe(true);
+  });
 });
