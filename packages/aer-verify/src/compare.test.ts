@@ -8,9 +8,12 @@ const TAG_B1 = 'c'.repeat(64);
 const RESP_1 = 'd'.repeat(64);
 const RESP_2 = 'e'.repeat(64);
 const WIRE_1 = 'f'.repeat(64);
+const TOOL_TAG_1 = '3'.repeat(64);
 const KID_1 = '1'.repeat(16);
 const KID_2 = '2'.repeat(16);
 
+// A commitment with every optional tag populated, so "identical runs" exercises
+// applicability on prompts, responses, wire and tool_args, not just prompts.
 function commitment(overrides: Record<string, unknown> = {}) {
   return {
     request_ref: 'r1',
@@ -20,6 +23,9 @@ function commitment(overrides: Record<string, unknown> = {}) {
     canon: 'aer-canon.v1',
     capture_point: 'adapter_request',
     prompt_canon_tag: TAG_A1,
+    response_tag: RESP_1,
+    wire: { canon: 'aer-wire.v1', tag: WIRE_1 },
+    tool_arg_tags: [{ tool: 'bash', tag: TOOL_TAG_1 }],
     outcome: 'ok',
     message_count: 1,
     prompt_bytes: 10,
@@ -41,31 +47,96 @@ function bundle(overrides: Record<string, unknown> = {}) {
 }
 
 describe('compareBundles - no plaintext discipline', () => {
-  it('never returns a string longer than a hex64 tag anywhere in the result', () => {
-    const SECRET = 'SECRETprompt this must never appear';
-    const a = bundle();
+  it('never leaks a secret planted in a non-allowlisted bundle field', () => {
+    const SECRET = 'SECRET-prompt-text-must-never-appear-anywhere';
+    const a = bundle({
+      aer_id: SECRET, // not in the allowlisted output set; echoed back verbatim if leaked
+      content_commitments: [commitment({ request_ref: SECRET, prompt: SECRET, prompt_canon_tag: TAG_A1 })],
+      observations: { domains_contacted: [], tools_used: ['bash'], files_touched: [], processes_spawned: [] },
+      execution_graph: { nodes: [{ type: 'llm.requested', label: SECRET }], edges: [] },
+    });
     const b = bundle({ content_commitments: [commitment({ prompt_canon_tag: TAG_B1 })] });
     const res = compareBundles(a, b);
-    const json = JSON.stringify(res);
-    expect(json).not.toContain(SECRET);
-    // No field is ever longer than an opaque hex64 tag plus quoting/brackets.
-    for (const v of Object.values(res)) {
+    expect(JSON.stringify(res)).not.toContain(SECRET);
+  });
+
+  it('bounds every string in the result recursively, not just top-level', () => {
+    const a = bundle();
+    const b = bundle();
+    const res = compareBundles(a, b);
+    const walk = (v: unknown): void => {
       if (typeof v === 'string') expect(v.length).toBeLessThanOrEqual(64);
-    }
+      else if (Array.isArray(v)) v.forEach(walk);
+      else if (typeof v === 'object' && v !== null) Object.values(v).forEach(walk);
+    };
+    walk(res);
+  });
+
+  it('a_only/b_only carry free-text tools_used strings - documents the one echo path, bounded to the schema cap', () => {
+    // observations.tools_used is free-text in the signed bundle (names, per
+    // AGENTS.md), so compareBundles DOES echo it back through a_only/b_only.
+    // This is a known, bundle-already-signed-it exception to "opaque tags
+    // only", recorded here so a future change cannot widen it unnoticed.
+    const LONG_TOOL_NAME = 'x'.repeat(100);
+    const a = bundle({ observations: { domains_contacted: [], tools_used: [LONG_TOOL_NAME], files_touched: [], processes_spawned: [] } });
+    const b = bundle({ observations: { domains_contacted: [], tools_used: [], files_touched: [], processes_spawned: [] } });
+    const res = compareBundles(a, b);
+    expect(res.actions.a_only).toEqual([LONG_TOOL_NAME]);
   });
 });
 
 describe('compareBundles - identical runs', () => {
-  it('reports identical on every dimension for two equal bundles', () => {
+  it('reports identical and applicable on every tag dimension for two equal, fully-populated bundles', () => {
     const res = compareBundles(bundle(), bundle());
     expect(res.comparable).toBe(true);
     expect(res.reason).toBeUndefined();
     expect(res.kid).toBe(KID_1);
-    expect(res.prompts).toEqual({ count_a: 1, count_b: 1, aligned: true, identical: true, first_divergence: null });
+    for (const dim of [res.prompts, res.responses, res.tool_args, res.wire]) {
+      expect(dim.applicable).toBe(true);
+      expect(dim.identical).toBe(true);
+      expect(dim.first_divergence).toBeNull();
+    }
     expect(res.actions.identical).toBe(true);
     expect(res.actions.a_only).toEqual([]);
     expect(res.actions.b_only).toEqual([]);
     expect(res.models.identical).toBe(true);
+  });
+});
+
+describe('compareBundles - absent evidence is never claimed identical', () => {
+  it('both sides never emitted response_tag/wire/tool_arg_tags: not applicable, not identical', () => {
+    const minimal = () => bundle({ content_commitments: [commitment({ response_tag: undefined, wire: undefined, tool_arg_tags: undefined })] });
+    const res = compareBundles(minimal(), minimal());
+    expect(res.responses).toEqual({ count_a: 1, count_b: 1, aligned: true, applicable: false, identical: false, first_divergence: null });
+    expect(res.wire).toEqual({ count_a: 1, count_b: 1, aligned: true, applicable: false, identical: false, first_divergence: null });
+    expect(res.tool_args).toEqual({ count_a: 1, count_b: 1, aligned: true, applicable: false, identical: false, first_divergence: null });
+    // prompts IS populated on both sides, so it stays applicable and identical.
+    expect(res.prompts.applicable).toBe(true);
+    expect(res.prompts.identical).toBe(true);
+  });
+
+  it('both sides carry only a malformed tag: not applicable, not a false match', () => {
+    const a = bundle({ content_commitments: [commitment({ prompt_canon_tag: 'not-hex64' })] });
+    const b = bundle({ content_commitments: [commitment({ prompt_canon_tag: 'also-not-hex64' })] });
+    const res = compareBundles(a, b);
+    expect(res.prompts.applicable).toBe(false);
+    expect(res.prompts.identical).toBe(false);
+  });
+
+  it('one side present, one side absent: real divergence, not a wash', () => {
+    const a = bundle({ content_commitments: [commitment({ response_tag: RESP_1 })] });
+    const b = bundle({ content_commitments: [commitment({ response_tag: undefined })] });
+    const res = compareBundles(a, b);
+    expect(res.responses.identical).toBe(false);
+    expect(res.responses.first_divergence).toBe(0);
+  });
+
+  it('an explicit empty tool_arg_tags array on both sides IS evidence of "no tool calls", and counts as identical', () => {
+    const a = bundle({ content_commitments: [commitment({ tool_arg_tags: [] })] });
+    const b = bundle({ content_commitments: [commitment({ tool_arg_tags: [] })] });
+    const res = compareBundles(a, b);
+    expect(res.tool_args.applicable).toBe(true);
+    expect(res.tool_args.identical).toBe(true);
   });
 });
 
@@ -105,8 +176,9 @@ describe('compareBundles - response and wire tags', () => {
 
 describe('compareBundles - tool_arg_tags', () => {
   it('compares tool arg tag bags order-independently', () => {
-    const a = bundle({ content_commitments: [commitment({ tool_arg_tags: [{ tool: 'bash', tag: TAG_A1 }, { tool: 'read', tag: TAG_A2 }] })] });
-    const b = bundle({ content_commitments: [commitment({ tool_arg_tags: [{ tool: 'read', tag: TAG_A2 }, { tool: 'bash', tag: TAG_A1 }] })] });
+    const TOOL_TAG_2 = '4'.repeat(64);
+    const a = bundle({ content_commitments: [commitment({ tool_arg_tags: [{ tool: 'bash', tag: TOOL_TAG_1 }, { tool: 'read', tag: TOOL_TAG_2 }] })] });
+    const b = bundle({ content_commitments: [commitment({ tool_arg_tags: [{ tool: 'read', tag: TOOL_TAG_2 }, { tool: 'bash', tag: TOOL_TAG_1 }] })] });
     const res = compareBundles(a, b);
     expect(res.tool_args.identical).toBe(true);
   });
@@ -148,6 +220,32 @@ describe('compareBundles - kid mismatch and missing commitments', () => {
     expect(res.reason).toBe('kid_mismatch');
     expect(res.kid).toBeNull();
     expect(res.prompts.identical).toBe(false);
+    // Real counts are preserved even when nothing is comparable.
+    expect(res.prompts.count_a).toBe(1);
+    expect(res.prompts.count_b).toBe(1);
+  });
+
+  it('a partial kid overlap excludes the rotated position from every dimension, instead of reporting it as a divergence', () => {
+    // Run A rotates keys mid-session (K1 then K2); run B stayed on K1 for
+    // both positions. Position 0 is comparable (both K1, same tag); position
+    // 1 is a key boundary on A's side, not comparable, and must not surface
+    // as a content difference.
+    const a = bundle({ content_commitments: [commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }), commitment({ kid: KID_2, prompt_canon_tag: TAG_A2 })] });
+    const b = bundle({ content_commitments: [commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }), commitment({ kid: KID_1, prompt_canon_tag: TAG_B1 })] });
+    const res = compareBundles(a, b);
+    expect(res.comparable).toBe(true);
+    expect(res.kid).toBe(KID_1);
+    expect(res.prompts.identical).toBe(true);
+    expect(res.prompts.first_divergence).toBeNull();
+  });
+
+  it('reports the kid as null when more than one distinct kid is shared across comparable positions', () => {
+    const a = bundle({ content_commitments: [commitment({ kid: KID_1 }), commitment({ kid: KID_2, prompt_canon_tag: TAG_A2 })] });
+    const b = bundle({ content_commitments: [commitment({ kid: KID_1 }), commitment({ kid: KID_2, prompt_canon_tag: TAG_A2 })] });
+    const res = compareBundles(a, b);
+    expect(res.comparable).toBe(true);
+    expect(res.kid).toBeNull();
+    expect(res.prompts.identical).toBe(true);
   });
 
   it('reports no_commitments_b when one side has no commitments at all', () => {

@@ -67,6 +67,18 @@ describe('parseCompareArgs', () => {
       bundlePathB: 'b.json',
     });
   });
+
+  it('rejects an unknown flag rather than silently dropping it', () => {
+    expect(() => parseCompareArgs(['aer-a', 'aer-b', '--json'])).toThrow(/unknown flag: --json/);
+  });
+
+  it('rejects --bundle-a with no value rather than silently dropping it', () => {
+    expect(() => parseCompareArgs(['--bundle-a'])).toThrow(/requires a value/);
+  });
+
+  it('rejects a third positional id rather than silently dropping it', () => {
+    expect(() => parseCompareArgs(['aer-a', 'aer-b', 'aer-c'])).toThrow(/too many arguments/);
+  });
 });
 
 describe('runCompare', () => {
@@ -171,8 +183,9 @@ describe('runCompare', () => {
     await expect(runCompare(['aer-a'], {})).rejects.toThrow(/usage: aer compare/);
   });
 
-  it('never includes any string longer than an opaque tag in its output', async () => {
-    const a = await signBundle(bundle('aer-a'));
+  it('never leaks a secret planted in a non-id bundle field, through the full CLI path', async () => {
+    const SECRET = 'SECRET-prompt-text-must-never-appear-anywhere';
+    const a = await signBundle(bundle('aer-a', { content_commitments: [commitment({ request_ref: SECRET, prompt: SECRET })] }));
     const b = await signBundle(bundle('aer-b'));
     const files: Record<string, string> = { 'a.json': JSON.stringify(a.signed), 'b.json': JSON.stringify(b.signed) };
     const fetchImpl = (async (url: string) => {
@@ -192,10 +205,6 @@ describe('runCompare', () => {
       ['--bundle-a', 'a.json', '--bundle-b', 'b.json'],
       { baseUrl: 'https://api.test', readFile: async (p) => files[p]!, fetchImpl, trustRoot },
     );
-    const json = JSON.stringify(result);
-    // "prompts"/"content_commitments" etc. are our own closed-set field
-    // NAMES, not content - check for a literal secret marker instead of a
-    // substring that would also match those names.
-    expect(json).not.toContain('SECRET');
+    expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 });

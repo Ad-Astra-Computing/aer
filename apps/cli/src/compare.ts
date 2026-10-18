@@ -13,21 +13,37 @@ export interface ParsedCompareArgs {
   bundlePathB?: string;
 }
 
+const KNOWN_FLAGS = new Set(['--bundle-a', '--bundle-b']);
+
+/** Throws on anything it cannot place: an unknown flag, a flag with no value,
+ * or more positional ids than the two this command takes. A silently dropped
+ * argument (e.g. a typo'd flag, or a third id) would look like the command
+ * ran as asked while actually comparing the wrong pair - or comparing
+ * nothing the caller intended. */
 export function parseCompareArgs(args: string[]): ParsedCompareArgs {
   const out: ParsedCompareArgs = {};
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    const v = args[i + 1];
     if (a === undefined) continue;
-    if (a === '--bundle-a' && v !== undefined) { out.bundlePathA = v; i++; }
-    else if (a === '--bundle-b' && v !== undefined) { out.bundlePathB = v; i++; }
-    else if (!a.startsWith('--')) positional.push(a);
+    if (a.startsWith('--')) {
+      if (!KNOWN_FLAGS.has(a)) throw new Error(`unknown flag: ${a}`);
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith('--')) throw new Error(`${a} requires a value`);
+      if (a === '--bundle-a') out.bundlePathA = v; else out.bundlePathB = v;
+      i++;
+    } else {
+      positional.push(a);
+    }
   }
-  const posA = positional[0];
-  const posB = positional[out.bundlePathA ? 0 : 1];
-  if (!out.bundlePathA && posA !== undefined) out.aerA = posA;
-  if (!out.bundlePathB && posB !== undefined) out.aerB = posB;
+  const wantPositional = (out.bundlePathA ? 0 : 1) + (out.bundlePathB ? 0 : 1);
+  if (positional.length > wantPositional) {
+    throw new Error(`too many arguments: ${positional.slice(wantPositional).join(', ')}`);
+  }
+  const posA = out.bundlePathA ? undefined : positional[0];
+  const posB = out.bundlePathB ? undefined : positional[out.bundlePathA ? 0 : 1];
+  if (posA !== undefined) out.aerA = posA;
+  if (posB !== undefined) out.aerB = posB;
   return out;
 }
 
@@ -46,7 +62,7 @@ export interface CompareResult {
   comparison: CompareBundlesResult | null;
   bundle_signature_a?: BundleSignatureResult;
   bundle_signature_b?: BundleSignatureResult;
-  reason?: string;
+  reason?: 'bundle_signature_unverified';
 }
 
 async function loadBundle(
@@ -128,13 +144,18 @@ export async function runCompare(
   }
 
   const comparison = compareBundles(bundleA, bundleB);
+  // A dimension that was never applicable (e.g. no session captured a wire
+  // body) asserted nothing, so it must not block exit 0 the way an actual
+  // divergence does - but it also never COUNTS toward "identical", so a
+  // comparison with every dimension inapplicable still needs `comparable`
+  // and no truncation to pass.
+  const noDivergence = [comparison.prompts, comparison.responses, comparison.tool_args, comparison.wire].every(
+    (dim) => !dim.applicable || dim.identical,
+  );
   const identicalOnEveryDimension =
     comparison.comparable &&
     !comparison.reason &&
-    comparison.prompts.identical &&
-    comparison.responses.identical &&
-    comparison.tool_args.identical &&
-    comparison.wire.identical &&
+    noDivergence &&
     comparison.actions.identical &&
     comparison.models.identical;
 

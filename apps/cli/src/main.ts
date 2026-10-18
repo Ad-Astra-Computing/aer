@@ -58,7 +58,7 @@ const USAGE_TEXT = [
   '  aer compare <aer-id-a> <aer-id-b> | --bundle-a <file.json> --bundle-b <file.json>',
   '           (verifies both signatures, then reports whether the two sessions received',
   '            identical inputs and took identical actions, and where they first diverged;',
-  '            never reads or needs plaintext - see docs/ for the comparison dimensions)',
+  '            never reads or needs plaintext - see README.md, "Other commands")',
   '  aer badge <aer-id>                 (prints markdown for embedding the AER badge)',
   '  aer agents list',
   '  aer agents create <name> [--framework <type>]',
