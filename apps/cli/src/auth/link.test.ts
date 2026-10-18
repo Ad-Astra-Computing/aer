@@ -116,6 +116,79 @@ describe('cmdLink', () => {
     expect(written.env_id).toBe('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
   });
 
+  it('on a TTY with no --env and no promptEnvName, still falls back to a generated id', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const code = await cmdLink({ agentId: 'agent-1' }, deps({ isTTY: true }));
+    expect(code).toBe(0);
+    const written = JSON.parse(files['/project/aer.config.json']!);
+    expect(written.env_id).toBe('11111111-1111-1111-1111-111111111111');
+  });
+
+  it('on a TTY with promptEnvName wired, lists environments and uses the chosen name', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, {
+      environments: [{ environment_id: 'laptop', session_count: 4 }, { environment_id: 'ci', session_count: 1 }],
+    }));
+    const promptEnvName = vi.fn().mockResolvedValue('laptop');
+    const code = await cmdLink({ agentId: 'agent-1' }, deps({ isTTY: true, fetchImpl, promptEnvName }));
+    expect(code).toBe(0);
+    expect(promptEnvName).toHaveBeenCalledWith([{ environment_id: 'laptop', session_count: 4 }, { environment_id: 'ci', session_count: 1 }]);
+    const written = JSON.parse(files['/project/aer.config.json']!);
+    expect(written.env_id).toBe('laptop');
+  });
+
+  it('promptEnvName is never consulted once --env or an existing env_id already answers it', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const promptEnvName = vi.fn().mockResolvedValue('should-not-be-used');
+    await cmdLink({ agentId: 'agent-1', envId: 'explicit-env' }, deps({ isTTY: true, promptEnvName }));
+    expect(promptEnvName).not.toHaveBeenCalled();
+    files['/project/aer.config.json'] = JSON.stringify({ env_id: 'already-set' });
+    await cmdLink({ agentId: 'agent-1' }, deps({ isTTY: true, promptEnvName }));
+    expect(promptEnvName).not.toHaveBeenCalled();
+  });
+
+  it('a blank name from promptEnvName falls back to the generated id rather than writing an empty env_id', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { environments: [] }));
+    const promptEnvName = vi.fn().mockResolvedValue('   ');
+    const code = await cmdLink({ agentId: 'agent-1' }, deps({ isTTY: true, fetchImpl, promptEnvName }));
+    expect(code).toBe(0);
+    const written = JSON.parse(files['/project/aer.config.json']!);
+    expect(written.env_id).toBe('11111111-1111-1111-1111-111111111111');
+  });
+
+  it('a failed environments fetch still prompts, with an empty list rather than failing the link', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('boom', { status: 500 }));
+    const promptEnvName = vi.fn().mockResolvedValue('new-box');
+    const code = await cmdLink({ agentId: 'agent-1' }, deps({ isTTY: true, fetchImpl, promptEnvName }));
+    expect(code).toBe(0);
+    expect(promptEnvName).toHaveBeenCalledWith([]);
+    const written = JSON.parse(files['/project/aer.config.json']!);
+    expect(written.env_id).toBe('new-box');
+  });
+
+  it('a non-TTY run never consults promptEnvName even if one is wired', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const promptEnvName = vi.fn().mockResolvedValue('should-not-run');
+    const code = await cmdLink({ agentId: 'agent-1' }, deps({ isTTY: false, promptEnvName }));
+    expect(code).toBe(0);
+    expect(promptEnvName).not.toHaveBeenCalled();
+    const written = JSON.parse(files['/project/aer.config.json']!);
+    expect(written.env_id).toBe('11111111-1111-1111-1111-111111111111');
+  });
+
+  it('promptEnvName rejecting fails the link cleanly, exit 1, no orphan agent created', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, { environments: [] }));
+    const promptEnvName = vi.fn().mockRejectedValue(new Error('stdin closed'));
+    const code = await cmdLink({ createAgentName: 'should-not-be-created' }, deps({ isTTY: true, fetchImpl, promptEnvName }));
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/stdin closed/);
+    expect(fetchImpl).not.toHaveBeenCalledWith(expect.stringContaining('/v1/agents'), expect.anything());
+    expect(files['/project/aer.config.json']).toBeUndefined();
+  });
+
   it('on a TTY without flags, lists agents and uses the picked one', async () => {
     setCredential(BASE_URL, CRED, env);
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(200, {

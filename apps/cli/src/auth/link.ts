@@ -20,6 +20,11 @@ export interface AgentSummary {
   name?: string;
 }
 
+export interface EnvironmentSummary {
+  environment_id: string;
+  session_count: number;
+}
+
 export interface LinkDeps {
   cwd: string;
   env: Record<string, string | undefined>;
@@ -33,6 +38,12 @@ export interface LinkDeps {
   randomUUID: () => string;
   /** Only invoked on a TTY with neither --agent nor --create-agent given. */
   promptChoice?: (agents: AgentSummary[]) => Promise<number>;
+  /** Only invoked on a TTY when --env was not given and no env_id is already
+   * stored in aer.config.json. Nothing issues or registers an environment id;
+   * this just offers the ones already seen so a user names a real place
+   * ("laptop", "ci") instead of getting a silently-minted uuid. A blank
+   * return falls back to the generated id, same as not wiring this at all. */
+  promptEnvName?: (environments: EnvironmentSummary[]) => Promise<string>;
 }
 
 function trimUrl(u: string): string {
@@ -75,6 +86,19 @@ async function listAgents(baseUrl: string, apiKey: string, fetchImpl: typeof fet
   return body.agents ?? [];
 }
 
+async function listEnvironments(baseUrl: string, apiKey: string, fetchImpl: typeof fetch): Promise<EnvironmentSummary[]> {
+  const res = await fetchImpl(`${trimUrl(baseUrl)}/v1/environments`, {
+    headers: { authorization: `Bearer ${apiKey}` },
+  });
+  if (!res.ok) throw new Error(`could not list environments (HTTP ${res.status}): ${await safeResponseText(res)}`);
+  const body = (await res.json()) as { environments?: unknown };
+  const rows = Array.isArray(body.environments) ? body.environments : [];
+  return rows
+    .filter((r): r is { environment_id: unknown; session_count: unknown } => !!r && typeof r === 'object')
+    .filter((r) => typeof r.environment_id === 'string')
+    .map((r) => ({ environment_id: r.environment_id as string, session_count: Number(r.session_count) || 0 }));
+}
+
 function readExistingConfig(deps: LinkDeps): Record<string, unknown> {
   const raw = deps.readFile(join(deps.cwd, 'aer.config.json'));
   if (!raw) return {};
@@ -103,6 +127,36 @@ export async function cmdLink(opts: LinkOptions, deps: LinkDeps): Promise<number
   }
 
   const fetchImpl = deps.fetchImpl ?? fetch;
+
+  // Resolved before the agent (which --create-agent can mutate server state
+  // for), so an aborted or rejected env prompt never leaves an orphan agent
+  // created with nothing to show for it.
+  const existingEnvId = typeof existing['env_id'] === 'string' ? (existing['env_id'] as string) : undefined;
+  let envId: string;
+  if (opts.envId) {
+    envId = opts.envId;
+  } else if (existingEnvId) {
+    envId = existingEnvId;
+  } else if (deps.isTTY && deps.promptEnvName) {
+    let environments: EnvironmentSummary[] = [];
+    try {
+      environments = await listEnvironments(baseUrl, cred.api_key, fetchImpl);
+    } catch {
+      // A read-only convenience list; a failure here should not block
+      // linking, same spirit as the generated-id fallback below.
+      environments = [];
+    }
+    try {
+      const named = (await deps.promptEnvName(environments)).trim();
+      envId = named || deps.randomUUID();
+    } catch (err) {
+      deps.printErr(err instanceof Error ? err.message : String(err));
+      return 1;
+    }
+  } else {
+    envId = deps.randomUUID();
+  }
+
   let agentId: string;
 
   try {
@@ -135,8 +189,6 @@ export async function cmdLink(opts: LinkOptions, deps: LinkDeps): Promise<number
     deps.printErr(err instanceof Error ? err.message : String(err));
     return 1;
   }
-
-  const envId = opts.envId || (typeof existing['env_id'] === 'string' ? (existing['env_id'] as string) : undefined) || deps.randomUUID();
 
   const merged: Record<string, unknown> = {
     ...existing,

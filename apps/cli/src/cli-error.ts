@@ -15,6 +15,15 @@ export function sanitizeForTerminal(input: string, maxLen = MAX_LEN): string {
   return stripped.length > maxLen ? `${stripped.slice(0, maxLen)} [truncated]` : stripped;
 }
 
+/** Same control-character strip as `sanitizeForTerminal`, with no length cap
+ * and no truncation marker: for a value that gets STORED (e.g. a user-typed
+ * identifier), not just printed, where a "[truncated]" suffix appended to a
+ * real name would be a visible corruption of the value itself. Length limits
+ * on stored values are the caller's own, separate decision. */
+export function stripControlChars(input: string): string {
+  return input.replace(CONTROL_CHARS, '');
+}
+
 export function formatCliError(err: unknown): string {
   const message = (() => {
     if (err instanceof Error) return err.message;
