@@ -27,6 +27,7 @@
 
 import { createHash } from 'node:crypto';
 import { shapesOfToolCall, vcsPushTargetOfToolCall, patchFileCount, PATCH_FILE_CAP, type ToolShape } from './tool-shape.js';
+import { CONFIG_SOURCES, type ConfigSource } from './config-snapshot.js';
 
 export type HookKind =
   | 'session_start'
@@ -39,6 +40,7 @@ export type HookKind =
   | 'tool_end'
   | 'permission'
   | 'compact'
+  | 'config_change'
   | 'other';
 
 export interface HookEvent {
@@ -148,6 +150,27 @@ export interface HookEvent {
    * reaching a person, so a `'policy'` decided_by is not observable here.
    */
   approvalDecision?: 'allowed' | 'denied' | undefined;
+  /**
+   * ConfigChange (Claude Code only): which settings source reloaded, read
+   * from `source` (the real 2.1.281 payload field) falling back to the
+   * documented `config_source` name, mapped onto the closed set the wire
+   * schema carries; anything else reads as `other`.
+   */
+  configSource?: ConfigSource | undefined;
+  /**
+   * ConfigChange only, local-only: the file the harness names, used to read
+   * its bytes and to resolve which `write_tool` stash applies. Never placed
+   * on an emitted payload (see session-store.ts's writer-attribution stash
+   * and core.ts's filtering through the ingest allowlist, which does not
+   * carry a `file_path` key for this event type at all).
+   */
+  configFilePath?: string | undefined;
+}
+
+/** Map a raw ConfigChange `source` string onto the closed set the wire
+ *  payload carries. Anything undocumented, or absent, reads as `other`. */
+export function configSourceOf(v: unknown): ConfigSource {
+  return typeof v === 'string' && (CONFIG_SOURCES as readonly string[]).includes(v) ? (v as ConfigSource) : 'other';
 }
 
 export type Harness = 'claude-code' | 'codex' | 'antigravity';
@@ -361,7 +384,10 @@ function putOutcome(event: HookEvent, isError: boolean | undefined): void {
 export function normalizeClaudeCode(payload: unknown, lifecycle: Lifecycle = 1): HookEvent {
   const p = asRecord(payload) ?? {};
   const eventName = asString(p['hook_event_name']) ?? '';
-  const kind = kindFromEventName(eventName, lifecycle);
+  // ConfigChange is Claude Code only (Codex and Antigravity have no such hook
+  // today; see the harness-equivalents note in session-store.ts), so it is
+  // recognised only on this entry point, not in the name shared with Codex.
+  const kind = eventName === 'ConfigChange' ? 'config_change' : kindFromEventName(eventName, lifecycle);
   const event: HookEvent = { kind };
 
   const sessionRef = asString(p['session_id']);
@@ -387,6 +413,16 @@ export function normalizeClaudeCode(payload: unknown, lifecycle: Lifecycle = 1):
   if (kind === 'permission') {
     event.permissionHook = permissionHookOf(eventName);
     putCallDigest(event, p['tool_name'], p['tool_input']);
+  }
+  if (kind === 'config_change') {
+    // The real 2.1.281 field is `source`; `config_source` is what the docs
+    // document. Read both, prefer `source`, never put the raw string on the
+    // wire: only the mapped closed-set value does (see configSourceOf).
+    event.configSource = configSourceOf(p['source'] ?? p['config_source']);
+    // Local only: used to read the file and resolve a writer-tool stash by
+    // path, discarded by the caller once that is done.
+    const filePath = asString(p['file_path']);
+    if (filePath !== undefined) event.configFilePath = filePath;
   }
 
   if (kind === 'tool_end') {
