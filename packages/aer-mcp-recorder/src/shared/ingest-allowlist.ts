@@ -63,6 +63,12 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'env_set_class', 'history_cleared', 'interpreter_inline', 'ai_cli',
   // Claude Code Skill-tool invocation (skill.invoked): the skill name only.
   'skill',
+  // config.changed (Claude Code ConfigChange, record-only): a client-side
+  // feature snapshot of a settings file, never the path, rule strings, hook
+  // commands or env values.
+  'config_source', 'trigger', 'config_status', 'allow_rules', 'deny_rules',
+  'broad_allow_rules', 'default_mode', 'hooks_disabled', 'aer_hook_count',
+  'config_changes', 'writer',
 ]);
 
 export interface StripResult {
