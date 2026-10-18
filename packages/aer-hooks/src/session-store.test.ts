@@ -26,6 +26,7 @@ import {
   resolveConfigWriter,
   sweepStaleConfigStashes,
   CONFIG_CHANGE_WINDOW_MS,
+  VCS_PUSH_STASH_TTL_MS,
   type SessionState,
 } from './session-store.js';
 import { statusOnlySnapshot, type ConfigInternalSnapshot } from './config-snapshot.js';
@@ -542,6 +543,26 @@ describe('ConfigChange: writer-attribution resolution', () => {
     expect(writer).toBe('shell_named');
   });
 
+  it('an open stash past its TTL no longer matches and falls through to none_observed', () => {
+    const st = freshState(T);
+    stashConfigShellOpen(st, 'tu-open', true, T);
+    const writer = resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + VCS_PUSH_STASH_TTL_MS + 1);
+    expect(writer).toBe('none_observed');
+  });
+
+  it('among two open stashes, the most recently opened one matches', () => {
+    const st = freshState(T);
+    // The older one is a leaked stash (its PostToolUse never arrived); the
+    // newer one is the long-running call actually in progress right now.
+    stashConfigShellOpen(st, 'tu-old', false, T);
+    stashConfigShellOpen(st, 'tu-new', true, T + 1000);
+    const writer = resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + 2000);
+    expect(writer).toBe('shell_named');
+    // The newer one was consumed, the older leaked one is untouched.
+    expect(st.configShellStash?.['tu-new']).toBeUndefined();
+    expect(st.configShellStash?.['tu-old']).toBeDefined();
+  });
+
   it('falls back to shell_named over shell_unnamed when both are closed and within window', () => {
     const st = freshState(T);
     stashConfigShellOpen(st, 'tu-1', false, T);
@@ -594,6 +615,15 @@ describe('ConfigChange: writer-attribution resolution', () => {
     expect(st.configPromptGrantStash).toBeUndefined();
     expect(st.configShellStash?.['tu-open']).toBeDefined();
     expect(st.configShellStash?.['tu-closed']).toBeUndefined();
+  });
+
+  it('sweepStaleConfigStashes evicts an open stash once it is past its TTL', () => {
+    const st = freshState(T);
+    stashConfigShellOpen(st, 'tu-open', true, T);
+
+    sweepStaleConfigStashes(st, T + VCS_PUSH_STASH_TTL_MS + 1);
+
+    expect(st.configShellStash?.['tu-open']).toBeUndefined();
   });
 
   it('round-trips the snapshot store and stashes through save/load', () => {

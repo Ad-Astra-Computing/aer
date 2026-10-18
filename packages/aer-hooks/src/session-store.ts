@@ -740,8 +740,13 @@ export function resolveConfigWriter(
     return 'write_tool';
   }
 
+  // An open stash past VCS_PUSH_STASH_TTL_MS is presumed leaked, not still
+  // running; among several fresh open stashes the most recent wins.
   const shellEntries = Object.entries(state.configShellStash ?? {});
-  const stillOpen = shellEntries.find(([, e]) => e.open);
+  const openCandidates = shellEntries.filter(([, e]) => e.open && now - e.at <= VCS_PUSH_STASH_TTL_MS);
+  const stillOpen = openCandidates.length === 0
+    ? undefined
+    : openCandidates.reduce((latest, candidate) => (candidate[1].at > latest[1].at ? candidate : latest));
   if (stillOpen !== undefined) {
     const [id, entry] = stillOpen;
     const { [id]: _removed, ...rest } = state.configShellStash ?? {};
@@ -788,7 +793,9 @@ export function sweepStaleConfigStashes(state: SessionState, now: number, window
     else state.configWriteToolStash = Object.fromEntries(kept);
   }
   if (state.configShellStash !== undefined) {
-    const kept = Object.entries(state.configShellStash).filter(([, e]) => e.open || now - e.at <= margin);
+    // An open stash gets VCS_PUSH_STASH_TTL_MS, not an indefinite reprieve.
+    const kept = Object.entries(state.configShellStash).filter(([, e]) =>
+      e.open ? now - e.at <= VCS_PUSH_STASH_TTL_MS : now - e.at <= margin);
     if (kept.length === 0) delete state.configShellStash;
     else state.configShellStash = Object.fromEntries(kept);
   }
