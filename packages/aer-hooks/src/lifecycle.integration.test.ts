@@ -52,6 +52,11 @@ function baseEnv(cache: string, baseUrl: string): NodeJS.ProcessEnv {
     AER_ENV_ID: '01950000-0000-7000-8000-0000000000ad',
     AER_HOOK_TIMEOUT_MS: '4000',
     XDG_CACHE_HOME: cache,
+    // ConfigChange's SessionStart baseline falls back to os.homedir() (which
+    // reads the OS user database, not this env) only when HOME is absent;
+    // setting it here keeps these runs from reading the real machine's own
+    // ~/.claude/settings.json.
+    HOME: cache,
   };
 }
 
@@ -255,8 +260,12 @@ describe('the record says how complete it is', () => {
     // call it for, read from the harness's own config rather than asserted.
     expect(all).toContain('"collector":"aer-hooks"');
     expect(all).toContain('"events_registered":["PermissionDenied","PermissionRequest","PostToolUse","PreToolUse","SessionEnd","SessionStart","Stop","SubagentStart","SubagentStop","UserPromptSubmit"]');
+    // Two extra events: the SessionStart baseline finds the same
+    // just-installed settings.json under both user_settings (HOME) and
+    // project_settings (cwd), since this test points both at `home`.
+    expect(all).toContain('"event_type":"config.changed"');
     // The closing marker counts what arrived and what never resolved.
-    expect(all).toContain('"events_emitted":7');
+    expect(all).toContain('"events_emitted":9');
     expect(all).toContain('"tools_unresolved":1');
   }, 60_000);
 });
