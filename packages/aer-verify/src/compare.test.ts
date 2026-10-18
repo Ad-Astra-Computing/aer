@@ -107,9 +107,9 @@ describe('compareBundles - absent evidence is never claimed identical', () => {
   it('both sides never emitted response_tag/wire/tool_arg_tags: not applicable, not identical', () => {
     const minimal = () => bundle({ content_commitments: [commitment({ response_tag: undefined, wire: undefined, tool_arg_tags: undefined })] });
     const res = compareBundles(minimal(), minimal());
-    expect(res.responses).toEqual({ count_a: 1, count_b: 1, aligned: true, applicable: false, identical: false, first_divergence: null });
-    expect(res.wire).toEqual({ count_a: 1, count_b: 1, aligned: true, applicable: false, identical: false, first_divergence: null });
-    expect(res.tool_args).toEqual({ count_a: 1, count_b: 1, aligned: true, applicable: false, identical: false, first_divergence: null });
+    expect(res.responses).toEqual({ count_a: 1, count_b: 1, aligned: true, compared: 1, applicable: false, identical: false, first_divergence: null });
+    expect(res.wire).toEqual({ count_a: 1, count_b: 1, aligned: true, compared: 1, applicable: false, identical: false, first_divergence: null });
+    expect(res.tool_args).toEqual({ count_a: 1, count_b: 1, aligned: true, compared: 1, applicable: false, identical: false, first_divergence: null });
     // prompts IS populated on both sides, so it stays applicable and identical.
     expect(res.prompts.applicable).toBe(true);
     expect(res.prompts.identical).toBe(true);
@@ -127,6 +127,11 @@ describe('compareBundles - absent evidence is never claimed identical', () => {
     const a = bundle({ content_commitments: [commitment({ response_tag: RESP_1 })] });
     const b = bundle({ content_commitments: [commitment({ response_tag: undefined })] });
     const res = compareBundles(a, b);
+    // applicable MUST be true here: one side having a tag and the other not
+    // is evidence of a real difference, not "nothing to compare". If
+    // applicable were false, the CLI's "non-applicable dimensions don't
+    // block exit 0" rule would silently pass this divergence.
+    expect(res.responses.applicable).toBe(true);
     expect(res.responses.identical).toBe(false);
     expect(res.responses.first_divergence).toBe(0);
   });
@@ -237,6 +242,12 @@ describe('compareBundles - kid mismatch and missing commitments', () => {
     expect(res.kid).toBe(KID_1);
     expect(res.prompts.identical).toBe(true);
     expect(res.prompts.first_divergence).toBeNull();
+    // identical:true is a claim about the COMPARED positions only; `compared`
+    // (1) being less than count_a/count_b (2) is how a caller tells "fully
+    // checked" apart from "checked as far as the shared key allowed".
+    expect(res.prompts.compared).toBe(1);
+    expect(res.prompts.count_a).toBe(2);
+    expect(res.prompts.count_b).toBe(2);
   });
 
   it('reports the kid as null when more than one distinct kid is shared across comparable positions', () => {

@@ -152,6 +152,33 @@ describe('runCompare', () => {
     expect(exitCode).toBe(1);
   });
 
+  it('exits 1 when one side committed a response tag and the other did not (not "nothing to compare")', async () => {
+    const RESP = 'd'.repeat(64);
+    const a = await signBundle(bundle('aer-a', { content_commitments: [commitment({ response_tag: RESP })] }));
+    const b = await signBundle(bundle('aer-b')); // no response_tag at all
+    const files: Record<string, string> = { 'a.json': JSON.stringify(a.signed), 'b.json': JSON.stringify(b.signed) };
+    const fetchImpl = (async (url: string) => {
+      const u = String(url);
+      if (u.includes(a.kid)) return new Response(JSON.stringify({ signing_key_id: a.kid, sig_alg: 'Ed25519', public_key_hex: a.publicKeyHex }), { status: 200 });
+      if (u.includes(b.kid)) return new Response(JSON.stringify({ signing_key_id: b.kid, sig_alg: 'Ed25519', public_key_hex: b.publicKeyHex }), { status: 200 });
+      return new Response('not found', { status: 404 });
+    }) as unknown as typeof fetch;
+    const trustRoot = {
+      aerSigningKeys: [
+        { signing_key_id: a.kid, public_key_hex: a.publicKeyHex },
+        { signing_key_id: b.kid, public_key_hex: b.publicKeyHex },
+      ],
+      rekorLogs: [],
+    };
+    const { result, exitCode } = await runCompare(
+      ['--bundle-a', 'a.json', '--bundle-b', 'b.json'],
+      { baseUrl: 'https://api.test', readFile: async (p) => files[p]!, fetchImpl, trustRoot },
+    );
+    expect(result.comparison?.responses.applicable).toBe(true);
+    expect(result.comparison?.responses.identical).toBe(false);
+    expect(exitCode).toBe(1);
+  });
+
   it('fetches both bundles by id when no local file is given', async () => {
     const a = await signBundle(bundle('aer-a'));
     const b = await signBundle(bundle('aer-b'));

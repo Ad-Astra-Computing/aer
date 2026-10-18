@@ -29,10 +29,15 @@ export interface TagDimension {
   count_a: number;
   count_b: number;
   aligned: boolean;
-  // False when no position on both sides ever carried a tag for this
-  // dimension (the field is optional, e.g. no session captured a response or
-  // a wire body) - there is then no evidence to call equal OR different.
-  // `identical` is never true when `applicable` is false.
+  // How many positions were actually checked: those where both sides
+  // committed under the same key (kid). Can be less than count_a/count_b
+  // when a key rotated mid-run, or when the lists are different lengths.
+  // `identical:true` is a claim about these positions only.
+  compared: number;
+  // False when none of the compared positions carried a tag on EITHER side
+  // for this dimension (the field is optional, e.g. no session captured a
+  // response or a wire body) - there is then no evidence to call equal OR
+  // different. `identical` is never true when `applicable` is false.
   applicable: boolean;
   identical: boolean;
   first_divergence: number | null;
@@ -89,6 +94,7 @@ function emptyTagDimension(countA: number, countB: number): TagDimension {
     count_a: countA,
     count_b: countB,
     aligned: countA === countB,
+    compared: 0,
     applicable: false,
     identical: false,
     first_divergence: null,
@@ -101,9 +107,10 @@ function emptyTagDimension(countA: number, countB: number): TagDimension {
  * the SAME key (see `comparableKidPositions`). Position, not any identifier
  * inside the commitment, is the join key: commitment refs are minted per run
  * and carry no cross-run meaning (design doc section 4.2). A position where
- * neither side produced a tag (the field is optional) contributes no
- * evidence either way; `applicable` is true only once some position has a
- * real tag on BOTH sides.
+ * NEITHER side produced a tag (the field is optional) contributes no
+ * evidence either way. A position where only ONE side produced a tag is a
+ * real divergence, not an absence - `applicable` must be true for that case
+ * too, or a one-sided miss would silently pass as "nothing to compare".
  */
 function compareTagField(
   a: ComparableCommitment[],
@@ -117,13 +124,14 @@ function compareTagField(
   for (const i of positions) {
     const tagA = pick(a[i]!);
     const tagB = pick(b[i]!);
-    if (tagA !== null && tagB !== null) applicable = true;
+    if (tagA !== null || tagB !== null) applicable = true;
     if (firstDivergence === null && tagA !== tagB) firstDivergence = i;
   }
   return {
     count_a: a.length,
     count_b: b.length,
     aligned,
+    compared: positions.length,
     applicable,
     identical: aligned && applicable && firstDivergence === null,
     first_divergence: firstDivergence,
