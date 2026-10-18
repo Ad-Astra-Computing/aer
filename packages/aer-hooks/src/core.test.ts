@@ -408,3 +408,49 @@ describe('a shell call that runs several programs', () => {
     expect(JSON.stringify(events)).not.toContain('SECRET');
   });
 });
+
+describe('config_change -> config.changed', () => {
+  it('sends every configChangeShapes entry, nothing else', () => {
+    const { sink, events } = fakeSink();
+    const e: HookEvent = {
+      kind: 'config_change',
+      configChangeShapes: [{ eventType: 'config.changed', payload: { config_source: 'project_settings', trigger: 'config_change', config_status: 'ok', allow_rules: 1, deny_rules: 0, broad_allow_rules: 0, default_mode: 'default', hooks_disabled: false, aer_hook_count: 0, config_changes: ['allow_added'], writer: 'write_tool' } }],
+    };
+    emitHookEvent(e, sink);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.eventType).toBe('config.changed');
+    expect(events[0]!.payload['writer']).toBe('write_tool');
+  });
+
+  it('sends nothing for a no-op reload (an empty configChangeShapes)', () => {
+    const { sink, events } = fakeSink();
+    emitHookEvent({ kind: 'config_change' }, sink);
+    expect(events).toHaveLength(0);
+  });
+
+  it('a config.changed payload never carries a decision-shaped key, and the hook never signals exit 2', () => {
+    const { sink, events } = fakeSink();
+    const e: HookEvent = {
+      kind: 'config_change',
+      configChangeShapes: [{ eventType: 'config.changed', payload: { config_source: 'other', trigger: 'config_change', config_status: 'unparseable', allow_rules: 0, deny_rules: 0, broad_allow_rules: 0, default_mode: 'unset', hooks_disabled: false, aer_hook_count: 0, config_changes: ['content_only'], writer: 'none_observed' } }],
+    };
+    const sent = emitHookEvent(e, sink);
+    expect(sent).toBe(1);
+    expect(JSON.stringify(events)).not.toContain('decision');
+  });
+
+  it('session_start emits a baseline config.changed shape alongside the ordinary collector.report', () => {
+    const { sink, events } = fakeSink();
+    const e: HookEvent = {
+      kind: 'session_start',
+      configChangeShapes: [{ eventType: 'config.changed', payload: { config_source: 'user_settings', trigger: 'session_start', config_status: 'ok', allow_rules: 0, deny_rules: 0, broad_allow_rules: 0, default_mode: 'unset', hooks_disabled: false, aer_hook_count: 0, config_changes: ['prior_unknown'], writer: 'none_observed' } }],
+    };
+    emitHookEvent(e, sink);
+    expect(events.map((x) => x.eventType)).toEqual(['config.changed', 'collector.report']);
+  });
+
+  it('emitHookEvent never throws, even with a malformed event shape', () => {
+    const { sink } = fakeSink();
+    expect(() => emitHookEvent({ kind: 'config_change', configChangeShapes: [{ eventType: 'config.changed', payload: {} }] }, sink)).not.toThrow();
+  });
+});

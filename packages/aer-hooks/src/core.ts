@@ -31,6 +31,10 @@ export interface ApprovalCorrelationState {
   pendingApprovals?: Array<{ id: string; pushedAt: number }>;
   pendingApprovalSeq?: number;
   approvalsUnresolved?: number;
+  /** ConfigChange writer attribution: stashed whenever a call resolves
+   *  `approval.decided{decision:'allowed',decided_by:'prompted'}` below, the
+   *  same signal the P0-1 oversight marker already computes. */
+  configPromptGrantStash?: { at: number };
 }
 
 /**
@@ -252,6 +256,7 @@ export function emitHookEvent(
           // tool_use_id/turn_id already ride via `common` (commonMeta already
           // carries both for kind tool_end); `decided_by` is the only new key.
           send('approval.decided', { decision: 'allowed', decided_by: 'prompted' });
+          state.configPromptGrantStash = { at: now };
         }
         if (event.tool === undefined) return unnamedTool(send);
         const fields: Record<string, unknown> = { tool: event.tool };
