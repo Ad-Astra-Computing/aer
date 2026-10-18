@@ -8,7 +8,7 @@ import { planInit, applyInit, runDoctor, type FsLike, type InitOptions } from '.
 import { cmdLogin } from './auth/login.js';
 import { cmdLogout } from './auth/logout.js';
 import { cmdWhoami } from './auth/whoami.js';
-import { cmdLink, type AgentSummary } from './auth/link.js';
+import { cmdLink, type AgentSummary, type EnvironmentSummary } from './auth/link.js';
 import { resolveAuth, resolveBaseUrl } from './auth/resolve.js';
 import { runLiveChecks } from './doctor-live.js';
 import { staleRegistrations } from '@adastracomputing/aer-hooks';
@@ -19,7 +19,7 @@ import { verifyAer } from './verify.js';
 import { runCommitmentsVerify } from './commitments-verify.js';
 import { buildSmokeScript } from './smoke-script.js';
 import { collectorApiKey, listSessionIds, awaitNewSession } from './smoke-verify.js';
-import { formatCliError, sanitizeForTerminal } from './cli-error.js';
+import { formatCliError, sanitizeForTerminal, stripControlChars } from './cli-error.js';
 import {
   listWebhooks,
   createWebhook,
@@ -437,10 +437,73 @@ async function promptAgentChoice(agents: AgentSummary[]): Promise<number> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     console.log('Pick an agent:');
-    agents.forEach((a, i) => console.log(`  [${i}] ${a.name ?? a.agent_id} (${a.agent_id})`));
+    // agent_id/name are tenant-controlled strings (anyone holding an ingest
+    // token can set a name), so they go through the same terminal sanitizer
+    // as any other server-sourced text before they reach the console.
+    agents.forEach((a, i) => console.log(`  [${i}] ${sanitizeForTerminal(a.name ?? a.agent_id, 80)} (${sanitizeForTerminal(a.agent_id, 80)})`));
     const answer = await rl.question('> ');
     const idx = Number.parseInt(answer.trim(), 10);
     return Number.isNaN(idx) ? -1 : idx;
+  } finally {
+    rl.close();
+  }
+}
+
+const ENV_NAME_MAX_LEN = 64;
+
+export type EnvironmentChoice =
+  | { kind: 'existing'; id: string }
+  | { kind: 'new'; name: string }
+  | { kind: 'blank' }
+  | { kind: 'invalid'; message: string };
+
+// Pure so index parsing, the out-of-range case and the length/sanitization
+// cap are unit-testable without faking stdin. A bare integer is read as a
+// pick from the numbered list (even one typed by hand, matching what the
+// prompt itself prints); anything else becomes a literal new name.
+export function resolveEnvironmentChoice(rawAnswer: string, environments: EnvironmentSummary[]): EnvironmentChoice {
+  // Stripped, not sanitizeForTerminal-truncated: a "[truncated]" marker
+  // appended to an over-length answer would become part of the stored name
+  // itself, not just a display artifact. Length is checked on its own below.
+  const answer = stripControlChars(rawAnswer).trim();
+  if (answer === '') return { kind: 'blank' };
+  if (/^\d+$/.test(answer)) {
+    const chosen = environments[Number.parseInt(answer, 10)];
+    if (!chosen) return { kind: 'invalid', message: `No environment at index ${answer}. Pick a listed number or type a new name.` };
+    return { kind: 'existing', id: chosen.environment_id };
+  }
+  if (answer.length > ENV_NAME_MAX_LEN) {
+    return { kind: 'invalid', message: `Name is too long (max ${ENV_NAME_MAX_LEN} characters). Try a shorter one.` };
+  }
+  return { kind: 'new', name: answer };
+}
+
+// An environment is a name you reuse across runs ("laptop", "ci"), never
+// issued or registered server-side. Offering the ones already seen, with a
+// blank answer accepted as "pick nothing, I'll take the generated id", is
+// cheaper for a returning user than typing the same name twice and safer
+// than a silently-minted uuid nobody chose.
+async function promptEnvironmentName(environments: EnvironmentSummary[]): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    if (environments.length > 0) {
+      console.log('Pick an environment, or type a new name:');
+      environments.forEach((e, i) => console.log(
+        `  [${i}] ${sanitizeForTerminal(e.environment_id, 80)} (${e.session_count} session${e.session_count === 1 ? '' : 's'})`,
+      ));
+    } else {
+      console.log('Name this environment (e.g. "laptop" or "ci"), or leave blank:');
+    }
+    for (;;) {
+      const answer = await rl.question('> ');
+      const choice = resolveEnvironmentChoice(answer, environments);
+      switch (choice.kind) {
+        case 'existing': return choice.id;
+        case 'new': return choice.name;
+        case 'blank': return '';
+        case 'invalid': console.log(choice.message); continue;
+      }
+    }
   } finally {
     rl.close();
   }
@@ -558,6 +621,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         writeFile: (p, c) => writeFileSync(p, c),
         randomUUID,
         promptChoice: promptAgentChoice,
+        promptEnvName: promptEnvironmentName,
       },
     );
     if (code !== 0) process.exit(code);
