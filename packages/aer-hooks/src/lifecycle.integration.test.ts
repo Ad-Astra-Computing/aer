@@ -259,7 +259,7 @@ describe('the record says how complete it is', () => {
     // The opening marker names the collector and the events the harness will
     // call it for, read from the harness's own config rather than asserted.
     expect(all).toContain('"collector":"aer-hooks"');
-    expect(all).toContain('"events_registered":["PermissionDenied","PermissionRequest","PostToolUse","PreToolUse","SessionEnd","SessionStart","Stop","SubagentStart","SubagentStop","UserPromptSubmit"]');
+    expect(all).toContain('"events_registered":["ConfigChange","PermissionDenied","PermissionRequest","PostToolUse","PreToolUse","SessionEnd","SessionStart","Stop","SubagentStart","SubagentStop","UserPromptSubmit"]');
     // Two extra events: the SessionStart baseline finds the same
     // just-installed settings.json under both user_settings (HOME) and
     // project_settings (cwd), since this test points both at `home`.

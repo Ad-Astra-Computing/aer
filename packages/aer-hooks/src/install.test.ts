@@ -29,11 +29,11 @@ function codexPath() {
 describe('install (claude-code)', () => {
   it('creates a fresh settings file with the whole lifecycle wired', async () => {
     const r = await install('claude-code', { dir });
-    expect(r.added.sort()).toEqual(['PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
+    expect(r.added.sort()).toEqual(['ConfigChange', 'PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
     expect(r.backupPath).toBeNull(); // no prior file to back up
     const cfg = await readJson(ccPath());
     const hooks = cfg['hooks'] as Record<string, unknown[]>;
-    for (const ev of ['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd', 'PermissionRequest', 'PermissionDenied']) {
+    for (const ev of ['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd', 'PermissionRequest', 'PermissionDenied', 'ConfigChange']) {
       const groups = hooks[ev] as Array<{ hooks: Array<{ command: string }> }>;
       expect(groups[0]!.hooks[0]!.command).toContain(AER_HOOK_MARKER);
       expect(groups[0]!.hooks[0]!.command).toContain('claude-code');
@@ -73,6 +73,7 @@ describe('install (claude-code)', () => {
     const r2 = await install('claude-code', { dir });
     expect(r2.added).toEqual([]);
     expect(r2.alreadyPresent.sort()).toEqual([
+      'ConfigChange',
       'PermissionDenied',
       'PermissionRequest',
       'PostToolUse',
@@ -232,7 +233,7 @@ describe('uninstall', () => {
     );
     await install('claude-code', { dir });
     const r = await uninstall('claude-code', { dir });
-    expect(r.removed.sort()).toEqual(['PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
+    expect(r.removed.sort()).toEqual(['ConfigChange', 'PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
     const cfg = await readJson(ccPath());
     const hooks = cfg['hooks'] as Record<string, unknown[]>;
     // the user's guard survives; AER-only events are gone
@@ -270,7 +271,7 @@ describe('status', () => {
     const after = await status({ dir });
     const cc2 = after.find((e) => e.harness === 'claude-code')!;
     expect(cc2.exists).toBe(true);
-    expect(cc2.wiredEvents.sort()).toEqual(['PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
+    expect(cc2.wiredEvents.sort()).toEqual(['ConfigChange', 'PermissionDenied', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit']);
   });
 
   it('reports config present but no AER hooks for an unrelated config', async () => {
@@ -425,5 +426,57 @@ describe('CODEX_HOME', () => {
     expect(f?.harness).toBe('codex');
     expect(f?.detail).toContain('relative/codex');
     expect(f?.fix).toMatch(/absolute/);
+  });
+});
+
+describe('ConfigChange (Claude Code only)', () => {
+  it('writes a ConfigChange matcher/hook entry for claude-code', async () => {
+    await install('claude-code', { dir });
+    const cfg = await readJson(ccPath());
+    const hooks = cfg['hooks'] as Record<string, Array<{ hooks: Array<{ command: string; timeout?: number }> }>>;
+    const groups = hooks['ConfigChange'];
+    expect(groups).toBeDefined();
+    expect(groups![0]!.hooks[0]!.command).toContain(AER_HOOK_MARKER);
+    expect(groups![0]!.hooks[0]!.command).toContain('claude-code');
+  });
+
+  it('registers ConfigChange with its own 5s timeout, distinct from SessionStart/SessionEnd', async () => {
+    await install('claude-code', { dir });
+    const cfg = await readJson(ccPath());
+    const hooks = cfg['hooks'] as Record<string, Array<{ hooks: Array<{ command: string; timeout?: number }> }>>;
+    expect(hooks['ConfigChange']![0]!.hooks[0]!.timeout).toBe(5);
+    expect(hooks['SessionStart']![0]!.hooks[0]!.timeout).toBe(15);
+    expect(hooks['SessionEnd']![0]!.hooks[0]!.timeout).toBe(15);
+    expect(hooks['PreToolUse']![0]!.hooks[0]!.timeout).toBeUndefined();
+  });
+
+  it('never writes a ConfigChange entry for codex', async () => {
+    await install('codex', { dir });
+    const cfg = await readJson(codexPath());
+    const hooks = cfg['hooks'] as Record<string, unknown>;
+    expect(hooks['ConfigChange']).toBeUndefined();
+  });
+
+  it('uninstall removes the ConfigChange entry along with the rest', async () => {
+    await install('claude-code', { dir });
+    await uninstall('claude-code', { dir });
+    const cfg = await readJson(ccPath());
+    const hooks = (cfg['hooks'] ?? {}) as Record<string, unknown>;
+    expect(hooks['ConfigChange']).toBeUndefined();
+  });
+
+  it('aer doctor flags a claude-code install from before this feature shipped', async () => {
+    // Simulate an upgrade path: write every lifecycle event by hand, as an
+    // older aer-hooks release would have, with no ConfigChange entry at all.
+    await fs.mkdir(path.dirname(ccPath()), { recursive: true });
+    await fs.writeFile(ccPath(), JSON.stringify({
+      hooks: {
+        PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'aer-hook --harness claude-code --lifecycle v2' }] }],
+      },
+    }));
+    const findings = await staleRegistrations({ dir });
+    const f = findings.find((x) => x.reason === 'missing_config_change');
+    expect(f?.harness).toBe('claude-code');
+    expect(f?.fix).toBe('aer-hooks install claude-code');
   });
 });
