@@ -165,6 +165,14 @@ export interface HookEvent {
    * carry a `file_path` key for this event type at all).
    */
   configFilePath?: string | undefined;
+  /**
+   * The `config.changed` event(s) this ConfigChange (or, for a baseline
+   * read, this `session_start`) produced, computed by
+   * config-change-plan.ts's apply half from local file reads and session
+   * state. Empty/absent means nothing to emit: a no-op reload, a read that
+   * found nothing new, or a harness this feature does not cover.
+   */
+  configChangeShapes?: ToolShape[] | undefined;
 }
 
 /** Map a raw ConfigChange `source` string onto the closed set the wire
