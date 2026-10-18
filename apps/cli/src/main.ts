@@ -17,6 +17,7 @@ import { CLI_VERSION } from './version.generated.js';
 import { runClaudeCodeImport } from './import/run.js';
 import { verifyAer } from './verify.js';
 import { runCommitmentsVerify } from './commitments-verify.js';
+import { runCompare } from './compare.js';
 import { buildSmokeScript } from './smoke-script.js';
 import { collectorApiKey, listSessionIds, awaitNewSession } from './smoke-verify.js';
 import { formatCliError, sanitizeForTerminal, stripControlChars } from './cli-error.js';
@@ -54,6 +55,10 @@ const USAGE_TEXT = [
   '  aer verify <aer-id>',
   '  aer commitments verify --requests <file.json> (--aer <aer-id> | --bundle <file.json>) [--key <public-key.json>]',
   '           (offline: recompute content-commitment tags from YOUR key + plaintext and diff the bundle)',
+  '  aer compare <aer-id-a> <aer-id-b> | --bundle-a <file.json> --bundle-b <file.json>',
+  '           (verifies both signatures, then reports whether the two sessions received',
+  '            identical inputs and took identical actions, and where they first diverged;',
+  '            never reads or needs plaintext - see docs/ for the comparison dimensions)',
   '  aer badge <aer-id>                 (prints markdown for embedding the AER badge)',
   '  aer agents list',
   '  aer agents create <name> [--framework <type>]',
@@ -765,6 +770,24 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const result = await verifyAer({ baseUrl, aerId });
       console.log(JSON.stringify(result, null, 2));
       if (!result.verified) process.exit(1);
+    } catch (err) {
+      console.error(formatCliError(err));
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (command === 'compare') {
+    // Positional AER ids need AER_BASE_URL to fetch their bundles; --bundle-a/
+    // --bundle-b work fully offline. Either way both signatures are verified
+    // before any comparison is reported (fail closed, same posture as `aer
+    // verify` and `aer commitments verify`).
+    try {
+      const { result, exitCode } = await runCompare([sub, ...rest].filter((x): x is string => x !== undefined), {
+        ...(baseUrl ? { baseUrl } : {}),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      if (exitCode !== 0) process.exit(exitCode);
     } catch (err) {
       console.error(formatCliError(err));
       process.exit(1);

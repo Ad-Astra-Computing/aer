@@ -132,6 +132,25 @@ print `verified`. To check records signed by your own test keys, use
   when the bundle asserts anchoring or `none` otherwise, so a script can
   still tell those two cases apart. Use `aer verify` for the full anchor
   check.
+- `aer compare <aer-id-a> <aer-id-b> | --bundle-a <file.json> --bundle-b <file.json>`:
+  the bodies-off-safe reading of "replay" - prove two sessions received
+  identical inputs and took identical actions, and locate the first
+  divergence, without ever reading or needing the prompt. Verifies BOTH
+  bundles' signatures first (fail closed, same posture as `aer verify`), then
+  diffs their content commitments (prompt/response/wire/tool-argument tags,
+  position-aligned), their execution-graph action sequence and their tool
+  sets. `comparable:false` with a `reason` of `kid_mismatch` means the two
+  runs committed under different keys and no tag in one could ever equal a
+  tag in the other - not "different", just not checkable; `no_commitments_a`/
+  `no_commitments_b` means one side emitted no content commitments at all
+  (a harness session, or no `AER_COMMITMENT_KEY` configured); `truncated`
+  means a commitment list hit its cap, so `identical` is never claimed on the
+  affected dimension even when the observed tags match. Exit 0 only when both
+  signatures verified and every comparable dimension is identical, so it
+  works as a CI gate the way `aer verify` does. To read what a diverging
+  prompt actually said, open your own harness transcript and prove it matches
+  with `aer commitments verify`; this command only ever proves equality, it
+  never shows content.
 - `aer import claude-code <session.jsonl>`: turn a Claude Code transcript into
   bodies-off AER events on the client; names and hosts only, never content.
   `-` in place of a file reads the transcript from stdin. Run with no file to
