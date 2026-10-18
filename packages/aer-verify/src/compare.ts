@@ -13,26 +13,42 @@ interface ComparableCommitment {
   response_tag?: unknown;
   wire?: { tag?: unknown };
   tool_arg_tags?: Array<{ tool?: unknown; tag?: unknown }>;
+  tool_args_truncated?: unknown;
+  tool_result_tags?: unknown[];
+  tool_results_truncated?: unknown;
 }
 
 interface ComparableBundleShape {
   content_commitments?: ComparableCommitment[];
   content_commitments_truncated?: unknown;
   execution_graph?: { nodes?: Array<{ type?: unknown }> };
-  observations?: { tools_used?: unknown[] };
+  observations?: {
+    tools_used?: unknown[];
+    domains_contacted?: unknown[];
+    files_touched?: unknown[];
+    processes_spawned?: unknown[];
+  };
   llm_activity?: { providers?: Array<{ provider?: unknown; models?: unknown[] }> };
 }
 
-export type DivergenceReason = 'kid_mismatch' | 'no_commitments_a' | 'no_commitments_b' | 'truncated';
+export type DivergenceReason =
+  | 'kid_mismatch'
+  | 'no_commitments_a'
+  | 'no_commitments_b'
+  | 'truncated'
+  // Some, but not all, positions shared a key across the two runs - a key
+  // rotated mid-run on one or both sides. Unlike kid_mismatch (zero shared
+  // positions), something was checked here, just not everything.
+  | 'partial_kid_overlap';
 
 export interface TagDimension {
   count_a: number;
   count_b: number;
   aligned: boolean;
-  // How many positions were actually checked: those where both sides
-  // committed under the same key (kid). Can be less than count_a/count_b
-  // when a key rotated mid-run, or when the lists are different lengths.
-  // `identical:true` is a claim about these positions only.
+  // Positions actually checked: those where both sides share a kid. Can be
+  // less than count_a/count_b on a mid-run key rotation or a length
+  // mismatch. `identical` is never true unless compared equals both counts
+  // - see DivergenceReason.partial_kid_overlap.
   compared: number;
   // False when none of the compared positions carried a tag on EITHER side
   // for this dimension (the field is optional, e.g. no session captured a
@@ -43,6 +59,11 @@ export interface TagDimension {
   first_divergence: number | null;
 }
 
+/** Covers every signed, name-only observation set on the bundle - tools_used,
+ * domains_contacted, files_touched and processes_spawned - merged into one
+ * set comparison, not tools_used alone. A run that contacted a different
+ * host or touched a different file but used the same tools is a real
+ * divergence this dimension must catch. */
 export interface ActionsDimension {
   identical: boolean;
   first_divergence: number | null;
@@ -62,6 +83,7 @@ export interface CompareBundlesResult {
   prompts: TagDimension;
   responses: TagDimension;
   tool_args: TagDimension;
+  tool_results: TagDimension;
   wire: TagDimension;
   actions: ActionsDimension;
   models: { identical: boolean };
@@ -119,6 +141,10 @@ function compareTagField(
   pick: (c: ComparableCommitment) => string | null,
 ): TagDimension {
   const aligned = a.length === b.length;
+  // Every position must have been checked, not just every CHECKED position
+  // agreeing - otherwise a key rotation that excludes the tail of a run
+  // from `positions` would let that unchecked tail pass as identical.
+  const fullyCompared = positions.length === a.length && positions.length === b.length;
   let firstDivergence: number | null = null;
   let applicable = false;
   for (const i of positions) {
@@ -133,7 +159,7 @@ function compareTagField(
     aligned,
     compared: positions.length,
     applicable,
-    identical: aligned && applicable && firstDivergence === null,
+    identical: fullyCompared && applicable && firstDivergence === null,
     first_divergence: firstDivergence,
   };
 }
@@ -171,6 +197,69 @@ function toolArgsFingerprint(c: ComparableCommitment): string | null {
   return entries.sort().join(',');
 }
 
+/** tool_result_tags is a bag of hashes (the dual of tool_arg_tags, covering
+ * tool output fed back into the next request - an input to the run just as
+ * much as the prompt). Same fingerprint shape: sorted join, '' for an
+ * explicit empty list, null when absent or malformed. */
+function toolResultsFingerprint(c: ComparableCommitment): string | null {
+  const raw = c.tool_result_tags;
+  if (!Array.isArray(raw)) return null;
+  const entries: string[] = [];
+  for (const tag of raw) {
+    if (!isHex64(tag)) return null;
+    entries.push(tag);
+  }
+  return entries.sort().join(',');
+}
+
+/**
+ * Same join rule as compareTagField (both sides must share the key at a
+ * position, and every position must have been checked for `identical` to be
+ * true), plus: a position where either side flagged its bag as truncated
+ * (`tool_args_truncated` / `tool_results_truncated`) can never count toward
+ * `identical`, even when the kept entries happen to match - the dropped tail
+ * is exactly the content a truncation flag says we did not see.
+ */
+function compareTruncatableBaggedField(
+  a: ComparableCommitment[],
+  b: ComparableCommitment[],
+  positions: number[],
+  pick: (c: ComparableCommitment) => string | null,
+  isTruncated: (c: ComparableCommitment) => boolean,
+): TagDimension {
+  const aligned = a.length === b.length;
+  const fullyCompared = positions.length === a.length && positions.length === b.length;
+  let firstDivergence: number | null = null;
+  let applicable = false;
+  let anyTruncated = false;
+  for (const i of positions) {
+    const truncA = isTruncated(a[i]!);
+    const truncB = isTruncated(b[i]!);
+    if (truncA || truncB) anyTruncated = true;
+    const tagA = pick(a[i]!);
+    const tagB = pick(b[i]!);
+    if (tagA !== null || tagB !== null) applicable = true;
+    if (firstDivergence === null && (tagA !== tagB || truncA || truncB)) firstDivergence = i;
+  }
+  return {
+    count_a: a.length,
+    count_b: b.length,
+    aligned,
+    compared: positions.length,
+    applicable,
+    identical: fullyCompared && applicable && firstDivergence === null && !anyTruncated,
+    first_divergence: firstDivergence,
+  };
+}
+
+function toolArgsTruncatedAt(c: ComparableCommitment): boolean {
+  return c.tool_args_truncated === true;
+}
+
+function toolResultsTruncatedAt(c: ComparableCommitment): boolean {
+  return c.tool_results_truncated === true;
+}
+
 function graphNodeTypes(bundle: ComparableBundleShape): string[] {
   const nodes = bundle.execution_graph?.nodes;
   if (!Array.isArray(nodes)) return [];
@@ -179,10 +268,38 @@ function graphNodeTypes(bundle: ComparableBundleShape): string[] {
     .filter((t): t is string => typeof t === 'string');
 }
 
+function observationNamesOf(bundle: ComparableBundleShape, field: keyof NonNullable<ComparableBundleShape['observations']>): string[] {
+  const names = bundle.observations?.[field];
+  if (!Array.isArray(names)) return [];
+  return names.filter((t): t is string => typeof t === 'string');
+}
+
 function toolsUsed(bundle: ComparableBundleShape): string[] {
-  const tools = bundle.observations?.tools_used;
-  if (!Array.isArray(tools)) return [];
-  return tools.filter((t): t is string => typeof t === 'string');
+  return observationNamesOf(bundle, 'tools_used');
+}
+
+function domainsContacted(bundle: ComparableBundleShape): string[] {
+  return observationNamesOf(bundle, 'domains_contacted');
+}
+
+function filesTouched(bundle: ComparableBundleShape): string[] {
+  return observationNamesOf(bundle, 'files_touched');
+}
+
+function processesSpawned(bundle: ComparableBundleShape): string[] {
+  return observationNamesOf(bundle, 'processes_spawned');
+}
+
+/** All four signed, name-only observation sets merged into one set, so a
+ * divergence in domains contacted, files touched or processes spawned is
+ * caught the same way a tools_used divergence already was. */
+function allObservationNames(bundle: ComparableBundleShape): Set<string> {
+  const out = new Set<string>();
+  for (const n of toolsUsed(bundle)) out.add(n);
+  for (const n of domainsContacted(bundle)) out.add(n);
+  for (const n of filesTouched(bundle)) out.add(n);
+  for (const n of processesSpawned(bundle)) out.add(n);
+  return out;
 }
 
 function modelSet(bundle: ComparableBundleShape): Set<string> {
@@ -219,10 +336,14 @@ function compareActions(a: ComparableBundleShape, b: ComparableBundleShape): Act
     }
   }
   const sameLength = typesA.length === typesB.length;
-  const toolsA = new Set(toolsUsed(a));
-  const toolsB = new Set(toolsUsed(b));
-  const a_only = [...toolsA].filter((t) => !toolsB.has(t)).sort();
-  const b_only = [...toolsB].filter((t) => !toolsA.has(t)).sort();
+  // When the graph sequences differ only in length (every shared position
+  // matched), the shorter one's end IS the divergence point - leaving
+  // first_divergence null there would hide a real difference.
+  if (!sameLength && firstDivergence === null) firstDivergence = n;
+  const namesA = allObservationNames(a);
+  const namesB = allObservationNames(b);
+  const a_only = [...namesA].filter((t) => !namesB.has(t)).sort();
+  const b_only = [...namesB].filter((t) => !namesA.has(t)).sort();
   const identical = sameLength && firstDivergence === null && a_only.length === 0 && b_only.length === 0;
   return { identical, first_divergence: firstDivergence, a_only, b_only };
 }
@@ -277,6 +398,7 @@ export function compareBundles(a: unknown, b: unknown): CompareBundlesResult {
       prompts: empty,
       responses: empty,
       tool_args: empty,
+      tool_results: empty,
       wire: empty,
       actions,
       models,
@@ -297,6 +419,7 @@ export function compareBundles(a: unknown, b: unknown): CompareBundlesResult {
       prompts: empty,
       responses: empty,
       tool_args: empty,
+      tool_results: empty,
       wire: empty,
       actions,
       models,
@@ -305,22 +428,30 @@ export function compareBundles(a: unknown, b: unknown): CompareBundlesResult {
 
   const prompts = compareTagField(commitmentsA, commitmentsB, positions, singleTag('prompt_canon_tag'));
   const responses = compareTagField(commitmentsA, commitmentsB, positions, singleTag('response_tag'));
-  const tool_args = compareTagField(commitmentsA, commitmentsB, positions, toolArgsFingerprint);
+  const tool_args = compareTruncatableBaggedField(commitmentsA, commitmentsB, positions, toolArgsFingerprint, toolArgsTruncatedAt);
+  const tool_results = compareTruncatableBaggedField(commitmentsA, commitmentsB, positions, toolResultsFingerprint, toolResultsTruncatedAt);
   const wire = compareTagField(commitmentsA, commitmentsB, positions, wireTag);
 
   const anyTruncated = truncated(bundleA) || truncated(bundleB);
+  // Some, but not all, of A/B's positions fall in the shared-key overlap
+  // checked above: a key rotated mid-run. Distinct from truncated (a
+  // capped list) and kid_mismatch (zero shared positions).
+  const partialKidOverlap = positions.length < Math.max(commitmentsA.length, commitmentsB.length);
 
   return {
     comparable: true,
-    ...(anyTruncated ? { reason: 'truncated' as const } : {}),
+    ...(partialKidOverlap ? { reason: 'partial_kid_overlap' as const } : anyTruncated ? { reason: 'truncated' as const } : {}),
     kid,
     // When either side truncated its commitment list, `identical` must never
     // claim equality: the untruncated tail could differ without ever being
     // represented in either array (design doc section 8, "False identical
-    // from truncation").
+    // from truncation"). compareTagField/compareTruncatableBaggedField
+    // already force `identical:false` on a partial key overlap, since
+    // `compared` can never equal count_a/count_b in that case.
     prompts: anyTruncated ? { ...prompts, identical: false } : prompts,
     responses: anyTruncated ? { ...responses, identical: false } : responses,
     tool_args: anyTruncated ? { ...tool_args, identical: false } : tool_args,
+    tool_results: anyTruncated ? { ...tool_results, identical: false } : tool_results,
     wire: anyTruncated ? { ...wire, identical: false } : wire,
     actions,
     models,

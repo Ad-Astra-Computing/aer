@@ -60,28 +60,39 @@ describe('compareBundles - no plaintext discipline', () => {
     expect(JSON.stringify(res)).not.toContain(SECRET);
   });
 
-  it('bounds every string in the result recursively, not just top-level', () => {
-    const a = bundle();
-    const b = bundle();
+  it('every tag field in the result is either an opaque 16/64-char hex value or null, even with a long string planted on a divergent position', () => {
+    // Exercise an actual divergence (unlike the identical-bundles case,
+    // which never visits a position where a secret-shaped tag would differ)
+    // so this proves the bound holds exactly where a leak would show up.
+    // actions.a_only/b_only are excluded deliberately: that one field echoes
+    // free-text tools_used verbatim, by design (see the next test) and is
+    // not part of this claim.
+    const LONG_SECRET = 'y'.repeat(200);
+    const a = bundle({ content_commitments: [commitment({ prompt_canon_tag: TAG_A1, request_ref: LONG_SECRET })] });
+    const b = bundle({ content_commitments: [commitment({ prompt_canon_tag: TAG_B1 })] });
     const res = compareBundles(a, b);
+    const { a_only, b_only, ...rest } = res.actions;
     const walk = (v: unknown): void => {
       if (typeof v === 'string') expect(v.length).toBeLessThanOrEqual(64);
       else if (Array.isArray(v)) v.forEach(walk);
       else if (typeof v === 'object' && v !== null) Object.values(v).forEach(walk);
     };
-    walk(res);
+    walk({ ...res, actions: rest });
+    expect(JSON.stringify(res)).not.toContain(LONG_SECRET);
   });
 
-  it('a_only/b_only carry free-text tools_used strings - documents the one echo path, bounded to the schema cap', () => {
+  it('a_only/b_only echo free-text tools_used strings verbatim - documents the one echo path, with no length bound applied', () => {
     // observations.tools_used is free-text in the signed bundle (names, per
-    // AGENTS.md), so compareBundles DOES echo it back through a_only/b_only.
-    // This is a known, bundle-already-signed-it exception to "opaque tags
-    // only", recorded here so a future change cannot widen it unnoticed.
+    // AGENTS.md), so compareBundles DOES echo it back through a_only/b_only,
+    // and does NOT bound its length the way an opaque tag is bounded. This
+    // is a known, bundle-already-signed-it exception to "opaque tags only",
+    // recorded here so a future change cannot widen it unnoticed.
     const LONG_TOOL_NAME = 'x'.repeat(100);
     const a = bundle({ observations: { domains_contacted: [], tools_used: [LONG_TOOL_NAME], files_touched: [], processes_spawned: [] } });
     const b = bundle({ observations: { domains_contacted: [], tools_used: [], files_touched: [], processes_spawned: [] } });
     const res = compareBundles(a, b);
     expect(res.actions.a_only).toEqual([LONG_TOOL_NAME]);
+    expect(LONG_TOOL_NAME.length).toBeGreaterThan(64);
   });
 });
 
@@ -195,6 +206,48 @@ describe('compareBundles - tool_arg_tags', () => {
     expect(res.tool_args.identical).toBe(false);
     expect(res.tool_args.first_divergence).toBe(0);
   });
+
+  it('never reports identical when either side flagged tool_args_truncated, even though the kept entries match (regression: a capped bag must not hide its dropped tail)', () => {
+    const a = bundle({ content_commitments: [commitment({ tool_arg_tags: [{ tool: 'bash', tag: TOOL_TAG_1 }], tool_args_truncated: true })] });
+    const b = bundle({ content_commitments: [commitment({ tool_arg_tags: [{ tool: 'bash', tag: TOOL_TAG_1 }] })] });
+    const res = compareBundles(a, b);
+    expect(res.tool_args.identical).toBe(false);
+    expect(res.tool_args.first_divergence).toBe(0);
+  });
+});
+
+describe('compareBundles - tool_result_tags', () => {
+  const RESULT_TAG_1 = '5'.repeat(64);
+  const RESULT_TAG_2 = '6'.repeat(64);
+
+  it('compares tool result tag bags order-independently', () => {
+    const a = bundle({ content_commitments: [commitment({ tool_result_tags: [RESULT_TAG_1, RESULT_TAG_2] })] });
+    const b = bundle({ content_commitments: [commitment({ tool_result_tags: [RESULT_TAG_2, RESULT_TAG_1] })] });
+    const res = compareBundles(a, b);
+    expect(res.tool_results.identical).toBe(true);
+  });
+
+  it('detects a differing tool result tag - tool output fed back into the next request is an input too', () => {
+    const a = bundle({ content_commitments: [commitment({ tool_result_tags: [RESULT_TAG_1] })] });
+    const b = bundle({ content_commitments: [commitment({ tool_result_tags: [RESULT_TAG_2] })] });
+    const res = compareBundles(a, b);
+    expect(res.tool_results.identical).toBe(false);
+    expect(res.tool_results.first_divergence).toBe(0);
+  });
+
+  it('never reports identical when either side flagged tool_results_truncated', () => {
+    const a = bundle({ content_commitments: [commitment({ tool_result_tags: [RESULT_TAG_1], tool_results_truncated: true })] });
+    const b = bundle({ content_commitments: [commitment({ tool_result_tags: [RESULT_TAG_1] })] });
+    const res = compareBundles(a, b);
+    expect(res.tool_results.identical).toBe(false);
+  });
+
+  it('not applicable when neither side ever emitted tool_result_tags', () => {
+    const res = compareBundles(bundle(), bundle());
+    // the shared bundle() fixture has no tool_result_tags on its commitment
+    expect(res.tool_results.applicable).toBe(false);
+    expect(res.tool_results.identical).toBe(false);
+  });
 });
 
 describe('compareBundles - actions and models', () => {
@@ -206,6 +259,33 @@ describe('compareBundles - actions and models', () => {
     expect(res.actions.first_divergence).toBe(1);
     expect(res.actions.a_only).toEqual(['bash']);
     expect(res.actions.b_only).toEqual(['curl']);
+  });
+
+  it('sets first_divergence to the shorter sequence length when graphs differ only in length', () => {
+    const a = bundle({ execution_graph: { nodes: [{ type: 'llm.requested' }, { type: 'llm.completed' }, { type: 'tool.selected' }], edges: [] } });
+    const b = bundle({ execution_graph: { nodes: [{ type: 'llm.requested' }, { type: 'llm.completed' }], edges: [] } });
+    const res = compareBundles(a, b);
+    expect(res.actions.identical).toBe(false);
+    expect(res.actions.first_divergence).toBe(2);
+  });
+
+  it('catches a divergence in domains contacted even when tools_used matches (regression: outcomes beyond tool names must be compared)', () => {
+    const a = bundle({ observations: { domains_contacted: ['evil.example'], tools_used: ['bash'], files_touched: [], processes_spawned: [] } });
+    const b = bundle({ observations: { domains_contacted: [], tools_used: ['bash'], files_touched: [], processes_spawned: [] } });
+    const res = compareBundles(a, b);
+    expect(res.actions.identical).toBe(false);
+    expect(res.actions.a_only).toEqual(['evil.example']);
+  });
+
+  it('catches a divergence in files touched and processes spawned, all four observation sets together', () => {
+    const a = bundle({
+      observations: { domains_contacted: [], tools_used: [], files_touched: ['/etc/passwd'], processes_spawned: ['curl'] },
+    });
+    const b = bundle({ observations: { domains_contacted: [], tools_used: [], files_touched: [], processes_spawned: [] } });
+    const res = compareBundles(a, b);
+    expect(res.actions.identical).toBe(false);
+    expect(res.actions.a_only).toEqual(['/etc/passwd', 'curl']);
+    expect(res.actions.b_only).toEqual([]);
   });
 
   it('flags a model mismatch independently of the commitment comparison', () => {
@@ -230,24 +310,69 @@ describe('compareBundles - kid mismatch and missing commitments', () => {
     expect(res.prompts.count_b).toBe(1);
   });
 
-  it('a partial kid overlap excludes the rotated position from every dimension, instead of reporting it as a divergence', () => {
-    // Run A rotates keys mid-session (K1 then K2); run B stayed on K1 for
-    // both positions. Position 0 is comparable (both K1, same tag); position
-    // 1 is a key boundary on A's side, not comparable, and must not surface
-    // as a content difference.
-    const a = bundle({ content_commitments: [commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }), commitment({ kid: KID_2, prompt_canon_tag: TAG_A2 })] });
-    const b = bundle({ content_commitments: [commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }), commitment({ kid: KID_1, prompt_canon_tag: TAG_B1 })] });
+  it('a partial kid overlap never reports identical, even when every checked position matches (regression: mid-run key rotation must not silently pass)', () => {
+    // A commits [T1,T2,T2] under K1. B commits T1 under K1, then rotates
+    // to K2 for [T3,T3] - genuinely different from A's T2,T2. Only
+    // position 0 shares a key; whoever holds AER_COMMITMENT_KEY for B
+    // controls when they rotate, and must not be able to buy a clean
+    // "identical:true" by rotating away every position they want
+    // unverifiable.
+    const a = bundle({
+      content_commitments: [
+        commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }),
+        commitment({ kid: KID_1, prompt_canon_tag: TAG_A2 }),
+        commitment({ kid: KID_1, prompt_canon_tag: TAG_A2 }),
+      ],
+    });
+    const b = bundle({
+      content_commitments: [
+        commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }),
+        commitment({ kid: KID_2, prompt_canon_tag: TAG_B1 }),
+        commitment({ kid: KID_2, prompt_canon_tag: TAG_B1 }),
+      ],
+    });
     const res = compareBundles(a, b);
     expect(res.comparable).toBe(true);
+    expect(res.reason).toBe('partial_kid_overlap');
     expect(res.kid).toBe(KID_1);
-    expect(res.prompts.identical).toBe(true);
-    expect(res.prompts.first_divergence).toBeNull();
-    // identical:true is a claim about the COMPARED positions only; `compared`
-    // (1) being less than count_a/count_b (2) is how a caller tells "fully
-    // checked" apart from "checked as far as the shared key allowed".
+    // Position 0 matched, but `identical` must be false: only 1 of 3
+    // positions was ever checked, and `identical:true` must never be a
+    // claim about anything less than the whole run.
+    expect(res.prompts.identical).toBe(false);
     expect(res.prompts.compared).toBe(1);
-    expect(res.prompts.count_a).toBe(2);
-    expect(res.prompts.count_b).toBe(2);
+    expect(res.prompts.count_a).toBe(3);
+    expect(res.prompts.count_b).toBe(3);
+    // Every tag dimension carries the same partial-coverage refusal, not
+    // just prompts.
+    expect(res.responses.identical).toBe(false);
+    expect(res.tool_args.identical).toBe(false);
+    expect(res.tool_results.identical).toBe(false);
+    expect(res.wire.identical).toBe(false);
+  });
+
+  it('a fully-covered run with a mid-run key rotation on BOTH sides can still report identical', () => {
+    // Contrast case: both sides rotate from K1 to K2 at the same position,
+    // with matching content throughout. Every position is covered by some
+    // shared-key segment, so `compared` reaches count_a/count_b and
+    // `identical:true` is an honest claim about the whole run - this is not
+    // what partial_kid_overlap is for.
+    const a = bundle({
+      content_commitments: [
+        commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }),
+        commitment({ kid: KID_2, prompt_canon_tag: TAG_A2 }),
+      ],
+    });
+    const b = bundle({
+      content_commitments: [
+        commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }),
+        commitment({ kid: KID_2, prompt_canon_tag: TAG_A2 }),
+      ],
+    });
+    const res = compareBundles(a, b);
+    expect(res.comparable).toBe(true);
+    expect(res.reason).toBeUndefined();
+    expect(res.prompts.identical).toBe(true);
+    expect(res.prompts.compared).toBe(2);
   });
 
   it('reports the kid as null when more than one distinct kid is shared across comparable positions', () => {
