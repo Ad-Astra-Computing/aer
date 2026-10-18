@@ -250,4 +250,42 @@ describe('SessionStart baseline', () => {
     const event: HookEvent = { kind: 'tool_start', cwd };
     expect(computeConfigBaselinePlan(event, cwd, home)).toEqual([]);
   });
+
+  it('does not repeat prior_unknown across a simulated resume for an unchanged file', () => {
+    fs.mkdirSync(path.join(cwd, '.claude'), { recursive: true });
+    const file = path.join(cwd, '.claude', 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash'] } }));
+
+    const state: SessionState = freshState(T);
+    const event1: HookEvent = { kind: 'session_start', cwd };
+    applyConfigBaselinePlan(event1, state, computeConfigBaselinePlan(event1, cwd, home), T);
+    expect(event1.configChangeShapes?.length).toBe(1);
+    expect(event1.configChangeShapes?.[0]?.payload['config_changes']).toEqual(['prior_unknown']);
+
+    // SessionStart fires again on resume/clear/compact within the same
+    // session; the state file already holds a snapshot for this path, and
+    // the file has not changed, so this must emit nothing.
+    const event2: HookEvent = { kind: 'session_start', cwd };
+    applyConfigBaselinePlan(event2, state, computeConfigBaselinePlan(event2, cwd, home), T + 1000);
+    expect(event2.configChangeShapes).toBeUndefined();
+  });
+
+  it('diffs against the stored baseline on resume instead of repeating prior_unknown', () => {
+    fs.mkdirSync(path.join(cwd, '.claude'), { recursive: true });
+    const file = path.join(cwd, '.claude', 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ permissions: { allow: [] } }));
+
+    const state: SessionState = freshState(T);
+    const event1: HookEvent = { kind: 'session_start', cwd };
+    applyConfigBaselinePlan(event1, state, computeConfigBaselinePlan(event1, cwd, home), T);
+    expect(event1.configChangeShapes?.[0]?.payload['config_changes']).toEqual(['prior_unknown']);
+
+    // The file changed between the first SessionStart and a resume later in
+    // the same session: this is a real diff, not another prior_unknown.
+    fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash'] } }));
+    const event2: HookEvent = { kind: 'session_start', cwd };
+    applyConfigBaselinePlan(event2, state, computeConfigBaselinePlan(event2, cwd, home), T + 1000);
+    expect(event2.configChangeShapes?.length).toBe(1);
+    expect(event2.configChangeShapes?.[0]?.payload['config_changes']).toEqual(['allow_broadened']);
+  });
 });

@@ -161,15 +161,26 @@ export function computeConfigBaselinePlan(event: HookEvent, cwdFallback: string,
 }
 
 /** The sync half for SessionStart: no writer attribution (nothing wrote
- *  anything; this is the state found at the start), and no no-op short
- *  circuit (there is, by definition, no prior snapshot for this session
- *  yet). Still stores each snapshot, so the first real ConfigChange has a
- *  baseline to diff against instead of reading `prior_unknown`. */
+ *  anything; this is the state found at the start). SessionStart also fires
+ *  on resume/clear/compact within a session whose state file already holds
+ *  a snapshot from earlier in that same logical session, so a stored
+ *  snapshot for this path is diffed against rather than unconditionally
+ *  reporting `prior_unknown`; a true no-op (matching content hash and
+ *  status) emits nothing at all. `prior_unknown` is reserved for a path with
+ *  genuinely no stored snapshot yet. Still stores each snapshot, so the
+ *  next baseline or real ConfigChange has something to diff against. */
 export function applyConfigBaselinePlan(event: HookEvent, state: SessionState, plan: ConfigBaselinePlan, now: number): void {
   for (const entry of plan) {
     const salt = ensureConfigSalt(state);
     const contentHash = saltedContentHash(salt, entry.bytes);
-    appendConfigChangedShape(event, entry, 'session_start', ['prior_unknown'], 'none_observed');
+    const stored = state.configSnapshots?.[entry.resolvedPath];
+    const isNoOp = stored !== undefined &&
+      stored.contentHash === contentHash &&
+      stored.snapshot.config_status === entry.snapshot.config_status;
+    if (!isNoOp) {
+      const labels = stored === undefined ? ['prior_unknown'] : diffConfigChanges({ prev: stored.snapshot, next: entry.snapshot });
+      appendConfigChangedShape(event, entry, 'session_start', labels, 'none_observed');
+    }
     storeConfigSnapshot(state, entry.resolvedPath, entry.snapshot, contentHash, now);
   }
 }
