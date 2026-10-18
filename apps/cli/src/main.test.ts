@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main } from './main.js';
+import { main, resolveEnvironmentChoice } from './main.js';
 
 // process.exit really would end the test worker, so every path that reaches
 // it is exercised through this stub, which turns the call into a thrown
@@ -338,5 +338,43 @@ describe('aer audit', () => {
   it('an unknown audit subcommand is a usage error, not a silent list', async () => {
     await expect(main(['audit', 'purge'])).rejects.toThrow(ProcessExitCalled);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('resolveEnvironmentChoice', () => {
+  const ENVS = [{ environment_id: 'laptop', session_count: 4 }, { environment_id: 'ci', session_count: 1 }];
+
+  it('a blank answer is blank', () => {
+    expect(resolveEnvironmentChoice('', ENVS)).toEqual({ kind: 'blank' });
+    expect(resolveEnvironmentChoice('   ', ENVS)).toEqual({ kind: 'blank' });
+  });
+
+  it('a valid index picks the existing environment', () => {
+    expect(resolveEnvironmentChoice('1', ENVS)).toEqual({ kind: 'existing', id: 'ci' });
+    expect(resolveEnvironmentChoice('0', ENVS)).toEqual({ kind: 'existing', id: 'laptop' });
+  });
+
+  it('an out-of-range index is invalid, not a new environment literally named "5"', () => {
+    const choice = resolveEnvironmentChoice('5', ENVS);
+    expect(choice.kind).toBe('invalid');
+  });
+
+  it('a non-numeric answer is a new name', () => {
+    expect(resolveEnvironmentChoice('staging', ENVS)).toEqual({ kind: 'new', name: 'staging' });
+  });
+
+  it('strips control characters from a name rather than rejecting it', () => {
+    const choice = resolveEnvironmentChoice('office\x07desk', ENVS);
+    expect(choice).toEqual({ kind: 'new', name: 'officedesk' });
+  });
+
+  it('rejects an over-length name instead of silently truncating it into the stored id', () => {
+    const choice = resolveEnvironmentChoice('x'.repeat(200), ENVS);
+    expect(choice.kind).toBe('invalid');
+    if (choice.kind === 'invalid') expect(choice.message).toMatch(/too long/);
+  });
+
+  it('an empty environments list makes every numeric answer invalid, never a crash', () => {
+    expect(resolveEnvironmentChoice('0', [])).toEqual({ kind: 'invalid', message: expect.stringContaining('No environment at index 0') });
   });
 });

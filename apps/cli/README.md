@@ -93,8 +93,10 @@ npx @adastracomputing/aer link --create-agent my-agent
 
 Writes or updates `aer.config.json` in the current directory using the
 tenant from `aer login`: `tenant_id`, the chosen `agent_id`, an `env_id`
-(kept if one already exists, otherwise generated) and `base_url`. Unknown
-fields already in the file are preserved. Never writes the API key; that
+(kept if one already exists; on a terminal with none yet, offers the
+environment names already seen on this tenant and lets you name a new one,
+falling back to a generated id if you leave it blank) and `base_url`.
+Unknown fields already in the file are preserved. Never writes the API key; that
 stays in the credentials file. Outside a terminal, pass `--agent <id>` or
 `--create-agent <name>` explicitly.
 
