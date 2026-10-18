@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.2
+
+### Patch Changes
+
+- [`68adc12`](https://github.com/Ad-Astra-Computing/aer/commit/68adc126f6fa94ea343e9d0df414c947577fc39f) - Record opencode's `permission.asked`/`permission.replied` bus events as `approval.decided`, closing the one harness with no oversight-marker coverage. Reads both the pinned SDK type declarations' field names and the ones actually observed on a live run of the current opencode-ai binary, which disagree with those declarations.
+- [`4ff3787`](https://github.com/Ad-Astra-Computing/aer/commit/4ff3787ded34d335ad86f3f49055538562811b4d) - Fix three gaps in the model-to-vendor mapping used for usage-metadata
+  events: a bare `codex` model name with no codename resolved to
+  `undefined`, one provider's harness/vendor relationship comment was lost
+  in an earlier trim, and a new codename from the live model picker needed
+  the same bare-form fallback an earlier one already had.
+
 ## 0.13.1
 
 ### Patch Changes
