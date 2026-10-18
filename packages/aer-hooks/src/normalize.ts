@@ -27,7 +27,7 @@
 
 import { createHash } from 'node:crypto';
 import { shapesOfToolCall, vcsPushTargetOfToolCall, patchFileCount, PATCH_FILE_CAP, type ToolShape } from './tool-shape.js';
-import { CONFIG_SOURCES, type ConfigSource } from './config-snapshot.js';
+import { CONFIG_SOURCES, commandNamesConfigPath, type ConfigSource } from './config-snapshot.js';
 
 export type HookKind =
   | 'session_start'
@@ -165,6 +165,13 @@ export interface HookEvent {
    * carry a `file_path` key for this event type at all).
    */
   configFilePath?: string | undefined;
+  /**
+   * ConfigChange writer attribution (Claude Code only): whether a Bash
+   * PreToolUse's command text names a settings/skills path, tested once
+   * here against the raw command before this module discards it. Set only
+   * at `tool_start` when `tool === 'Bash'`; never put on an emitted payload.
+   */
+  configBashNamed?: boolean | undefined;
   /**
    * The `config.changed` event(s) this ConfigChange (or, for a baseline
    * read, this `session_start`) produced, computed by
@@ -417,7 +424,15 @@ export function normalizeClaudeCode(payload: unknown, lifecycle: Lifecycle = 1):
   if (kind === 'tool_start' || kind === 'tool_end') {
     putToolFields(event, p['tool_name'], p['tool_input']);
   }
-  if (kind === 'tool_start') putCallDigest(event, p['tool_name'], p['tool_input']);
+  if (kind === 'tool_start') {
+    putCallDigest(event, p['tool_name'], p['tool_input']);
+    // ConfigChange writer attribution: read once here, against the raw
+    // command text this module already holds, then never again.
+    if (asString(p['tool_name']) === 'Bash') {
+      const command = asString(asRecord(p['tool_input'])?.['command']);
+      event.configBashNamed = command !== undefined && commandNamesConfigPath(command);
+    }
+  }
   if (kind === 'permission') {
     event.permissionHook = permissionHookOf(eventName);
     putCallDigest(event, p['tool_name'], p['tool_input']);

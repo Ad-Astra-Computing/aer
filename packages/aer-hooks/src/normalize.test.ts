@@ -330,3 +330,25 @@ describe('ConfigChange (Claude Code only)', () => {
     expect(e.kind).toBe('other');
   });
 });
+
+describe('configBashNamed (writer attribution)', () => {
+  it('is true when a Bash PreToolUse command names a settings path', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sed -i "s/x/y/" .claude/settings.json' } });
+    expect(e.configBashNamed).toBe(true);
+  });
+
+  it('is false for an unrelated Bash command, never throwing on a missing one', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls -la' } });
+    expect(e.configBashNamed).toBe(false);
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} }).configBashNamed).toBe(false);
+  });
+
+  it('is never set for a non-Bash tool', () => {
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: '/repo/.claude/settings.json' } }).configBashNamed).toBeUndefined();
+  });
+
+  it('never rides the emitted meta: the raw command text is read once, then discarded', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'cat .claude/settings.json' } });
+    expect(JSON.stringify(e.meta ?? {})).not.toContain('settings.json');
+  });
+});

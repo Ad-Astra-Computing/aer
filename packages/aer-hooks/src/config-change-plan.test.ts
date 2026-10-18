@@ -137,7 +137,7 @@ describe('config-change-plan', () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({}));
     const state: SessionState = freshState(T);
-    stashConfigWriterOnToolStart(state, 'Bash', 'tu-shell', [], undefined, dir, 'sed -i "s/deny/allow/" .claude/settings.json', T);
+    stashConfigWriterOnToolStart(state, 'Bash', 'tu-shell', [], undefined, dir, commandNamesConfigPath('sed -i "s/deny/allow/" .claude/settings.json'), T);
     closeConfigWriterOnToolEnd(state, 'Bash', 'tu-shell');
 
     fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash'] } }));

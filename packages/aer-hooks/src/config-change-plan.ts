@@ -17,6 +17,7 @@ import {
   snapshotForSource, statusOnlySnapshot, diffConfigChanges, saltedContentHash,
   toFeaturePayload, type ConfigInternalSnapshot, type ConfigSource,
 } from './config-snapshot.js';
+export { commandNamesConfigPath } from './config-snapshot.js';
 import { WRITE_TOOLS } from './tool-shape.js';
 import { classifyPath } from './shared/path-class-mirror.js';
 import type { ToolShape } from './tool-shape.js';
@@ -178,21 +179,12 @@ function isConfigOrSkillPath(p: string): boolean {
   return segments.includes('.claude') && segments.includes('skills') && (segments[segments.length - 1] ?? '') === 'SKILL.md';
 }
 
-/** Command-text substrings that mark a Bash call as naming a settings/skills
- *  path (design doc 2.4). The text itself is read once here and discarded;
- *  only the boolean survives. */
-const SHELL_NAMED_MARKERS = ['.claude', 'settings.json', 'settings.local.json', 'managed-settings', 'SKILL.md'];
-
-export function commandNamesConfigPath(command: string): boolean {
-  return SHELL_NAMED_MARKERS.some((m) => command.includes(m));
-}
-
 /**
  * PreToolUse stashing, called for every tool_start regardless of harness
  * (a no-op for anything but Claude Code's write tools / Bash, since those
- * are the only shapes it looks for). `rawCommand` is read once, for the
- * `shell_named` test, and never stored; callers that have already discarded
- * it (every harness but Claude Code's own cli.ts path) pass undefined.
+ * are the only shapes it looks for). `bashNamed` is computed by
+ * normalize.ts from the raw command text, which it discards immediately
+ * after (see HookEvent.configBashNamed); only the boolean reaches here.
  */
 export function stashConfigWriterOnToolStart(
   state: SessionState,
@@ -201,7 +193,7 @@ export function stashConfigWriterOnToolStart(
   shapes: ToolShape[],
   cwd: string | undefined,
   cwdFallback: string,
-  rawCommand: string | undefined,
+  bashNamed: boolean | undefined,
   now: number,
 ): void {
   if (tool !== undefined && WRITE_TOOLS.has(tool)) {
@@ -215,8 +207,7 @@ export function stashConfigWriterOnToolStart(
     return;
   }
   if (tool === 'Bash' && toolUseId !== undefined) {
-    const named = rawCommand !== undefined && commandNamesConfigPath(rawCommand);
-    stashConfigShellOpen(state, toolUseId, named, now);
+    stashConfigShellOpen(state, toolUseId, bashNamed === true, now);
   }
 }
 

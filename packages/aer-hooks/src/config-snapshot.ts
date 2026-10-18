@@ -291,6 +291,15 @@ export function diffConfigChanges({ prev, next }: DiffInput): ConfigChangeLabel[
   return labels.slice(0, MAX_CONFIG_CHANGES);
 }
 
+/** Command-text substrings that mark a Bash call as naming a settings/skills
+ *  path (design doc 2.4): named here once, against text normalize.ts holds
+ *  only transiently, so only this boolean survives past the call site. */
+const SHELL_NAMED_MARKERS = ['.claude', 'settings.json', 'settings.local.json', 'managed-settings', 'SKILL.md'];
+
+export function commandNamesConfigPath(command: string): boolean {
+  return SHELL_NAMED_MARKERS.some((m) => command.includes(m));
+}
+
 /** The wire-safe subset of an internal snapshot, for the config.changed payload. */
 export function toFeaturePayload(s: ConfigFeatureSnapshot): ConfigFeatureSnapshot {
   return {
