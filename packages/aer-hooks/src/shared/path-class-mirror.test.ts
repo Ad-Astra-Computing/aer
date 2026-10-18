@@ -49,6 +49,8 @@ const VECTORS: ReadonlyArray<[string, ReturnType<typeof classifyPath>]> = [
   ['/home/x/.netrc', 'token_cache'],
   ['/home/x/Library/Keychains/login.keychain-db', 'keychain'],
   ['/home/x/.claude/settings.json', 'agent_config'],
+  ['/home/x/.claude/settings.local.json', 'agent_config'],
+  ['/etc/claude-code/managed-settings.json', 'agent_config'],
   ['/tmp/scratch.txt', 'tmp'],
   ['/home/x/.kube/config', 'kube'],
   ['/home/x/.bash_history', 'shell_history'],
