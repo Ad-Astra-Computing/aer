@@ -292,13 +292,15 @@ function processesSpawned(bundle: ComparableBundleShape): string[] {
 
 /** All four signed, name-only observation sets merged into one set, so a
  * divergence in domains contacted, files touched or processes spawned is
- * caught the same way a tools_used divergence already was. */
+ * caught the same way a tools_used divergence already was. Each entry is
+ * prefixed by its category - a tool named "bash" and a process named
+ * "bash" are different observations and must not cancel each other out. */
 function allObservationNames(bundle: ComparableBundleShape): Set<string> {
   const out = new Set<string>();
-  for (const n of toolsUsed(bundle)) out.add(n);
-  for (const n of domainsContacted(bundle)) out.add(n);
-  for (const n of filesTouched(bundle)) out.add(n);
-  for (const n of processesSpawned(bundle)) out.add(n);
+  for (const n of toolsUsed(bundle)) out.add(`tool:${n}`);
+  for (const n of domainsContacted(bundle)) out.add(`domain:${n}`);
+  for (const n of filesTouched(bundle)) out.add(`file:${n}`);
+  for (const n of processesSpawned(bundle)) out.add(`process:${n}`);
   return out;
 }
 
@@ -433,10 +435,12 @@ export function compareBundles(a: unknown, b: unknown): CompareBundlesResult {
   const wire = compareTagField(commitmentsA, commitmentsB, positions, wireTag);
 
   const anyTruncated = truncated(bundleA) || truncated(bundleB);
-  // Some, but not all, of A/B's positions fall in the shared-key overlap
-  // checked above: a key rotated mid-run. Distinct from truncated (a
-  // capped list) and kid_mismatch (zero shared positions).
-  const partialKidOverlap = positions.length < Math.max(commitmentsA.length, commitmentsB.length);
+  // A key rotated mid-run within the two lists' shared range: some, but
+  // not all, of the positions up to the SHORTER list's end share a kid.
+  // Measured against the shorter length (not the longer) so a plain
+  // length difference with no rotation - already `aligned:false` - is
+  // never mislabeled as a key rotation, and never masks `truncated`.
+  const partialKidOverlap = positions.length < Math.min(commitmentsA.length, commitmentsB.length);
 
   return {
     comparable: true,

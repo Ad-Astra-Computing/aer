@@ -91,7 +91,7 @@ describe('compareBundles - no plaintext discipline', () => {
     const a = bundle({ observations: { domains_contacted: [], tools_used: [LONG_TOOL_NAME], files_touched: [], processes_spawned: [] } });
     const b = bundle({ observations: { domains_contacted: [], tools_used: [], files_touched: [], processes_spawned: [] } });
     const res = compareBundles(a, b);
-    expect(res.actions.a_only).toEqual([LONG_TOOL_NAME]);
+    expect(res.actions.a_only).toEqual([`tool:${LONG_TOOL_NAME}`]);
     expect(LONG_TOOL_NAME.length).toBeGreaterThan(64);
   });
 });
@@ -257,8 +257,8 @@ describe('compareBundles - actions and models', () => {
     const res = compareBundles(a, b);
     expect(res.actions.identical).toBe(false);
     expect(res.actions.first_divergence).toBe(1);
-    expect(res.actions.a_only).toEqual(['bash']);
-    expect(res.actions.b_only).toEqual(['curl']);
+    expect(res.actions.a_only).toEqual(['tool:bash']);
+    expect(res.actions.b_only).toEqual(['tool:curl']);
   });
 
   it('sets first_divergence to the shorter sequence length when graphs differ only in length', () => {
@@ -274,7 +274,7 @@ describe('compareBundles - actions and models', () => {
     const b = bundle({ observations: { domains_contacted: [], tools_used: ['bash'], files_touched: [], processes_spawned: [] } });
     const res = compareBundles(a, b);
     expect(res.actions.identical).toBe(false);
-    expect(res.actions.a_only).toEqual(['evil.example']);
+    expect(res.actions.a_only).toEqual(['domain:evil.example']);
   });
 
   it('catches a divergence in files touched and processes spawned, all four observation sets together', () => {
@@ -284,7 +284,19 @@ describe('compareBundles - actions and models', () => {
     const b = bundle({ observations: { domains_contacted: [], tools_used: [], files_touched: [], processes_spawned: [] } });
     const res = compareBundles(a, b);
     expect(res.actions.identical).toBe(false);
-    expect(res.actions.a_only).toEqual(['/etc/passwd', 'curl']);
+    expect(res.actions.a_only).toEqual(['file:/etc/passwd', 'process:curl']);
+    expect(res.actions.b_only).toEqual([]);
+  });
+
+  it('a tool and a process with the same free-text name are different observations, not a cancelling match (regression)', () => {
+    // Before the category prefix, merging all four sets into one plain Set
+    // let a tool named "bash" on A cancel out a different process named
+    // "bash" on B, reporting identical:true while B never ran that tool.
+    const a = bundle({ observations: { domains_contacted: [], tools_used: ['bash'], files_touched: [], processes_spawned: ['bash'] } });
+    const b = bundle({ observations: { domains_contacted: [], tools_used: ['bash'], files_touched: [], processes_spawned: [] } });
+    const res = compareBundles(a, b);
+    expect(res.actions.identical).toBe(false);
+    expect(res.actions.a_only).toEqual(['process:bash']);
     expect(res.actions.b_only).toEqual([]);
   });
 
@@ -411,6 +423,23 @@ describe('compareBundles - truncation never claims identical', () => {
     expect(res.reason).toBe('truncated');
     expect(res.prompts.identical).toBe(false);
     expect(res.responses.identical).toBe(false);
+  });
+
+  it('a capped list with no key rotation reports truncated, not partial_kid_overlap (regression)', () => {
+    // A capped its commitment list to 1 entry under K1; B kept 2, also
+    // under K1 throughout - no rotation anywhere. The shorter list's one
+    // position is fully covered, so this must read as a cap, not a key
+    // boundary.
+    const a = bundle({
+      content_commitments: [commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 })],
+      content_commitments_truncated: true as const,
+    });
+    const b = bundle({
+      content_commitments: [commitment({ kid: KID_1, prompt_canon_tag: TAG_A1 }), commitment({ kid: KID_1, prompt_canon_tag: TAG_A2 })],
+    });
+    const res = compareBundles(a, b);
+    expect(res.comparable).toBe(true);
+    expect(res.reason).toBe('truncated');
   });
 });
 
