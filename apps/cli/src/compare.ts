@@ -75,8 +75,11 @@ async function loadBundle(
   if (bundlePath) {
     try {
       return JSON.parse(await readFile(bundlePath)) as Record<string, unknown>;
-    } catch (err) {
-      throw new Error(`could not read/parse bundle file: ${(err as Error).message}`);
+    } catch {
+      // Never echo err.message: JSON.parse's SyntaxError embeds a snippet of
+      // the unparsable input, which may hold bundle content a caller did not
+      // mean to put on stderr.
+      throw new Error(`could not read/parse bundle file: ${bundlePath}`);
     }
   }
   if (!id) throw new Error('missing an AER id (or --bundle-a/--bundle-b file).');
@@ -92,11 +95,15 @@ async function loadBundle(
 /**
  * CLI entry for `aer compare`. Returns { result, exitCode }. exitCode is 0
  * only when both bundles verified AND the comparison found no divergence on
- * any dimension that was comparable - so it is usable as a CI gate the way
- * `aer verify` is. A bundle that fails to verify, or two bundles that are not
- * comparable (different kid, or either has no commitments), always exit 1:
- * the caller must read `reason`/`comparison.reason` rather than assume
- * "passed" means "identical".
+ * every dimension AND every position was actually checked - so it is usable
+ * as a CI gate the way `aer verify` is. A bundle that fails to verify, two
+ * bundles that are not comparable (different kid, or either has no
+ * commitments), a `partial_kid_overlap` (one or both sides rotated their
+ * commitment key mid-run, so some positions were never checked), or a
+ * comparison where nothing was ever applicable, all always exit 1: the
+ * caller must read `reason`/`comparison.reason` rather than assume "passed"
+ * means "identical". A whoever-holds-AER_COMMITMENT_KEY rotation mid-session
+ * must never make the gate stop checking and still report success.
  */
 export async function runCompare(
   args: string[],
@@ -149,13 +156,21 @@ export async function runCompare(
   // divergence does - but it also never COUNTS toward "identical", so a
   // comparison with every dimension inapplicable still needs `comparable`
   // and no truncation to pass.
-  const noDivergence = [comparison.prompts, comparison.responses, comparison.tool_args, comparison.wire].every(
-    (dim) => !dim.applicable || dim.identical,
-  );
+  const noDivergence = [
+    comparison.prompts,
+    comparison.responses,
+    comparison.tool_args,
+    comparison.tool_results,
+    comparison.wire,
+  ].every((dim) => !dim.applicable || dim.identical);
   const identicalOnEveryDimension =
     comparison.comparable &&
     !comparison.reason &&
     noDivergence &&
+    // prompt_canon_tag is mandatory on every content commitment (@aer/schemas),
+    // so a comparison where it was never applicable checked nothing at all -
+    // exit 0 must not be reachable with zero content evidence behind it.
+    comparison.prompts.applicable &&
     comparison.actions.identical &&
     comparison.models.identical;
 

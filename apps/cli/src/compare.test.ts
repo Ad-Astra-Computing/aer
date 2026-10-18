@@ -5,7 +5,9 @@ import { parseCompareArgs, runCompare } from './compare.js';
 
 const TAG_1 = 'a'.repeat(64);
 const TAG_2 = 'b'.repeat(64);
+const TAG_3 = 'c'.repeat(64);
 const KID = '1'.repeat(16);
+const KID_2 = '2'.repeat(16);
 
 function commitment(overrides: Record<string, unknown> = {}) {
   return {
@@ -110,17 +112,27 @@ describe('runCompare', () => {
     expect(exitCode).toBe(0);
   });
 
-  it('fails closed: an UNSIGNED bundle on either side never produces a comparison, exit 1', async () => {
+  it('fails closed: an UNSIGNED bundle a, verified bundle b, never produces a comparison, exit 1', async () => {
+    const b = await signBundle(bundle('aer-b'));
     const files: Record<string, string> = {
       'a.json': JSON.stringify(bundle('aer-a')), // no integrity block
-      'b.json': JSON.stringify((await signBundle(bundle('aer-b'))).signed),
+      'b.json': JSON.stringify(b.signed),
     };
-    const fetchImpl = (async () => new Response('not found', { status: 404 })) as unknown as typeof fetch;
+    const fetchImpl = (async (url: string) => {
+      const u = String(url);
+      if (u.includes(b.kid)) return new Response(JSON.stringify({ signing_key_id: b.kid, sig_alg: 'Ed25519', public_key_hex: b.publicKeyHex }), { status: 200 });
+      return new Response('not found', { status: 404 });
+    }) as unknown as typeof fetch;
+    const trustRoot = { aerSigningKeys: [{ signing_key_id: b.kid, public_key_hex: b.publicKeyHex }], rekorLogs: [] };
     const { result, exitCode } = await runCompare(
       ['--bundle-a', 'a.json', '--bundle-b', 'b.json'],
-      { readFile: async (p) => files[p]!, fetchImpl },
+      { baseUrl: 'https://api.test', readFile: async (p) => files[p]!, fetchImpl, trustRoot },
     );
+    // Give B every chance to verify, so this test actually proves A alone
+    // fails closed - not that both sides were unverified, which would also
+    // satisfy the old assertion without proving anything about A.
     expect(result.bundle_a_verified).toBe(false);
+    expect(result.bundle_b_verified).toBe(true);
     expect(result.comparison).toBeNull();
     expect(result.reason).toBe('bundle_signature_unverified');
     expect(exitCode).toBe(1);
@@ -177,6 +189,94 @@ describe('runCompare', () => {
     expect(result.comparison?.responses.applicable).toBe(true);
     expect(result.comparison?.responses.identical).toBe(false);
     expect(exitCode).toBe(1);
+  });
+
+  it('exits non-zero on a mid-run commitment-key rotation that would otherwise hide diverging content (regression)', async () => {
+    // A commits [T1,T2,T2] under K1; B commits T1 under K1, then rotates
+    // to K2 for [T3,T3], genuinely different from A's T2,T2. Only position
+    // 0 shares a key, so rotating right after the first request must not
+    // make `aer compare` report a clean match.
+    const a = await signBundle(
+      bundle('aer-a', {
+        content_commitments: [
+          commitment({ kid: KID, prompt_canon_tag: TAG_1 }),
+          commitment({ kid: KID, prompt_canon_tag: TAG_2 }),
+          commitment({ kid: KID, prompt_canon_tag: TAG_2 }),
+        ],
+      }),
+    );
+    const b = await signBundle(
+      bundle('aer-b', {
+        content_commitments: [
+          commitment({ kid: KID, prompt_canon_tag: TAG_1 }),
+          commitment({ kid: KID_2, prompt_canon_tag: TAG_3 }),
+          commitment({ kid: KID_2, prompt_canon_tag: TAG_3 }),
+        ],
+      }),
+    );
+    const files: Record<string, string> = { 'a.json': JSON.stringify(a.signed), 'b.json': JSON.stringify(b.signed) };
+    const fetchImpl = (async (url: string) => {
+      const u = String(url);
+      if (u.includes(a.kid)) return new Response(JSON.stringify({ signing_key_id: a.kid, sig_alg: 'Ed25519', public_key_hex: a.publicKeyHex }), { status: 200 });
+      if (u.includes(b.kid)) return new Response(JSON.stringify({ signing_key_id: b.kid, sig_alg: 'Ed25519', public_key_hex: b.publicKeyHex }), { status: 200 });
+      return new Response('not found', { status: 404 });
+    }) as unknown as typeof fetch;
+    const trustRoot = {
+      aerSigningKeys: [
+        { signing_key_id: a.kid, public_key_hex: a.publicKeyHex },
+        { signing_key_id: b.kid, public_key_hex: b.publicKeyHex },
+      ],
+      rekorLogs: [],
+    };
+    const { result, exitCode } = await runCompare(
+      ['--bundle-a', 'a.json', '--bundle-b', 'b.json'],
+      { baseUrl: 'https://api.test', readFile: async (p) => files[p]!, fetchImpl, trustRoot },
+    );
+    expect(result.bundle_a_verified).toBe(true);
+    expect(result.bundle_b_verified).toBe(true);
+    expect(result.comparison?.comparable).toBe(true);
+    expect(result.comparison?.reason).toBe('partial_kid_overlap');
+    expect(result.comparison?.prompts.identical).toBe(false);
+    expect(exitCode).toBe(1);
+  });
+
+  it('exits non-zero when prompts was never applicable, even if nothing else diverged', async () => {
+    const a = await signBundle(bundle('aer-a', { content_commitments: [commitment({ prompt_canon_tag: 'not-hex64' })] }));
+    const b = await signBundle(bundle('aer-b', { content_commitments: [commitment({ prompt_canon_tag: 'also-not-hex64' })] }));
+    const files: Record<string, string> = { 'a.json': JSON.stringify(a.signed), 'b.json': JSON.stringify(b.signed) };
+    const fetchImpl = (async (url: string) => {
+      const u = String(url);
+      if (u.includes(a.kid)) return new Response(JSON.stringify({ signing_key_id: a.kid, sig_alg: 'Ed25519', public_key_hex: a.publicKeyHex }), { status: 200 });
+      if (u.includes(b.kid)) return new Response(JSON.stringify({ signing_key_id: b.kid, sig_alg: 'Ed25519', public_key_hex: b.publicKeyHex }), { status: 200 });
+      return new Response('not found', { status: 404 });
+    }) as unknown as typeof fetch;
+    const trustRoot = {
+      aerSigningKeys: [
+        { signing_key_id: a.kid, public_key_hex: a.publicKeyHex },
+        { signing_key_id: b.kid, public_key_hex: b.publicKeyHex },
+      ],
+      rekorLogs: [],
+    };
+    const { result, exitCode } = await runCompare(
+      ['--bundle-a', 'a.json', '--bundle-b', 'b.json'],
+      { baseUrl: 'https://api.test', readFile: async (p) => files[p]!, fetchImpl, trustRoot },
+    );
+    expect(result.comparison?.prompts.applicable).toBe(false);
+    expect(exitCode).toBe(1);
+  });
+
+  it('never echoes the unparsable file content on a JSON parse failure', async () => {
+    const SECRET_GARBLE = 'not-json-but-looks-like-SECRET-prompt-text{{{';
+    const files: Record<string, string> = { 'a.json': SECRET_GARBLE };
+    let caught: Error | null = null;
+    try {
+      await runCompare(['--bundle-a', 'a.json', '--bundle-b', 'b.json'], { readFile: async (p) => files[p] ?? '{}' });
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).not.toContain('SECRET');
+    expect(caught!.message).toContain('a.json');
   });
 
   it('fetches both bundles by id when no local file is given', async () => {
