@@ -141,7 +141,9 @@ print `verified`. To check records signed by your own test keys, use
   diffs their content commitments (prompt/response/wire/tool-argument/
   tool-result tags, position-aligned), their execution-graph action sequence
   and all four of their observation sets (tools used, domains contacted,
-  files touched, processes spawned). `comparable:false` with a `reason` of
+  files touched, processes spawned - each entry in `actions.a_only`/
+  `b_only` carries a `tool:`/`domain:`/`file:`/`process:` prefix naming
+  which set it came from). `comparable:false` with a `reason` of
   `kid_mismatch` means the two runs committed under different keys and no tag
   in one could ever equal a tag in the other - not "different", just not
   checkable; `no_commitments_a`/`no_commitments_b` means one side emitted no
