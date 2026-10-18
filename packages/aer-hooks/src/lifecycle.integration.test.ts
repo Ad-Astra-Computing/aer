@@ -260,12 +260,13 @@ describe('the record says how complete it is', () => {
     // call it for, read from the harness's own config rather than asserted.
     expect(all).toContain('"collector":"aer-hooks"');
     expect(all).toContain('"events_registered":["ConfigChange","PermissionDenied","PermissionRequest","PostToolUse","PreToolUse","SessionEnd","SessionStart","Stop","SubagentStart","SubagentStop","UserPromptSubmit"]');
-    // Two extra events: the SessionStart baseline finds the same
-    // just-installed settings.json under both user_settings (HOME) and
-    // project_settings (cwd), since this test points both at `home`.
+    // The SessionStart baseline finds the same just-installed settings.json
+    // under both user_settings (HOME) and project_settings (cwd), since this
+    // test points both at `home`; the second is the same file and content,
+    // so it is a true no-op and only one config.changed event is emitted.
     expect(all).toContain('"event_type":"config.changed"');
     // The closing marker counts what arrived and what never resolved.
-    expect(all).toContain('"events_emitted":9');
+    expect(all).toContain('"events_emitted":8');
     expect(all).toContain('"tools_unresolved":1');
   }, 60_000);
 });
