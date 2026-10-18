@@ -428,7 +428,7 @@ describe('config_change -> config.changed', () => {
     expect(events).toHaveLength(0);
   });
 
-  it('a config.changed payload never carries a decision-shaped key, and the hook never signals exit 2', () => {
+  it('a config.changed payload never carries a decision-shaped key', () => {
     const { sink, events } = fakeSink();
     const e: HookEvent = {
       kind: 'config_change',

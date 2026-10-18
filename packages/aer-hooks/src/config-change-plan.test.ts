@@ -190,7 +190,7 @@ describe('config-change-plan', () => {
     expect(commandNamesConfigPath('ls -la')).toBe(false);
   });
 
-  it('never throws given a malformed or huge settings file end to end, and never produces a decision-shaped payload', () => {
+  it('never throws given a malformed or huge settings file, and the payload never carries a decision-shaped key', () => {
     const huge = path.join(dir, 'huge.json');
     fs.writeFileSync(huge, Buffer.alloc(2 * 1024 * 1024));
     const state: SessionState = freshState(T);
