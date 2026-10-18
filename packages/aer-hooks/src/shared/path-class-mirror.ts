@@ -45,11 +45,17 @@ const SSH_HOST_KEY_RE = /^ssh_host_.+_key$/;
 const FIREBASE_ADMINSDK_RE = /^firebase-adminsdk-.+\.json$/;
 const AGENT_CONFIG_SEGMENT_BASENAME: ReadonlyArray<[string, string]> = [
   ['.claude', 'settings.json'],
+  ['.claude', 'settings.local.json'],
   ['.cursor', 'mcp.json'],
   ['.codex', 'config.toml'],
 ];
 const AGENT_CONFIG_SEGMENTS = new Set(['.gemini']);
-const AGENT_CONFIG_BASENAMES = new Set(['claude_desktop_config.json']);
+// Claude Code's enterprise-managed policy file: Linux /etc/claude-code/,
+// macOS /Library/Application Support/ClaudeCode/, Windows
+// C:\ProgramData\ClaudeCode\. classifyPath only splits on '/' (see
+// classifyPathForHashing's own backslash caveat), so the Windows path is
+// not matched here; cover it once a Windows-path convention exists.
+const AGENT_CONFIG_BASENAMES = new Set(['claude_desktop_config.json', 'managed-settings.json']);
 
 function isSecretMaterialPath(basename: string): boolean {
   if (SECRET_MATERIAL_BASENAMES.has(basename)) return true;
