@@ -91,6 +91,45 @@ describe('config-change-plan', () => {
     expect(event2.configChangeShapes).toBeUndefined();
   });
 
+  it('still emits when the status changes even though the hash matches (ok to unreadable)', () => {
+    const file = path.join(dir, 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ permissions: { allow: ['Bash'] } }));
+    const state: SessionState = freshState(T);
+    const e1 = configChangeEvent(file);
+    applyConfigChangePlan(e1, state, computeConfigChangePlan(e1, dir), T);
+    expect(e1.configChangeShapes?.length).toBe(1);
+
+    // Swap the file for a symlink: computeConfigChangePlan reads this as
+    // `unreadable` with zeroed bytes, which hashes identically to every
+    // other non-ok status's zeroed bytes. The status change alone must
+    // still produce an event.
+    fs.unlinkSync(file);
+    const real = path.join(dir, 'real.json');
+    fs.writeFileSync(real, 'irrelevant');
+    fs.symlinkSync(real, file);
+    const e2 = configChangeEvent(file);
+    applyConfigChangePlan(e2, state, computeConfigChangePlan(e2, dir), T + 1000);
+    expect(e2.configChangeShapes?.length).toBe(1);
+    expect(e2.configChangeShapes?.[0]?.payload['config_status']).toBe('unreadable');
+  });
+
+  it('still emits when a file goes from absent to unreadable', () => {
+    const file = path.join(dir, 'settings.json');
+    const state: SessionState = freshState(T);
+    const e1 = configChangeEvent(file);
+    applyConfigChangePlan(e1, state, computeConfigChangePlan(e1, dir), T);
+    expect(e1.configChangeShapes?.length).toBe(1);
+    expect(e1.configChangeShapes?.[0]?.payload['config_status']).toBe('absent');
+
+    const real = path.join(dir, 'real.json');
+    fs.writeFileSync(real, 'irrelevant');
+    fs.symlinkSync(real, file);
+    const e2 = configChangeEvent(file);
+    applyConfigChangePlan(e2, state, computeConfigChangePlan(e2, dir), T + 1000);
+    expect(e2.configChangeShapes?.length).toBe(1);
+    expect(e2.configChangeShapes?.[0]?.payload['config_status']).toBe('unreadable');
+  });
+
   it('emits a real change with the expected wire shape', () => {
     const file = path.join(dir, 'settings.json');
     fs.writeFileSync(file, JSON.stringify({ permissions: { allow: [] } }));

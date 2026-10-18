@@ -79,7 +79,17 @@ export function applyConfigChangePlan(event: HookEvent, state: SessionState, pla
   const salt = ensureConfigSalt(state);
   const contentHash = saltedContentHash(salt, plan.bytes);
   const stored = state.configSnapshots?.[plan.resolvedPath];
-  if (stored !== undefined && stored.contentHash === contentHash) return; // no-op reload: drop it entirely
+  // A status change (ok/absent/too_large/unreadable) is never a no-op, even
+  // when the bytes hash the same: every non-ok status hashes identically
+  // (zeroed bytes), so a symlink swap from `ok` to `unreadable`, or from
+  // `absent` to `unreadable`, must not collapse into the hash-only check.
+  if (
+    stored !== undefined &&
+    stored.contentHash === contentHash &&
+    stored.snapshot.config_status === plan.snapshot.config_status
+  ) {
+    return; // no-op reload: drop it entirely
+  }
 
   const labels = diffConfigChanges({ prev: stored?.snapshot, next: plan.snapshot });
   const writer = resolveConfigWriter(state, plan.resolvedPath, plan.configSource, labels, now);
