@@ -52,7 +52,7 @@ async function run(bin: string, args: string[], cwd = pkgRoot): Promise<Run> {
 
 const SUBCOMMANDS = [
   'init', 'doctor', 'smoke', 'ingest', 'import',
-  'verify', 'commitments', 'compare', 'webhooks', 'agents', 'sessions', 'findings', 'audit',
+  'verify', 'commitments', 'compare', 'webhooks', 'agents', 'sessions', 'findings', 'audit', 'mcp',
 ];
 
 // Same as run(), but with explicit environment values, for the cases where

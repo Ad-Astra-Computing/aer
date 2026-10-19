@@ -10,6 +10,12 @@ import { sanitizeForTerminal } from '../cli-error.js';
 export interface LoginOptions {
   baseUrlFlag?: string | undefined;
   noBrowser?: boolean;
+  /** The device-grant `client` string prefix, before `/<version>`. Default
+   * 'aer-cli'. `aer mcp login` passes 'aer-mcp' so the minted key's
+   * `cli_client` is labelled for an assistant in Settings, and the API can
+   * key its read-only-role cap and tenant opt-in refusal on that prefix
+   * (aer-mcp-server-design.md section 3.3, decision #8). */
+  clientName?: string;
 }
 
 export interface LoginDeps {
@@ -56,7 +62,7 @@ export async function cmdLogin(opts: LoginOptions, deps: LoginDeps): Promise<num
   try {
     const result = await runDeviceLogin({
       baseUrl,
-      client: `aer-cli/${deps.clientVersion}`,
+      client: `${opts.clientName ?? 'aer-cli'}/${deps.clientVersion}`,
       hostname,
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
       ...(deps.sleep ? { sleep: deps.sleep } : {}),
