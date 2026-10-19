@@ -76,17 +76,83 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+/** Real bytes, not UTF-16 code units: `.length` undercounts a cap by ~3x on
+ * multi-byte (e.g. CJK) content. */
+function byteSize(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
 /** Truncate a list field so the serialized structuredContent stays within
- * MAX_OUTPUT_BYTES, setting `truncated: true` rather than exceeding it. */
-function capList(result: Record<string, unknown>, listKey: string): Record<string, unknown> {
+ * MAX_OUTPUT_BYTES. For a tool with no cursor-based resumption contract
+ * (list_agents' filters are client-side only; get_session_hosts has no
+ * cursor at all), so the dropped tail is simply unreachable -- a smaller,
+ * honest result rather than exceeding the cap. */
+function capListSimple(result: Record<string, unknown>, listKey: string): Record<string, unknown> {
   const list = result[listKey];
   if (!Array.isArray(list)) return result;
   let out = { ...result };
-  while (JSON.stringify(out).length > MAX_OUTPUT_BYTES && Array.isArray(out[listKey]) && (out[listKey] as unknown[]).length > 0) {
-    const shrunk = (out[listKey] as unknown[]).slice(0, -1);
-    out = { ...out, [listKey]: shrunk, truncated: true };
+  while (byteSize(out) > MAX_OUTPUT_BYTES && Array.isArray(out[listKey]) && (out[listKey] as unknown[]).length > 0) {
+    out = { ...out, [listKey]: (out[listKey] as unknown[]).slice(0, -1), truncated: true };
   }
   return out;
+}
+
+/** This server's own cursor wrapper: `o1:<offset>:<upstreamCursor>`. */
+const CURSOR_PREFIX = 'o1:';
+
+function encodeCursor(offset: number, upstreamCursor: string | null | undefined): string {
+  return `${CURSOR_PREFIX}${offset}:${upstreamCursor ?? ''}`;
+}
+
+/** A cursor this server did not itself issue (the first call, or an
+ * adversarial string) decodes to offset 0 and is passed straight to the
+ * upstream route as ITS cursor -- that route's own validation is the
+ * backstop for a bogus value, this function never throws on one. */
+function decodeCursor(cursor: string | undefined): { offset: number; upstreamCursor: string | undefined } {
+  if (cursor === undefined || !cursor.startsWith(CURSOR_PREFIX)) return { offset: 0, upstreamCursor: cursor };
+  const rest = cursor.slice(CURSOR_PREFIX.length);
+  const sep = rest.indexOf(':');
+  if (sep === -1) return { offset: 0, upstreamCursor: cursor };
+  const offsetPart = rest.slice(0, sep);
+  const upstream = rest.slice(sep + 1);
+  if (!/^\d+$/.test(offsetPart)) return { offset: 0, upstreamCursor: cursor };
+  const offset = Number.parseInt(offsetPart, 10);
+  return { offset, upstreamCursor: upstream.length > 0 ? upstream : undefined };
+}
+
+/**
+ * Fetches one upstream page, applies any offset left over from a previous
+ * truncation, then caps the visible slice to MAX_OUTPUT_BYTES. When capping
+ * drops part of the page, `next_cursor` re-encodes the SAME upstream cursor
+ * plus the new offset: the next call re-fetches the identical upstream page
+ * (this API's cursor pagination is stable) and resumes at the first item
+ * that did not fit, rather than at the upstream's own next-page cursor,
+ * which would silently skip the untransmitted tail of this page.
+ */
+async function fetchPagedAndCap<T>(
+  cursorArg: string | undefined,
+  listKey: string,
+  project: (raw: unknown) => T,
+  fetchPage: (upstreamCursor: string | undefined) => Promise<{ items: unknown[]; nextCursor: string | null | undefined }>,
+): Promise<Record<string, unknown>> {
+  const { offset, upstreamCursor } = decodeCursor(cursorArg);
+  const { items, nextCursor } = await fetchPage(upstreamCursor);
+  const visible = items.slice(offset).map(project);
+
+  let kept = visible;
+  let truncated = false;
+  while (byteSize({ [listKey]: kept, next_cursor: null }) > MAX_OUTPUT_BYTES && kept.length > 0) {
+    kept = kept.slice(0, -1);
+    truncated = true;
+  }
+
+  const outNextCursor = truncated
+    ? encodeCursor(offset + kept.length, upstreamCursor)
+    : nextCursor != null
+      ? encodeCursor(0, nextCursor)
+      : null;
+
+  return { [listKey]: kept, next_cursor: outNextCursor, ...(truncated ? { truncated: true } : {}) };
 }
 
 interface ToolCallResult {
@@ -101,7 +167,7 @@ async function callListAgents(client: McpApiClient, args: Args): Promise<ToolCal
   const status = str(args, 'status');
   if (coverage) agents = agents.filter((a) => a['coverage'] === coverage);
   if (status) agents = agents.filter((a) => a['status'] === status);
-  const structuredContent = capList({ agents, next_cursor: raw.next_cursor ?? null }, 'agents');
+  const structuredContent = capListSimple({ agents, next_cursor: raw.next_cursor ?? null }, 'agents');
   return { structuredContent, text: `${agents.length} agent(s).` };
 }
 
@@ -114,19 +180,20 @@ async function callGetAgent(client: McpApiClient, args: Args): Promise<ToolCallR
 }
 
 async function callListSessions(client: McpApiClient, args: Args): Promise<ToolCallResult> {
-  const query = qs({
-    agent_id: str(args, 'agent_id'),
-    principal_id: str(args, 'principal_id'),
-    status: str(args, 'status'),
-    tag: arr(args, 'tag')?.slice(0, 10),
-    archived: str(args, 'archived'),
-    limit: num(args, 'limit'),
-    cursor: str(args, 'cursor'),
+  const structuredContent = await fetchPagedAndCap(str(args, 'cursor'), 'sessions', projectSession, async (upstreamCursor) => {
+    const query = qs({
+      agent_id: str(args, 'agent_id'),
+      principal_id: str(args, 'principal_id'),
+      status: str(args, 'status'),
+      tag: arr(args, 'tag')?.slice(0, 10),
+      archived: str(args, 'archived'),
+      limit: num(args, 'limit'),
+      cursor: upstreamCursor,
+    });
+    const raw = (await client.get(`/v1/sessions${query}`)) as { sessions?: unknown[]; next_cursor?: string | null };
+    return { items: raw.sessions ?? [], nextCursor: raw.next_cursor ?? null };
   });
-  const raw = (await client.get(`/v1/sessions${query}`)) as { sessions?: unknown[]; next_cursor?: string | null };
-  const sessions = (raw.sessions ?? []).map(projectSession);
-  const structuredContent = capList({ sessions, next_cursor: raw.next_cursor ?? null }, 'sessions');
-  return { structuredContent, text: `${sessions.length} session(s).` };
+  return { structuredContent, text: `${(structuredContent['sessions'] as unknown[]).length} session(s).` };
 }
 
 async function callGetSession(client: McpApiClient, args: Args): Promise<ToolCallResult> {
@@ -141,36 +208,39 @@ async function callGetSession(client: McpApiClient, args: Args): Promise<ToolCal
   return { structuredContent: { session: projected }, text: `session ${sessionId}` };
 }
 
+function projectEvent(e: unknown): unknown {
+  if (!isRecord(e)) return e;
+  const sanitized = sanitizeEventPayloadForMcp(e['payload']);
+  return {
+    event_id: e['event_id'],
+    event_type: e['event_type'],
+    timestamp_observed: e['timestamp_observed'],
+    tool_use_id: e['tool_use_id'] ?? null,
+    ...(sanitized.payload_withheld
+      ? { payload: null, payload_withheld: true }
+      : { payload: sanitized.payload, payload_withheld: false }),
+  };
+}
+
 async function callListSessionEvents(client: McpApiClient, args: Args): Promise<ToolCallResult> {
   const sessionId = str(args, 'session_id');
   if (!sessionId) throw new McpToolError('session_id is required', 'invalid_params');
-  const query = qs({
-    type: arr(args, 'type'),
-    host: str(args, 'host'),
-    tool_use_id: str(args, 'tool_use_id'),
-    event_id: str(args, 'event_id'),
-    cursor: str(args, 'cursor'),
-    limit: num(args, 'limit'),
-  });
-  const raw = (await client.get(`/v1/sessions/${encodeURIComponent(sessionId)}/events${query}`)) as {
-    events?: unknown[];
-    next_cursor?: string | null;
-  };
-  const events = (raw.events ?? []).map((e) => {
-    if (!isRecord(e)) return e;
-    const sanitized = sanitizeEventPayloadForMcp(e['payload']);
-    return {
-      event_id: e['event_id'],
-      event_type: e['event_type'],
-      timestamp_observed: e['timestamp_observed'],
-      tool_use_id: e['tool_use_id'] ?? null,
-      ...(sanitized.payload_withheld
-        ? { payload: null, payload_withheld: true }
-        : { payload: sanitized.payload, payload_withheld: false }),
+  const structuredContent = await fetchPagedAndCap(str(args, 'cursor'), 'events', projectEvent, async (upstreamCursor) => {
+    const query = qs({
+      type: arr(args, 'type'),
+      host: str(args, 'host'),
+      tool_use_id: str(args, 'tool_use_id'),
+      event_id: str(args, 'event_id'),
+      cursor: upstreamCursor,
+      limit: num(args, 'limit'),
+    });
+    const raw = (await client.get(`/v1/sessions/${encodeURIComponent(sessionId)}/events${query}`)) as {
+      events?: unknown[];
+      next_cursor?: string | null;
     };
+    return { items: raw.events ?? [], nextCursor: raw.next_cursor ?? null };
   });
-  const structuredContent = capList({ events, next_cursor: raw.next_cursor ?? null }, 'events');
-  return { structuredContent, text: `${events.length} event(s).` };
+  return { structuredContent, text: `${(structuredContent['events'] as unknown[]).length} event(s).` };
 }
 
 async function callGetSessionHosts(client: McpApiClient, args: Args): Promise<ToolCallResult> {
@@ -178,27 +248,29 @@ async function callGetSessionHosts(client: McpApiClient, args: Args): Promise<To
   if (!sessionId) throw new McpToolError('session_id is required', 'invalid_params');
   const raw = (await client.get(`/v1/sessions/${encodeURIComponent(sessionId)}/hosts`)) as { hosts?: unknown[] };
   const hosts = (raw.hosts ?? []).map(projectHost);
-  const structuredContent = capList({ hosts }, 'hosts');
+  const structuredContent = capListSimple({ hosts }, 'hosts');
   return { structuredContent, text: `${hosts.length} host(s).` };
 }
 
 async function callListFindings(client: McpApiClient, args: Args): Promise<ToolCallResult> {
   const sessionId = str(args, 'session_id');
-  const query = qs({
-    agent_id: str(args, 'agent_id'),
-    severity: str(args, 'severity'),
-    class: str(args, 'class'),
-    subtype: str(args, 'subtype'),
-    status: str(args, 'status'),
-    limit: num(args, 'limit'),
+  const structuredContent = await fetchPagedAndCap(str(args, 'cursor'), 'findings', projectFinding, async (upstreamCursor) => {
+    const query = qs({
+      agent_id: str(args, 'agent_id'),
+      severity: str(args, 'severity'),
+      class: str(args, 'class'),
+      subtype: str(args, 'subtype'),
+      status: str(args, 'status'),
+      limit: num(args, 'limit'),
+      cursor: upstreamCursor,
+    });
+    const path = sessionId
+      ? `/v1/sessions/${encodeURIComponent(sessionId)}/findings${query}`
+      : `/v1/findings${query}`;
+    const raw = (await client.get(path)) as { findings?: unknown[]; next_cursor?: string | null };
+    return { items: raw.findings ?? [], nextCursor: raw.next_cursor ?? null };
   });
-  const path = sessionId
-    ? `/v1/sessions/${encodeURIComponent(sessionId)}/findings${query}`
-    : `/v1/findings${query}`;
-  const raw = (await client.get(path)) as { findings?: unknown[]; next_cursor?: string | null };
-  const findings = (raw.findings ?? []).map(projectFinding);
-  const structuredContent = capList({ findings, next_cursor: raw.next_cursor ?? null }, 'findings');
-  return { structuredContent, text: `${findings.length} finding(s).` };
+  return { structuredContent, text: `${(structuredContent['findings'] as unknown[]).length} finding(s).` };
 }
 
 async function callGetBaseline(client: McpApiClient, args: Args): Promise<ToolCallResult> {
@@ -206,13 +278,12 @@ async function callGetBaseline(client: McpApiClient, args: Args): Promise<ToolCa
   if (!agentId) throw new McpToolError('agent_id is required', 'invalid_params');
   const enc = encodeURIComponent(agentId);
   if (bool(args, 'list')) {
-    const query = qs({ cursor: str(args, 'cursor'), limit: num(args, 'limit') });
-    const raw = (await client.get(`/v1/agents/${enc}/baselines${query}`)) as { baselines?: unknown[]; next_cursor?: string | null };
-    const baselines = (raw.baselines ?? []).map(projectBaseline);
-    return {
-      structuredContent: capList({ baselines, next_cursor: raw.next_cursor ?? null }, 'baselines'),
-      text: `${baselines.length} baseline(s).`,
-    };
+    const structuredContent = await fetchPagedAndCap(str(args, 'cursor'), 'baselines', projectBaseline, async (upstreamCursor) => {
+      const query = qs({ cursor: upstreamCursor, limit: num(args, 'limit') });
+      const raw = (await client.get(`/v1/agents/${enc}/baselines${query}`)) as { baselines?: unknown[]; next_cursor?: string | null };
+      return { items: raw.baselines ?? [], nextCursor: raw.next_cursor ?? null };
+    });
+    return { structuredContent, text: `${(structuredContent['baselines'] as unknown[]).length} baseline(s).` };
   }
   const baselineId = str(args, 'baseline_id');
   const path = baselineId ? `/v1/agents/${enc}/baselines/${encodeURIComponent(baselineId)}` : `/v1/agents/${enc}/baseline`;
@@ -224,17 +295,12 @@ async function callSearchObservations(client: McpApiClient, args: Args): Promise
   const kind = str(args, 'kind');
   const value = str(args, 'value');
   if (!kind || !value) throw new McpToolError('kind and value are required', 'invalid_params');
-  const query = qs({
-    kind,
-    value,
-    prefix: bool(args, 'prefix'),
-    limit: num(args, 'limit'),
-    cursor: str(args, 'cursor'),
+  const structuredContent = await fetchPagedAndCap(str(args, 'cursor'), 'results', projectSearchResult, async (upstreamCursor) => {
+    const query = qs({ kind, value, prefix: bool(args, 'prefix'), limit: num(args, 'limit'), cursor: upstreamCursor });
+    const raw = (await client.get(`/v1/search${query}`)) as { results?: unknown[]; next_cursor?: string | null };
+    return { items: raw.results ?? [], nextCursor: raw.next_cursor ?? null };
   });
-  const raw = (await client.get(`/v1/search${query}`)) as { results?: unknown[]; next_cursor?: string | null };
-  const results = (raw.results ?? []).map(projectSearchResult);
-  const structuredContent = capList({ results, next_cursor: raw.next_cursor ?? null }, 'results');
-  return { structuredContent, text: `${results.length} result(s).` };
+  return { structuredContent, text: `${(structuredContent['results'] as unknown[]).length} result(s).` };
 }
 
 const TOOL_HANDLERS: Record<string, (client: McpApiClient, args: Args) => Promise<ToolCallResult>> = {

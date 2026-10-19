@@ -218,7 +218,7 @@ describe('list_sessions -- pagination', () => {
     const page1 = await call(s, 'list_sessions', {});
     const p1 = (page1?.result as { structuredContent: { sessions: { session_id: string }[]; next_cursor: string } }).structuredContent;
     expect(p1.sessions.map((x) => x.session_id)).toEqual(['s1']);
-    expect(p1.next_cursor).toBe('page2');
+    expect(p1.next_cursor).toContain('page2'); // this server's own opaque cursor wraps the upstream one
 
     const page2 = await call(s, 'list_sessions', { cursor: p1.next_cursor });
     const p2 = (page2?.result as { structuredContent: { sessions: { session_id: string }[]; next_cursor: string | null } }).structuredContent;
@@ -399,7 +399,70 @@ describe('the 64 KiB output cap', () => {
     const sc = (res?.result as { structuredContent: { agents: unknown[]; truncated?: boolean } }).structuredContent;
     expect(sc.truncated).toBe(true);
     expect(sc.agents.length).toBeLessThan(4000);
-    expect(JSON.stringify(sc).length).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(sc), 'utf8')).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
+  });
+
+  it('measures real bytes, not UTF-16 code units, so multi-byte content is not under-counted', async () => {
+    // Each name below is 1 UTF-16 code unit per character but 3 UTF-8 bytes;
+    // JSON.stringify(...).length would have undercounted this by ~3x and let
+    // the response run well over the real 64 KiB.
+    server.use(
+      http.get(`${BASE}/v1/agents`, () =>
+        HttpResponse.json({
+          agents: Array.from({ length: 3000 }, (_, i) => ({ agent_id: `a${i}`, name: '桜'.repeat(40), status: 'active' })),
+          next_cursor: null,
+        }),
+      ),
+    );
+    const s = newServer();
+    const res = await call(s, 'list_agents');
+    const sc = (res?.result as { structuredContent: { agents: unknown[]; truncated?: boolean } }).structuredContent;
+    expect(sc.truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(sc), 'utf8')).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
+  });
+
+  it('a page truncated for size resumes at the first DROPPED item, not at the upstream page boundary (regression)', async () => {
+    // 60 items, each padded to guarantee the page cannot fit in one response.
+    server.use(
+      http.get(`${BASE}/v1/sessions`, ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get('cursor')) {
+          return HttpResponse.json({ sessions: [], next_cursor: null });
+        }
+        return HttpResponse.json({
+          // `session_ref` is itself in the projection's allowlist, unlike an
+          // arbitrary padding field, which a real projection would strip --
+          // making the response actually large enough to force truncation.
+          sessions: Array.from({ length: 60 }, (_, i) => ({ session_id: `s${i}`, status: 'completed', session_ref: 'x'.repeat(2000) })),
+          next_cursor: 'upstream-page-2',
+        });
+      }),
+    );
+    const s = newServer();
+    const page1 = await call(s, 'list_sessions', {});
+    const p1 = (page1?.result as { structuredContent: { sessions: { session_id: string }[]; next_cursor: string; truncated?: boolean } }).structuredContent;
+    expect(p1.truncated).toBe(true);
+    expect(p1.sessions.length).toBeLessThan(60);
+    // The regression: next_cursor must NOT be the upstream page boundary,
+    // which would skip every item this page dropped.
+    expect(p1.next_cursor).not.toContain('upstream-page-2');
+    const firstKept = p1.sessions.length;
+
+    // Resuming must re-fetch the SAME upstream page (not advance to
+    // 'upstream-page-2', which would skip every item this call dropped) and
+    // continue from the first item page 1 never returned.
+    const page2 = await call(s, 'list_sessions', { cursor: p1.next_cursor });
+    const p2 = (page2?.result as { structuredContent: { sessions: { session_id: string }[] } }).structuredContent;
+    expect(p2.sessions[0]?.session_id).toBe(`s${firstKept}`);
+
+    const seenIds = new Set([...p1.sessions, ...p2.sessions].map((s) => s.session_id));
+    expect(seenIds.size).toBe(p1.sessions.length + p2.sessions.length); // no duplicates
+    // Every request to /v1/sessions after the first must have asked for the
+    // SAME upstream page (no cursor query param at all), never 'upstream-page-2'.
+    const sessionRequests = seenRequests.filter((r) => r.url.includes('/v1/sessions') && !r.url.includes('/sessions/'));
+    for (const r of sessionRequests.slice(1)) {
+      expect(r.url).not.toContain('upstream-page-2');
+    }
   });
 });
 

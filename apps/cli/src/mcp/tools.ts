@@ -112,6 +112,7 @@ export const MCP_TOOLS: readonly McpToolDef[] = [
         subtype: { type: 'string', maxLength: 64 },
         status: { type: 'string', maxLength: 64 },
         limit: { type: 'integer', minimum: 1, maximum: 200 },
+        cursor: { type: 'string', maxLength: 512 },
       },
     },
   },
