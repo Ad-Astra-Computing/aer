@@ -82,6 +82,25 @@ function byteSize(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
+/**
+ * Largest prefix length (0..items.length) of `items` such that
+ * `buildWith(prefixLength)` still fits MAX_OUTPUT_BYTES, found by binary
+ * search: O(log n) serializations instead of shrinking one item at a time
+ * (O(n), and O(n) full-payload re-serializations at that -- slow enough on
+ * a large list to be the whole test's running time, not just its fixture).
+ */
+function largestFittingPrefix(itemCount: number, buildWith: (n: number) => unknown): number {
+  if (byteSize(buildWith(itemCount)) <= MAX_OUTPUT_BYTES) return itemCount;
+  let lo = 0;
+  let hi = itemCount;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (byteSize(buildWith(mid)) <= MAX_OUTPUT_BYTES) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
 /** Truncate a list field so the serialized structuredContent stays within
  * MAX_OUTPUT_BYTES. For a tool with no cursor-based resumption contract
  * (list_agents' filters are client-side only; get_session_hosts has no
@@ -90,11 +109,9 @@ function byteSize(value: unknown): number {
 function capListSimple(result: Record<string, unknown>, listKey: string): Record<string, unknown> {
   const list = result[listKey];
   if (!Array.isArray(list)) return result;
-  let out = { ...result };
-  while (byteSize(out) > MAX_OUTPUT_BYTES && Array.isArray(out[listKey]) && (out[listKey] as unknown[]).length > 0) {
-    out = { ...out, [listKey]: (out[listKey] as unknown[]).slice(0, -1), truncated: true };
-  }
-  return out;
+  const fit = largestFittingPrefix(list.length, (n) => ({ ...result, [listKey]: list.slice(0, n) }));
+  if (fit >= list.length) return result;
+  return { ...result, [listKey]: list.slice(0, fit), truncated: true };
 }
 
 /** This server's own cursor wrapper: `o1:<offset>:<upstreamCursor>`. */
@@ -139,12 +156,9 @@ async function fetchPagedAndCap<T>(
   const { items, nextCursor } = await fetchPage(upstreamCursor);
   const visible = items.slice(offset).map(project);
 
-  let kept = visible;
-  let truncated = false;
-  while (byteSize({ [listKey]: kept, next_cursor: null }) > MAX_OUTPUT_BYTES && kept.length > 0) {
-    kept = kept.slice(0, -1);
-    truncated = true;
-  }
+  const fit = largestFittingPrefix(visible.length, (n) => ({ [listKey]: visible.slice(0, n), next_cursor: null }));
+  const kept = visible.slice(0, fit);
+  const truncated = fit < visible.length;
 
   const outNextCursor = truncated
     ? encodeCursor(offset + kept.length, upstreamCursor)

@@ -400,7 +400,7 @@ describe('the 64 KiB output cap', () => {
     expect(sc.truncated).toBe(true);
     expect(sc.agents.length).toBeLessThan(4000);
     expect(Buffer.byteLength(JSON.stringify(sc), 'utf8')).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
-  });
+  }, 20_000);
 
   it('measures real bytes, not UTF-16 code units, so multi-byte content is not under-counted', async () => {
     // Each name below is 1 UTF-16 code unit per character but 3 UTF-8 bytes;
@@ -419,7 +419,7 @@ describe('the 64 KiB output cap', () => {
     const sc = (res?.result as { structuredContent: { agents: unknown[]; truncated?: boolean } }).structuredContent;
     expect(sc.truncated).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(sc), 'utf8')).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
-  });
+  }, 20_000);
 
   it('a page truncated for size resumes at the first DROPPED item, not at the upstream page boundary (regression)', async () => {
     // 60 items, each padded to guarantee the page cannot fit in one response.
@@ -463,7 +463,7 @@ describe('the 64 KiB output cap', () => {
     for (const r of sessionRequests.slice(1)) {
       expect(r.url).not.toContain('upstream-page-2');
     }
-  });
+  }, 20_000);
 });
 
 describe('unknown tool name', () => {

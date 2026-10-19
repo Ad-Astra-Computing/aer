@@ -57,7 +57,11 @@ it('answers initialize and tools/call list_agents through a .bin symlink, piping
   // real production settings; see AGENTS.md "Working in someone else's
   // repository").
   const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AER_')));
-  const child = spawn(link, ['mcp', 'serve'], {
+  // process.execPath, not the symlink itself: a nix sandbox's minimal PATH
+  // does not guarantee /usr/bin/env (the shebang) resolves, and spawning the
+  // symlink directly as an executable depends on that. entrypoint.test.ts's
+  // run()/runWithEnv() use the same pattern for exactly this reason.
+  const child = spawn(process.execPath, [link, 'mcp', 'serve'], {
     env: {
       ...cleanEnv,
       AER_BASE_URL: baseUrl,
