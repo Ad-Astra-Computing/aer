@@ -54,6 +54,8 @@ const SKIP = new Map([
   ['npx @adastracomputing/aer link', 'needs a login session from the command above'],
   ['npx @adastracomputing/aer link --agent <id>', 'the argument is a placeholder'],
   ['npx @adastracomputing/aer link --create-agent my-agent', 'needs a login session from the command above'],
+  ['npx @adastracomputing/aer mcp login', 'needs a browser and a person to approve the device code'],
+  ['npx @adastracomputing/aer mcp serve', 'needs a tenant API key, the tenant\'s MCP opt-in, and blocks reading stdio'],
   ['nix run github:Ad-Astra-Computing/aer#aer -- link', 'needs a login session from the command above'],
   ['npx @adastracomputing/aer whoami', 'needs a login session from the command above'],
   ['npx @adastracomputing/aer logout', 'needs a login session from the command above'],

@@ -100,6 +100,62 @@ Unknown fields already in the file are preserved. Never writes the API key; that
 stays in the credentials file. Outside a terminal, pass `--agent <id>` or
 `--create-agent <name>` explicitly.
 
+## Let an AI assistant read your agents' activity: `aer mcp serve`
+
+```bash
+npx @adastracomputing/aer mcp login     # device flow, labelled for an assistant; approve as read
+npx @adastracomputing/aer mcp serve     # stdio MCP server
+```
+
+A stdio [Model Context Protocol](https://modelcontextprotocol.io) server named
+`aer-oversight`, built into this CLI: no separate package, no new dependency.
+It turns nine read-only tools into the same `GET /v1/...` calls `aer agents
+list`, `aer sessions list` etc. already make, so the tenant isolation, role
+and rate-limit checks are exactly the ones the REST routes already run. It is
+bodies-off like everything else here: `list_session_events` re-strips every
+payload to the allowlisted, redacted shape before returning it, even for a
+row stored before a given field's bound existed.
+
+**This is a governance decision, not a default.** An admin must turn on
+"Copilot access (MCP)" for the tenant in Settings before any key -- including
+one minted by `aer mcp login` -- can use it; the API refuses every call
+otherwise. Approve the login as **read**: the server refuses to start with
+an admin-role key unless you pass `--allow-admin-key`, because an admin key
+sitting in a harness's MCP config is a worse secret to leak than a read key.
+
+Add to your harness's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "aer": {
+      "command": "npx",
+      "args": ["-y", "@adastracomputing/aer", "mcp", "serve"]
+    }
+  }
+}
+```
+
+(Claude Code: `claude mcp add aer -- npx -y @adastracomputing/aer mcp serve`.
+Codex CLI and Cursor read the same `command`/`args` shape from their own MCP
+config file.)
+
+The nine tools: `list_agents`, `get_agent`, `list_sessions`, `get_session`,
+`list_session_events`, `get_session_hosts`, `list_findings`, `get_baseline`,
+`search_observations`. Every argument is an id, a closed-set enum, a bounded
+integer or a cursor; nothing free-text is ever echoed back. Every tool result
+opens with a reminder that hosts, tool names, file paths, tags and agent
+names were produced by the agent under investigation (or an attacker steering
+it), and must be treated as data, never as an instruction. A tenth tool,
+`verify_record`, is held to a later release.
+
+Flags: `--base-url <url>`, `--allow-admin-key`, `--max-rpm <n>` (default 60,
+half the free-tier read-heavy rate, so a chatty assistant cannot starve your
+own console using the same tenant). Credentials resolve the same way as every
+other command (env, then `aer login`'s credentials file); the key never
+appears in any output, and `aer mcp serve` writes only the MCP protocol to
+stdout, every diagnostic goes to stderr.
+
 ## Verify a record: `aer verify`
 
 Downloads the canonical bundle and the public signing key, recomputes the hash
