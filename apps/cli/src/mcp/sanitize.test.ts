@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeEventPayloadForMcp, TOKEN_COUNT_ALIASES, MAX_VALUE_STRING_LEN } from './sanitize.js';
+import { sanitizeEventPayloadForMcp, TOKEN_COUNT_ALIASES, MAX_VALUE_STRING_LEN, MAX_COMMAND_LEN } from './sanitize.js';
 
 describe('sanitizeEventPayloadForMcp', () => {
   it('passes an already-clean allowlisted payload through unchanged', () => {
@@ -68,8 +68,19 @@ describe('sanitizeEventPayloadForMcp', () => {
 
   it('withholds the whole payload when an allowlisted value exceeds its bound (payload_withheld branch)', () => {
     const overLong = 'x'.repeat(MAX_VALUE_STRING_LEN + 1);
-    const r = sanitizeEventPayloadForMcp({ command: overLong });
+    const r = sanitizeEventPayloadForMcp({ rule: overLong }); // generic bound: 2048
     expect(r).toEqual({ payload_withheld: true, payload: null });
+  });
+
+  it('`command` gets its own 4096-char bound, not the generic 2048: a legitimate 3000-char command is never wrongly withheld', () => {
+    const command = 'x'.repeat(3000);
+    const r = sanitizeEventPayloadForMcp({ command });
+    expect(r).toEqual({ payload_withheld: false, payload: { command } });
+  });
+
+  it('withholds a command over its own 4096-char bound', () => {
+    const r = sanitizeEventPayloadForMcp({ command: 'x'.repeat(MAX_COMMAND_LEN + 1) });
+    expect(r.payload_withheld).toBe(true);
   });
 
   it('withholds on an over-deep nested value', () => {
@@ -88,5 +99,89 @@ describe('sanitizeEventPayloadForMcp', () => {
     expect(sanitizeEventPayloadForMcp(undefined)).toEqual({ payload_withheld: false, payload: {} });
     expect(sanitizeEventPayloadForMcp('not an object')).toEqual({ payload_withheld: false, payload: {} });
     expect(sanitizeEventPayloadForMcp(['array'])).toEqual({ payload_withheld: false, payload: {} });
+  });
+
+  // Closed-set enforcement (regression): without this, a legacy row's
+  // free-text 'verb' value (not drawn from VERB_SET) would pass the generic
+  // length-only bound and be returned as if it were a validated label.
+  it('drops a legacy free-text verb value instead of passing it through as a validated label', () => {
+    const r = sanitizeEventPayloadForMcp({ verb: 'rm -rf everything, no survivors', tool: 'bash' });
+    expect(r).toEqual({ payload_withheld: false, payload: { tool: 'bash' } });
+  });
+
+  it('keeps a verb value that is actually in the closed set', () => {
+    const r = sanitizeEventPayloadForMcp({ verb: 'rm' });
+    expect(r).toEqual({ payload_withheld: false, payload: { verb: 'rm' } });
+  });
+
+  it('filters a closed-set array to only its valid elements', () => {
+    const r = sanitizeEventPayloadForMcp({ paths_touched_classes: ['repo_root', 'not-a-real-class', 'secret'] });
+    expect(r).toEqual({ payload_withheld: false, payload: { paths_touched_classes: ['repo_root', 'secret'] } });
+  });
+
+  it('drops a boolean-typed key carrying a non-boolean value', () => {
+    const r = sanitizeEventPayloadForMcp({ elevated: 'yes', tool: 'bash' });
+    expect(r).toEqual({ payload_withheld: false, payload: { tool: 'bash' } });
+  });
+
+  it('withholds the whole payload on a non-negative-int counter that is actually negative', () => {
+    const r = sanitizeEventPayloadForMcp({ hosts_unreduced: -1 });
+    expect(r).toEqual({ payload_withheld: true, payload: null });
+  });
+
+  it('withholds on a non-negative-int counter over its per-key max', () => {
+    const r = sanitizeEventPayloadForMcp({ aer_hook_count: 10_000 });
+    expect(r).toEqual({ payload_withheld: true, payload: null });
+  });
+
+  it('enforces the hex64 shape on a content-commitment tag, dropping a non-hex value', () => {
+    const good = sanitizeEventPayloadForMcp({ response_tag: 'a'.repeat(64) });
+    expect(good).toEqual({ payload_withheld: false, payload: { response_tag: 'a'.repeat(64) } });
+    const bad = sanitizeEventPayloadForMcp({ response_tag: 'not-hex' });
+    expect(bad).toEqual({ payload_withheld: false, payload: {} });
+  });
+
+  it('enforces the sha256: prefix shape, dropping a bare hex value', () => {
+    const r = sanitizeEventPayloadForMcp({ lockfile_hash: 'a'.repeat(64) });
+    expect(r).toEqual({ payload_withheld: false, payload: {} });
+  });
+
+  // The 15 keys the vendored allowlist was missing until this fix.
+  it('now allows the previously-missing bodies-off keys through', () => {
+    const r = sanitizeEventPayloadForMcp({
+      also_ran: ['curl', 'git'],
+      hosts_unreduced: 3,
+      resources_seen: ['https://api.example.com/v1/doc?token=sk_live_x'],
+      prompts_seen: ['my-prompt'],
+      config_source: 'project_settings',
+      trigger: 'config_change',
+      config_status: 'ok',
+      allow_rules: 5,
+      deny_rules: 2,
+      broad_allow_rules: 1,
+      default_mode: 'plan',
+      hooks_disabled: false,
+      aer_hook_count: 4,
+      config_changes: ['allow_broadened'],
+      writer: 'write_tool',
+    });
+    expect(r.payload_withheld).toBe(false);
+    expect(r.payload).toEqual({
+      also_ran: ['curl', 'git'],
+      hosts_unreduced: 3,
+      resources_seen: ['https://api.example.com'], // reduced to origin, same as url
+      prompts_seen: ['my-prompt'],
+      config_source: 'project_settings',
+      trigger: 'config_change',
+      config_status: 'ok',
+      allow_rules: 5,
+      deny_rules: 2,
+      broad_allow_rules: 1,
+      default_mode: 'plan',
+      hooks_disabled: false,
+      aer_hook_count: 4,
+      config_changes: ['allow_broadened'],
+      writer: 'write_tool',
+    });
   });
 });
