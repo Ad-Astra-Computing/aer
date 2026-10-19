@@ -378,3 +378,25 @@ describe('resolveEnvironmentChoice', () => {
     expect(resolveEnvironmentChoice('0', [])).toEqual({ kind: 'invalid', message: expect.stringContaining('No environment at index 0') });
   });
 });
+
+describe('aer mcp serve --max-rpm validation', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitCalled(code ?? 0);
+    }) as never);
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it.each(['abc', '-5', '0', '1.5', 'NaN', 'Infinity'])('rejects --max-rpm %s before ever starting the server', async (bad) => {
+    await expect(main(['mcp', 'serve', '--max-rpm', bad])).rejects.toThrow(ProcessExitCalled);
+    expect(exitSpy).toHaveBeenCalledWith(64);
+  });
+});
