@@ -42,8 +42,14 @@ export class McpLocalRateLimitError extends McpToolError {
 export class TokenBucket {
   private windowStart: number;
   private used = 0;
+  private readonly limit: number;
 
-  constructor(private readonly limit: number, private readonly now: () => number = Date.now) {
+  // A non-finite/non-positive limit (a bad --max-rpm that slipped past the
+  // CLI's own parsing) would make every `used >= limit` check below false
+  // forever, silently turning rate limiting off. Fall back to the default
+  // rather than trust the caller's value blindly.
+  constructor(limit: number, private readonly now: () => number = Date.now) {
+    this.limit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 60;
     this.windowStart = this.now();
   }
 

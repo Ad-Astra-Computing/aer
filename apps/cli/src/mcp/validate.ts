@@ -13,7 +13,7 @@ export function validateToolArgs(schema: Record<string, unknown>, args: Record<s
 
   if (schema['additionalProperties'] === false) {
     for (const key of Object.keys(args)) {
-      if (!(key in props)) errors.push(`unknown argument: ${key}`);
+      if (!Object.prototype.hasOwnProperty.call(props, key)) errors.push(`unknown argument: ${key}`);
     }
   }
 

@@ -606,7 +606,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const baseUrlFlag = readFlag(args, '--base-url');
       const allowAdminKey = args.includes('--allow-admin-key');
       const maxRpmArg = readFlag(args, '--max-rpm');
-      const maxRpm = maxRpmArg ? parseInt(maxRpmArg, 10) : undefined;
+      let maxRpm: number | undefined;
+      if (maxRpmArg !== undefined) {
+        const parsed = Number(maxRpmArg);
+        if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+          console.error(`--max-rpm must be a positive integer, got "${maxRpmArg}"\n`);
+          usage();
+        }
+        maxRpm = parsed;
+      }
       const code = await runMcpServe(
         { baseUrlFlag, allowAdminKey, ...(maxRpm !== undefined ? { maxRpm } : {}) },
         {
