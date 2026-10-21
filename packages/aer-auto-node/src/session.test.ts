@@ -201,7 +201,7 @@ describe('a refusal cooldown (usage cap / agent paused)', () => {
     return { transport, log, emit };
   }
 
-  it('logs the refusal once and sets a cooldown', async () => {
+  it('logs the refusal once and sets a cooldown that blocks the very next batch', async () => {
     const { transport, emit } = refusalTransport(60);
     const errors: Array<{ err: unknown; ctx: string }> = [];
     const mgr = createSessionManager({ transport, preamble, onError: (err, ctx) => errors.push({ err, ctx }) });
@@ -210,6 +210,14 @@ describe('a refusal cooldown (usage cap / agent paused)', () => {
     expect(emit).toHaveBeenCalledTimes(2); // preamble + the refused batch
     const refusals = errors.filter((e) => e.err instanceof AerRefusalError);
     expect(refusals).toHaveLength(1);
+
+    // A single flush logging once proves nothing about a cooldown actually
+    // being set; capture a second batch right away and confirm emit is not
+    // called again for it (the real cooldown assertion for this test).
+    const callsSoFar = emit.mock.calls.length;
+    mgr.capture(ev('b'));
+    await mgr.flush();
+    expect(emit.mock.calls.length).toBe(callsSoFar);
   });
 
   it('drops further batches within the cooldown without calling emit again', async () => {
@@ -247,23 +255,28 @@ describe('a refusal cooldown (usage cap / agent paused)', () => {
     expect(emit.mock.calls.length).toBeGreaterThan(callsAfterFirstRefusal);
   });
 
-  it('counts dropped events for the closing report during a cooldown', async () => {
-    const { transport } = refusalTransport(60);
+  it('counts dropped events for the closing report during a cooldown, and skips sending it', async () => {
+    const { transport, emit } = refusalTransport(60);
     let now = 1_000_000;
     let dropped: number | undefined;
     const mgr = createSessionManager({
       transport, preamble, now: () => now,
-      closingReport: (s) => { dropped = s.eventsDropped; return null; },
+      // A real closing report (not null, unlike the other tests here): this
+      // is the case that exercises the fix, a cooldown still in effect at
+      // complete() must not send one more guaranteed-refused request for it.
+      closingReport: (s) => { dropped = s.eventsDropped; return { event_type: 'collector.report', payload: { closing: true } }; },
     });
     mgr.capture(ev('a'));
     await mgr.flush();
+    const callsBeforeComplete = emit.mock.calls.length;
     mgr.capture(ev('b'));
     await mgr.flush();
     await mgr.complete();
-    // 'a' dropped by the refusal itself; 'b' dropped during the cooldown;
-    // the closing report attempt (closingReport returns null, so nothing more
-    // is emitted) does not add further drops.
-    expect(dropped).toBeGreaterThanOrEqual(2);
+    // 'a' dropped by the refusal itself, 'b' dropped during the cooldown.
+    // closingReport receives the count as of just before it is built, so it
+    // does not include the closing report's own drop (asserted below).
+    expect(dropped).toBe(2);
+    expect(emit.mock.calls.length).toBe(callsBeforeComplete); // no closing-report emit() call
   });
 
   it('a non-refusal error is unaffected: no cooldown, every batch attempted', async () => {

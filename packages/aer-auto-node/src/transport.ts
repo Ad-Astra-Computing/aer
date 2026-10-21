@@ -201,8 +201,13 @@ function parseRefusal(status: number, bodyText: string): AerRefusalError | null 
   }
   if (!body || typeof body !== 'object') return null;
   const o = body as Record<string, unknown>;
-  const recheckAfterSeconds = typeof o['recheck_after_seconds'] === 'number' ? o['recheck_after_seconds'] : undefined;
-  if (recheckAfterSeconds === undefined) return null;
+  const rawRecheck = typeof o['recheck_after_seconds'] === 'number' ? o['recheck_after_seconds'] : undefined;
+  if (rawRecheck === undefined) return null;
+  // Clamp a server-sent value before it drives a setTimeout-equivalent
+  // cooldown: zero/negative would remove the backoff entirely (hammering the
+  // API on every batch), and an unbounded value would silence the collector
+  // for good. Ceil so a fractional value still rounds up to at least 1s.
+  const recheckAfterSeconds = Math.ceil(Math.min(Math.max(rawRecheck, 1), 86_400));
 
   if (o['error'] === 'usage_limit_reached') {
     const unit = typeof o['unit'] === 'string' ? o['unit'] : 'usage';

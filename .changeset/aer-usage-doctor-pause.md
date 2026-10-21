@@ -16,10 +16,15 @@ by the tenant operator) and throws the new exported `AerRefusalError`
 instead of a generic error, with a clear plain-English message. The session
 manager backs off for the time the API gave it instead of retrying on every
 later batch, so a long-running session does not hammer the API while a
-tenant is over its cap or an agent is paused.
+tenant is over its cap or an agent is paused; events captured during that
+window are dropped (not queued, since the window can be long) and counted
+toward the closing report's delivery stats.
 
 `aer-hooks` now gives the same two refusals the same treatment: a usage cap
 or paused-agent 403 is never mistaken for the session being gone (which
 previously dropped and reopened it on every later hook invocation), and the
-hook backs off for the time the API gave it, keeping queued events rather
-than dropping them, with one clear log line for the whole episode.
+hook backs off for the time the API gave it. Queued events wait for that
+retry rather than being dropped outright, but the outbox's ordinary 1,000-
+event cap still applies underneath a long wait, with the usual
+`events_dropped_budget` accounting. One clear log line covers the whole
+episode rather than one per hook invocation.

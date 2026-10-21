@@ -816,7 +816,7 @@ async function deliver(ctx: Ctx): Promise<void> {
           releaseLease(st, ctx);
           return { result: undefined, save: st };
         });
-        ctx.warn('open', `aer-hook: ${refusalMessage(refusal)}; events are queued and will be sent once this clears`);
+        ctx.warn('open', `aer-hook: ${refusalMessage(refusal)}; ${afterFailure(ctx, 'events are queued and will be sent once this clears')}`);
         return;
       }
       if (isRetryable(r.failed) && !openRetried && remaining(ctx) > 2 * MIN_CALL_MS + 250) {
@@ -860,7 +860,7 @@ async function deliver(ctx: Ctx): Promise<void> {
           releaseLease(st, ctx);
           return { result: undefined, save: st };
         });
-        ctx.warn('send', `aer-hook: ${refusalMessage(refusal)}; events are queued and will be sent once this clears`);
+        ctx.warn('send', `aer-hook: ${refusalMessage(refusal)}; ${afterFailure(ctx, 'events are queued and will be sent once this clears')}`);
         return;
       }
       if (sessionGone(r)) {

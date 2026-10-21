@@ -11,6 +11,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { runHook } from './cli.js';
 import { FakeApi } from './fake-api.test-support.js';
+import { loadState } from './session-store.js';
 
 const V2 = ['--harness', 'claude-code', '--lifecycle', 'v2'];
 
@@ -106,6 +107,26 @@ describe('a usage_limit_reached refusal on events', () => {
     expect(lines).toHaveLength(0); // no second warning for the same episode
   });
 
+  it('clamps an out-of-range recheck_after_seconds rather than trusting it verbatim', async () => {
+    const T0 = Date.parse('2026-10-21T10:00:00Z');
+    const lead = { session_id: 'cc-usage-cap-clamp', cwd: dir };
+    await fire({ ...lead, hook_event_name: 'SessionStart' }, { now: T0 });
+
+    api.fault({
+      path: /\/events$/,
+      status: 403,
+      // 0 would otherwise remove the backoff entirely, retrying on every call.
+      body: { error: 'usage_limit_reached', unit: 'events', recheck_after_seconds: 0 },
+    });
+    await fire({ ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'a' } }, { now: T0 + 1000 });
+
+    const st = loadState('cc-usage-cap-clamp', env())!;
+    // Clamped up to 1s, not 0 (which would otherwise remove the backoff
+    // entirely); allow a tiny margin for the harness's own clock reads.
+    expect(st.refusedUntil).toBeGreaterThanOrEqual(T0 + 1000 + 1000);
+    expect(st.refusedUntil).toBeLessThan(T0 + 1000 + 1000 + 50);
+  });
+
   it('resumes and sends queued events once the cooldown elapses', async () => {
     const T0 = Date.parse('2026-10-21T10:00:00Z');
     const lead = { session_id: 'cc-usage-cap-3', cwd: dir };
@@ -141,6 +162,23 @@ describe('an agent_paused refusal on session open', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).not.toContain('{');
     expect(lines[0]).toMatch(/paused/i);
+
+    // This is the refusal cooldown, not the ordinary open-retry backoff: no
+    // openFailures/retryOpenAt bookkeeping, and no new request (or log line)
+    // from a second event inside the 120s window.
+    const st = loadState('cc-paused', env())!;
+    expect(st.openFailures).toBeUndefined();
+    expect(st.retryOpenAt).toBeUndefined();
+    expect(st.refusedUntil).toBeGreaterThanOrEqual(T0 + 120_000);
+    expect(st.refusedUntil).toBeLessThan(T0 + 120_000 + 50);
+
+    const requestsAfterFirstRefusal = api.requests.length;
+    await fire(
+      { ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'a' } },
+      { now: T0 + 1000, logError: (m) => lines.push(m) },
+    );
+    expect(api.requests.length).toBe(requestsAfterFirstRefusal); // no new HTTP calls at all
+    expect(lines).toHaveLength(1); // no second warning for the same episode
   });
 });
 

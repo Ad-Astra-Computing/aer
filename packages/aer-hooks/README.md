@@ -332,9 +332,13 @@ paused by the tenant operator, both answer with a structured 403 that names
 how long to wait before trying again. The hook never treats either as the
 session being gone (it would otherwise drop the session and reopen with the
 same `client_ref`, retrying on every later hook invocation); instead it backs
-off for the time the API gave it, keeps the queued events (they are not
-dropped), and logs one clear line for the whole episode rather than one per
-hook invocation. Once the wait has passed, the next event tries again
+off for the time the API gave it, and logs one clear line for the whole
+episode rather than one per hook invocation. The queued events wait for that
+retry rather than being dropped outright, but the outbox still has its
+ordinary cap (1,000 events, oldest first): a usage-cap refusal can last until
+the billing period ends, and a long wait past the cap drops the oldest
+events, counted in `events_dropped_budget` on the closing report, same as any
+other overflow. Once the wait has passed, the next event tries again
 normally.
 
 ### How the end of a session is delivered

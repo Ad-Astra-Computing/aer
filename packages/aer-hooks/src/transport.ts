@@ -33,8 +33,13 @@ const NO_ANSWER = 0;
  */
 function parseRefusal(status: number, parsed: Record<string, unknown>): Refusal | undefined {
   if (status !== 403) return undefined;
-  const recheckAfterSeconds = typeof parsed['recheck_after_seconds'] === 'number' ? parsed['recheck_after_seconds'] : undefined;
-  if (recheckAfterSeconds === undefined) return undefined;
+  const rawRecheck = typeof parsed['recheck_after_seconds'] === 'number' ? parsed['recheck_after_seconds'] : undefined;
+  if (rawRecheck === undefined) return undefined;
+  // Clamp before this drives refusedUntil: zero/negative removes the
+  // backoff, an unbounded value silences the hook for good, and a fractional
+  // value is dropped on the next reload by session-store's isInt check.
+  // Ceil so a fractional value still rounds up to at least 1s.
+  const recheckAfterSeconds = Math.ceil(Math.min(Math.max(rawRecheck, 1), 86_400));
   if (parsed['error'] === 'usage_limit_reached') {
     const upgradeUrl = typeof parsed['upgrade_url'] === 'string' ? parsed['upgrade_url'] : undefined;
     return { kind: 'usage_limit_reached', recheckAfterSeconds, ...(upgradeUrl ? { upgradeUrl } : {}) };

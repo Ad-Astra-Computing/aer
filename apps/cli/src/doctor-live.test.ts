@@ -199,4 +199,46 @@ describe('runLiveChecks', () => {
     expect(byName(missing.checks, 'agent_id')).toMatchObject({ ok: false });
     expect(byName(missing.checks, 'agent_id').detail).toContain('not found');
   });
+
+  it('fails agent_id when the agent is paused, even though it was found', async () => {
+    const r = await runLiveChecks({
+      baseUrl: 'https://api.test', apiKey: 'k', agentId: 'a-1',
+      fetchFn: stubFetch({
+        '/readyz': { status: 200 },
+        '/v1/agents': { status: 200, json: { agents: [{ agent_id: 'a-1', status: 'paused' }] } },
+      }),
+    });
+    expect(byName(r.checks, 'agent_id')).toMatchObject({ ok: false });
+    expect(byName(r.checks, 'agent_id').detail).toContain('paused');
+  });
+
+  it('skips the usage cap check, rather than reporting a duplicate failure, when the key is already rejected', async () => {
+    const fetchFn = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.endsWith('/readyz')) return { ok: true, status: 200, json: async () => ({}) } as Response;
+      if (u.endsWith('/v1/agents')) return { ok: false, status: 401, json: async () => ({}) } as Response;
+      throw new Error(`unexpected url ${u}`); // /v1/usage must never be called here
+    }) as unknown as typeof fetch;
+    const r = await runLiveChecks({ baseUrl: 'https://api.test', apiKey: 'bad', fetchFn });
+    const check = byName(r.checks, 'usage cap');
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('skipped');
+    expect(check.detail).not.toContain('unexpected HTTP');
+  });
+
+  it('reports an unrecognised response rather than a fabricated cap block on a malformed 200', async () => {
+    const r = await runLiveChecks({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetchFn: stubFetch({
+        '/readyz': { status: 200 },
+        '/v1/agents': { status: 200, json: { agents: [] } },
+        '/v1/usage': { status: 200, json: { ok: true } }, // no new_sessions_allowed at all
+      }),
+    });
+    const check = byName(r.checks, 'usage cap');
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('unrecognised response');
+    expect(check.detail).not.toContain('blocked on');
+  });
 });

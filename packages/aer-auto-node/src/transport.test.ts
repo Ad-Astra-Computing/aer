@@ -202,6 +202,17 @@ describe('createHttpTransport', () => {
     expect(err.message.toLowerCase()).toContain('paused');
   });
 
+  it('open() clamps an out-of-range recheck_after_seconds instead of trusting it verbatim', async () => {
+    const cases: Array<[number, number]> = [[0, 1], [-5, 1], [1.4, 2], [1e12, 86_400]];
+    for (const [sent, expected] of cases) {
+      const body = JSON.stringify({ error: 'agent_paused', agent_id: 'agt_1', recheck_after_seconds: sent });
+      const { fetchImpl } = fakeFetch([() => new Response(body, { status: 403 })]);
+      let caught: unknown;
+      try { await makeTransport(fetchImpl).open(); } catch (e) { caught = e; }
+      expect((caught as InstanceType<typeof AerRefusalError>).recheckAfterSeconds).toBe(expected);
+    }
+  });
+
   it('open() keeps the generic Error for an unrelated 403 body', async () => {
     const { fetchImpl } = fakeFetch([() => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 })]);
     let caught: unknown;

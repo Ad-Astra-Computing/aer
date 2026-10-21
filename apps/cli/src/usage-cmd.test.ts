@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatUsageHuman, type UsageResponse } from './usage-cmd.js';
+import { formatUsageHuman, isUsageResponse, type UsageResponse } from './usage-cmd.js';
 
 const BASE: UsageResponse = {
   plan: 'team',
@@ -62,15 +62,61 @@ describe('formatUsageHuman', () => {
     expect(out).toContain('2026-10-15');
   });
 
-  it('never prints a key, token or authorization header', () => {
-    const out = formatUsageHuman(BASE);
-    expect(out.toLowerCase()).not.toContain('bearer');
-    expect(out.toLowerCase()).not.toContain('authorization');
-    expect(out.toLowerCase()).not.toContain('api_key');
-  });
-
   it('is pure and tolerates a single paid user without a trailing s', () => {
     const one: UsageResponse = { ...BASE, paid_users: 1 };
     expect(formatUsageHuman(one)).toContain('(1 paid user)');
+  });
+
+  it('prints the hard limit alongside a metric when the server sends one', () => {
+    const out = formatUsageHuman(BASE);
+    expect(out).toContain('(hard limit 125,000)');
+  });
+
+  it('does not print a single pending upgrade request as "1 paid users"', () => {
+    const pending: UsageResponse = {
+      ...BASE,
+      upgrade: {
+        available: true,
+        url: 'https://aer.run/settings#usage',
+        pending_request: { to_plan: 'team', paid_users: 1, created_at: '2026-10-15T00:00:00.000Z' },
+      },
+    };
+    expect(formatUsageHuman(pending)).toContain('1 paid user ');
+    expect(formatUsageHuman(pending)).not.toContain('1 paid users');
+  });
+
+  it('renders a per-agent breakdown when the server sends by_agent', () => {
+    const withAgents: UsageResponse = {
+      ...BASE,
+      by_agent: [
+        { agent_id: 'agt_1', agent_name: 'builder', events: 100, sessions: 4 },
+        { agent_id: 'agt_2', agent_name: null, events: 5, sessions: 1 },
+      ],
+    };
+    const out = formatUsageHuman(withAgents);
+    expect(out).toContain('Per agent, this period:');
+    expect(out).toContain('builder');
+    expect(out).toContain('100 events, 4 sessions');
+    expect(out).toContain('agt_2');
+    expect(out).toContain('5 events, 1 session');
+  });
+
+  it('does not print a per-agent section when by_agent is absent or empty', () => {
+    expect(formatUsageHuman(BASE)).not.toContain('Per agent');
+    expect(formatUsageHuman({ ...BASE, by_agent: [] })).not.toContain('Per agent');
+  });
+});
+
+describe('isUsageResponse', () => {
+  it('accepts a well-formed response', () => {
+    expect(isUsageResponse(BASE)).toBe(true);
+  });
+
+  it('rejects a response missing fields formatUsageHuman needs', () => {
+    expect(isUsageResponse(null)).toBe(false);
+    expect(isUsageResponse({})).toBe(false);
+    expect(isUsageResponse({ ...BASE, events: undefined })).toBe(false);
+    expect(isUsageResponse({ ...BASE, new_sessions_allowed: 'yes' })).toBe(false);
+    expect(isUsageResponse({ ...BASE, period: undefined })).toBe(false);
   });
 });

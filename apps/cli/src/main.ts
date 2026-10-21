@@ -38,7 +38,7 @@ import {
   getBaseline, retrainBaseline,
   getUsage,
 } from './tenant-ops.js';
-import { formatUsageHuman, type UsageResponse } from './usage-cmd.js';
+import { formatUsageHuman, isUsageResponse } from './usage-cmd.js';
 
 const USAGE_TEXT = [
   'Usage:',
@@ -117,9 +117,10 @@ const USAGE_TEXT = [
   '  AER_BASE_URL          API base; falls back to aer.config.json base_url',
   '  AER_API_KEY           tenant key for the auth check (or AER_TENANT_API_KEY)',
   '  AER_AGENT_ID          validate an agent id against the tenant (optional)',
-  '  aer doctor also checks the tenant\'s usage cap (GET /v1/usage) once a key',
-  '  is set and the API is reachable, and fails with the blocked reason and',
-  '  upgrade URL when new sessions are currently refused.',
+  '',
+  '  Also checks the tenant\'s usage cap (GET /v1/usage) once a key is set and',
+  '  the API is reachable, and fails with the blocked reason and upgrade URL',
+  '  when new sessions are currently refused.',
   '',
   'aer webhooks - required env:',
   '  AER_BASE_URL          e.g. https://api.aer.run',
@@ -1008,12 +1009,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (command === 'usage') {
     // Bare form, like `aer audit`: no subcommand, just `aer usage [--json]`.
     const args = [sub, ...rest].filter((x): x is string => x !== undefined);
+    const unknown = args.find((a) => a !== '--json');
+    if (unknown) {
+      console.error(`aer usage: unrecognized argument '${unknown}'. Usage: aer usage [--json]`);
+      process.exit(1);
+    }
     const opts = requireTenantAuth('aer usage');
-    const usageData = (await getUsage(opts)) as UsageResponse;
+    const usageData = await getUsage(opts);
     if (args.includes('--json')) {
       console.log(JSON.stringify(usageData, null, 2));
-    } else {
+    } else if (isUsageResponse(usageData)) {
       console.log(formatUsageHuman(usageData));
+    } else {
+      console.error('aer usage: unrecognized response from GET /v1/usage. Run with --json to see the raw body.');
+      process.exit(1);
     }
     return;
   }

@@ -27,9 +27,10 @@ export interface CollectorEvent {
  * the raw JSON body) plus the fields the session manager needs to back off
  * instead of hammering the API on every subsequent batch.
  *
- * Defined here (not in transport.ts) so session.ts can import it without a
- * cycle: transport.ts already imports CollectorEvent/SessionTransport from
- * this module, so the dependency only ever runs one way.
+ * Defined here, not in transport.ts, to avoid an import cycle: transport.ts
+ * already imports CollectorEvent/SessionTransport from this module, so a
+ * transport importing this class back from here (as transport.ts does, via
+ * its re-export) keeps the dependency running only one way.
  */
 export class AerRefusalError extends Error {
   readonly kind: 'usage_limit_reached' | 'agent_paused';
@@ -156,6 +157,18 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await transport.open();
     } catch (err) {
       fail(err, 'open');
+      if (err instanceof AerRefusalError) {
+        // A refusal on open (most commonly agent_paused) is not a reason to
+        // stop recording for the rest of the process: go back to idle with
+        // the same cooldown gate capture() already honors for an emit
+        // refusal, so the next capture() once the window elapses tries a
+        // fresh episode instead of staying silent until restart.
+        refusedUntilMs = clock() + err.recheckAfterSeconds * 1000;
+        state = 'idle';
+        queue.length = 0;
+        openPromise = null;
+        return;
+      }
       state = 'closed';
       queue.length = 0;
       return;
@@ -238,6 +251,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   function capture(event: CollectorEvent): void {
     if (state === 'closing' || state === 'closed') return; // drop post-close
+    if (state === 'idle' && refusedUntilMs !== null) {
+      if (clock() < refusedUntilMs) {
+        // Still cooling down from an open() refusal: drop rather than queue
+        // indefinitely (a usage-cap cooldown can last until period end), and
+        // don't retry transport.open() on every event.
+        eventsDropped += 1;
+        return;
+      }
+      refusedUntilMs = null; // cooldown elapsed: the attempt below is a fresh episode
+    }
     queue.push(event);
     if (state === 'idle') {
       void ensureOpen();
@@ -265,8 +288,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     state = 'closing';
     try {
       const closing = deps.closingReport?.({ eventsDropped });
-      if (closing) {
+      // A cooldown still in effect means the last attempt already logged the
+      // one clear refusal line for this episode; sending the closing report
+      // now would just be a second guaranteed-refused request and a second
+      // log line for the same cause.
+      const cooling = refusedUntilMs !== null && clock() < refusedUntilMs;
+      if (closing && !cooling) {
         try { await transport.emit([closing]); } catch (err) { fail(err, 'closing-report'); }
+      } else if (closing) {
+        eventsDropped += 1;
       }
       await transport.complete();
     } catch (err) {
