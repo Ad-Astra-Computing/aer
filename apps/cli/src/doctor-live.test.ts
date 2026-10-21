@@ -32,11 +32,24 @@ describe('runLiveChecks', () => {
     const r = await runLiveChecks({
       baseUrl: 'https://api.test/',
       apiKey: 'k',
-      fetchFn: stubFetch({ '/readyz': { status: 200 }, '/v1/agents': { status: 200, json: { agents: [] } } }),
+      fetchFn: stubFetch({
+        '/readyz': { status: 200 },
+        '/v1/agents': { status: 200, json: { agents: [] } },
+        '/v1/usage': {
+          status: 200,
+          json: {
+            state: 'ok', new_sessions_allowed: true, blocked_reason: null,
+            events: { used: 0, limit: 100000, percent: 0 },
+            sessions: { used: 0, limit: 500, percent: 0 },
+            upgrade: { available: true, url: 'https://aer.run/settings#usage', pending_request: null },
+          },
+        },
+      }),
     });
     expect(r.ok).toBe(true);
     expect(byName(r.checks, 'API reachable (/readyz)').ok).toBe(true);
     expect(byName(r.checks, 'tenant auth').ok).toBe(true);
+    expect(byName(r.checks, 'usage cap').ok).toBe(true);
   });
 
   it('flags a rejected key (401) with remediation and skips nothing else', async () => {
@@ -66,6 +79,110 @@ describe('runLiveChecks', () => {
     expect(byName(r.checks, 'API reachable (/readyz)').detail).toContain('unreachable');
     // auth is skipped because the API is unreachable
     expect(byName(r.checks, 'tenant auth').detail).toContain('skipped');
+  });
+
+  it('passes the usage cap check when the API allows new sessions', async () => {
+    const r = await runLiveChecks({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetchFn: stubFetch({
+        '/readyz': { status: 200 },
+        '/v1/agents': { status: 200, json: { agents: [] } },
+        '/v1/usage': {
+          status: 200,
+          json: {
+            state: 'warning',
+            new_sessions_allowed: true,
+            blocked_reason: null,
+            events: { used: 82340, limit: 100000, percent: 82 },
+            sessions: { used: 410, limit: 500, percent: 82 },
+            upgrade: { available: true, url: 'https://aer.run/settings#usage', pending_request: null },
+          },
+        },
+      }),
+    });
+    expect(r.ok).toBe(true);
+    const check = byName(r.checks, 'usage cap');
+    expect(check.ok).toBe(true);
+    expect(check.detail).toContain('warning');
+    expect(check.detail).toContain('82%');
+  });
+
+  it('fails the usage cap check when the API refuses new sessions', async () => {
+    const r = await runLiveChecks({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetchFn: stubFetch({
+        '/readyz': { status: 200 },
+        '/v1/agents': { status: 200, json: { agents: [] } },
+        '/v1/usage': {
+          status: 200,
+          json: {
+            state: 'hard_limit',
+            new_sessions_allowed: false,
+            blocked_reason: 'events',
+            events: { used: 125000, limit: 100000, hard_limit: 125000, percent: 125 },
+            sessions: { used: 410, limit: 500, percent: 82 },
+            upgrade: { available: true, url: 'https://aer.run/settings#usage', pending_request: null },
+          },
+        },
+      }),
+    });
+    expect(r.ok).toBe(false);
+    const check = byName(r.checks, 'usage cap');
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('events');
+    expect(check.detail).toContain('125000');
+    expect(check.detail).toContain('https://aer.run/settings#usage');
+  });
+
+  it('skips the usage cap check when there is no API key', async () => {
+    const r = await runLiveChecks({
+      baseUrl: 'https://api.test',
+      fetchFn: stubFetch({ '/readyz': { status: 200 } }),
+    });
+    const check = byName(r.checks, 'usage cap');
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('no API key');
+  });
+
+  it('skips the usage cap check when the API is not reachable', async () => {
+    const r = await runLiveChecks({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetchFn: stubFetch({ '/readyz': { status: 503 } }),
+    });
+    const check = byName(r.checks, 'usage cap');
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('skipped');
+  });
+
+  it('fails the usage cap check on a network error', async () => {
+    const fetchFn = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.endsWith('/readyz')) return { ok: true, status: 200, json: async () => ({}) } as Response;
+      if (u.endsWith('/v1/agents')) return { ok: true, status: 200, json: async () => ({ agents: [] }) } as Response;
+      throw new Error('ECONNRESET');
+    }) as unknown as typeof fetch;
+    const r = await runLiveChecks({ baseUrl: 'https://api.test', apiKey: 'k', fetchFn });
+    const check = byName(r.checks, 'usage cap');
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('request failed');
+  });
+
+  it('fails the usage cap check on a non-200 status', async () => {
+    const r = await runLiveChecks({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetchFn: stubFetch({
+        '/readyz': { status: 200 },
+        '/v1/agents': { status: 200, json: { agents: [] } },
+        '/v1/usage': { status: 500 },
+      }),
+    });
+    const check = byName(r.checks, 'usage cap');
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('500');
   });
 
   it('validates agent_id against the tenant agent list when provided', async () => {

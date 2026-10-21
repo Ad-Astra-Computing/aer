@@ -67,7 +67,54 @@ export async function runLiveChecks(input: LiveDoctorInput): Promise<DoctorRepor
     }
   }
 
-  // 4. Optional: agent_id resolves for this tenant.
+  // 4. Usage cap: GET /v1/usage already encodes the server's own judgment of
+  // whether new sessions are allowed (it accounts for enforcement mode), so
+  // this check reads new_sessions_allowed rather than re-deriving ok/fail
+  // from state itself.
+  if (!input.apiKey) {
+    checks.push({ name: 'usage cap', ok: false, detail: 'no API key: export AER_API_KEY (or AER_TENANT_API_KEY)' });
+  } else if (!reachable) {
+    checks.push({ name: 'usage cap', ok: false, detail: 'skipped, API not reachable' });
+  } else {
+    try {
+      const res = await fetchFn(`${baseUrl}/v1/usage`, { headers: { authorization: `Bearer ${input.apiKey}` } });
+      if (res.ok) {
+        const body = (await res.json()) as {
+          state?: string;
+          new_sessions_allowed?: boolean;
+          blocked_reason?: string | null;
+          events?: { used?: number; limit?: number; percent?: number };
+          sessions?: { used?: number; limit?: number; percent?: number };
+          upgrade?: { url?: string };
+        };
+        const ok = body.new_sessions_allowed === true;
+        if (ok) {
+          checks.push({
+            name: 'usage cap',
+            ok: true,
+            detail: `${body.state ?? 'ok'} (${body.events?.percent ?? '?'}% events, ${body.sessions?.percent ?? '?'}% sessions)`,
+          });
+        } else {
+          const unit = body.blocked_reason ?? 'usage';
+          const metric = body.blocked_reason === 'sessions' ? body.sessions : body.events;
+          const used = metric?.used ?? '?';
+          const limit = metric?.limit ?? '?';
+          const upgradeUrl = body.upgrade?.url;
+          checks.push({
+            name: 'usage cap',
+            ok: false,
+            detail: `blocked on ${unit} (${used}/${limit}).${upgradeUrl ? ` Upgrade: ${upgradeUrl}` : ''}`,
+          });
+        }
+      } else {
+        checks.push({ name: 'usage cap', ok: false, detail: `unexpected HTTP ${res.status} from GET /v1/usage` });
+      }
+    } catch (e) {
+      checks.push({ name: 'usage cap', ok: false, detail: `request failed: ${(e as Error).message}` });
+    }
+  }
+
+  // 5. Optional: agent_id resolves for this tenant.
   if (input.agentId) {
     if (!input.apiKey || !reachable) {
       checks.push({ name: 'agent_id', ok: false, detail: 'skipped, needs a reachable API and a valid key' });
