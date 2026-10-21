@@ -191,6 +191,22 @@ so the record says it is short instead of looking complete. A batch that timed
 out may still have arrived, so the count is an upper bound. The field is
 absent when every batch arrived.
 
+Two of the AER API's refusals are not treated like an ordinary failure. When
+the tenant's usage cap has been reached, or this agent is paused by the
+tenant operator, the API answers with a structured 403 and the collector
+throws `AerRefusalError` (exported from this package) instead of a generic
+`Error`, carrying `kind` (`'usage_limit_reached'` or `'agent_paused'`) and
+`recheckAfterSeconds`, plus a clear, plain-English `message`, never a raw
+JSON dump. A refusal while opening a session ends it the way any open
+failure does; a refusal while sending events sets a cooldown instead of
+retrying on every later batch: nothing more is sent to the API until
+`recheckAfterSeconds` has passed, with one clear line logged for the whole
+episode rather than one per dropped batch. Events dropped during the
+cooldown still count toward `events_dropped_budget`. Once the cooldown
+elapses the collector tries again as normal, so the tenant's own cap or
+pause state is respected without the collector hammering the API or going
+silent for good.
+
 A tool name comes from the model, so it is recorded only when the record can
 keep it: a string of at most 200 UTF-16 code units with no control characters.
 The AER API accepts names up to 512, but a longer name would break the

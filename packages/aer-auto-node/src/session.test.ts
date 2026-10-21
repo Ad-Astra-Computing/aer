@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createSessionManager, type SessionTransport, type CollectorEvent } from './session.js';
+import { createSessionManager, AerRefusalError, type SessionTransport, type CollectorEvent } from './session.js';
 
 interface Recorded { kind: 'open' | 'emit' | 'complete' | 'abort'; events?: CollectorEvent[] }
 
@@ -188,5 +188,96 @@ describe('events the collector could not deliver', () => {
     mgr.capture(ev('x'));
     await mgr.complete();
     expect(seen).toBe(0);
+  });
+});
+
+describe('a refusal cooldown (usage cap / agent paused)', () => {
+  function refusalTransport(recheckAfterSeconds: number) {
+    const emit = vi.fn(async (events: CollectorEvent[]) => {
+      if (events.some((e) => e.event_type === 'session.started')) return; // preamble always succeeds
+      throw new AerRefusalError('usage_limit_reached', recheckAfterSeconds, 'AER tenant usage cap reached');
+    });
+    const { transport, log } = fakeTransport({ emit });
+    return { transport, log, emit };
+  }
+
+  it('logs the refusal once and sets a cooldown', async () => {
+    const { transport, emit } = refusalTransport(60);
+    const errors: Array<{ err: unknown; ctx: string }> = [];
+    const mgr = createSessionManager({ transport, preamble, onError: (err, ctx) => errors.push({ err, ctx }) });
+    mgr.capture(ev('a'));
+    await mgr.flush();
+    expect(emit).toHaveBeenCalledTimes(2); // preamble + the refused batch
+    const refusals = errors.filter((e) => e.err instanceof AerRefusalError);
+    expect(refusals).toHaveLength(1);
+  });
+
+  it('drops further batches within the cooldown without calling emit again', async () => {
+    const { transport, emit } = refusalTransport(60);
+    const errors: unknown[] = [];
+    let now = 1_000_000;
+    const mgr = createSessionManager({ transport, preamble, onError: (err) => errors.push(err), now: () => now });
+    mgr.capture(ev('a'));
+    await mgr.flush();
+    const callsAfterFirstRefusal = emit.mock.calls.length;
+
+    mgr.capture(ev('b'));
+    await mgr.flush();
+    mgr.capture(ev('c'));
+    await mgr.flush();
+
+    expect(emit.mock.calls.length).toBe(callsAfterFirstRefusal); // no new emit() calls
+    expect(errors.filter((e) => e instanceof AerRefusalError)).toHaveLength(1); // still just the one log line
+
+    await mgr.complete();
+  });
+
+  it('resumes and calls emit again once the cooldown elapses', async () => {
+    const { transport, emit } = refusalTransport(60);
+    let now = 1_000_000;
+    const mgr = createSessionManager({ transport, preamble, now: () => now });
+    mgr.capture(ev('a'));
+    await mgr.flush();
+    const callsAfterFirstRefusal = emit.mock.calls.length;
+
+    now += 61_000; // past the 60s recheck window
+    mgr.capture(ev('b'));
+    await mgr.flush();
+
+    expect(emit.mock.calls.length).toBeGreaterThan(callsAfterFirstRefusal);
+  });
+
+  it('counts dropped events for the closing report during a cooldown', async () => {
+    const { transport } = refusalTransport(60);
+    let now = 1_000_000;
+    let dropped: number | undefined;
+    const mgr = createSessionManager({
+      transport, preamble, now: () => now,
+      closingReport: (s) => { dropped = s.eventsDropped; return null; },
+    });
+    mgr.capture(ev('a'));
+    await mgr.flush();
+    mgr.capture(ev('b'));
+    await mgr.flush();
+    await mgr.complete();
+    // 'a' dropped by the refusal itself; 'b' dropped during the cooldown;
+    // the closing report attempt (closingReport returns null, so nothing more
+    // is emitted) does not add further drops.
+    expect(dropped).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a non-refusal error is unaffected: no cooldown, every batch attempted', async () => {
+    const emit = vi.fn(async (events: CollectorEvent[]) => {
+      if (events.some((e) => e.event_type === 'session.started')) return;
+      throw new Error('plain failure');
+    });
+    const { transport } = fakeTransport({ emit });
+    const mgr = createSessionManager({ transport, preamble });
+    mgr.capture(ev('a'));
+    await mgr.flush();
+    const afterFirst = emit.mock.calls.length;
+    mgr.capture(ev('b'));
+    await mgr.flush();
+    expect(emit.mock.calls.length).toBeGreaterThan(afterFirst);
   });
 });

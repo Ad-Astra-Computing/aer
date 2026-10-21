@@ -19,6 +19,30 @@ export interface CollectorEvent {
   severity_hint?: SeverityHint;
 }
 
+/**
+ * Thrown by a transport (see transport.ts's createHttpTransport) in place of a
+ * generic Error when the AER API refuses a request with one of its two
+ * structured 403 bodies: the tenant's usage cap was reached, or this agent is
+ * paused by the tenant operator. Carries a clear, plain-English message (never
+ * the raw JSON body) plus the fields the session manager needs to back off
+ * instead of hammering the API on every subsequent batch.
+ *
+ * Defined here (not in transport.ts) so session.ts can import it without a
+ * cycle: transport.ts already imports CollectorEvent/SessionTransport from
+ * this module, so the dependency only ever runs one way.
+ */
+export class AerRefusalError extends Error {
+  readonly kind: 'usage_limit_reached' | 'agent_paused';
+  readonly recheckAfterSeconds: number;
+
+  constructor(kind: 'usage_limit_reached' | 'agent_paused', recheckAfterSeconds: number, message: string) {
+    super(message);
+    this.name = 'AerRefusalError';
+    this.kind = kind;
+    this.recheckAfterSeconds = recheckAfterSeconds;
+  }
+}
+
 export interface SessionTransport {
   /** Create the underlying AER session. */
   open(): Promise<void>;
@@ -103,6 +127,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   let draining: Promise<void> | null = null;
   let eventsDropped = 0;
 
+  // Set when transport.emit refuses with AerRefusalError (usage cap reached or
+  // agent paused): no further transport.emit calls are made until this time,
+  // so a long-running session does not hammer the API on every drain while the
+  // tenant is over its cap or the agent is paused. Cleared (by reaching it)
+  // once the cooldown elapses, at which point the next attempt is a fresh
+  // episode: if it refuses again, one new log line and one new cooldown.
+  let refusedUntilMs: number | null = null;
+
   // Attestation token cache + concurrent-mint dedupe, per audience (2b).
   interface CachedToken { token: string; expiresAtMs: number; mintedAtMs: number }
   const tokenCache = new Map<string, CachedToken>();
@@ -170,6 +202,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // A failed batch is dropped rather than requeued, so this terminates.
       // The bound is belt and braces against a transport that captures.
       for (let pass = 0; pass < 64 && state === 'open' && queue.length > 0; pass++) {
+        // A refusal cooldown still in effect: drop the rest of the queue
+        // without calling transport.emit again, and without a second fail()
+        // for the same episode. The operator already saw the one clear
+        // message when the cooldown started.
+        if (refusedUntilMs !== null) {
+          if (clock() < refusedUntilMs) {
+            eventsDropped += queue.length;
+            queue.length = 0;
+            break;
+          }
+          // Cooldown elapsed: the next attempt below is a fresh episode.
+          refusedUntilMs = null;
+        }
         const batch = queue.splice(0, queue.length);
         try {
           await transport.emit(batch);
@@ -177,6 +222,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // Never-throw: drop the batch rather than requeue-and-loop, and
           // count it so the closing report says the record is short.
           eventsDropped += batch.length;
+          if (err instanceof AerRefusalError) {
+            refusedUntilMs = clock() + err.recheckAfterSeconds * 1000;
+          }
           fail(err, 'emit');
         }
       }
