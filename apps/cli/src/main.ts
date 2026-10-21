@@ -36,7 +36,9 @@ import {
   listFindings, findingsRollup, listAudit,
   listAers, getAerMeta,
   getBaseline, retrainBaseline,
+  getUsage,
 } from './tenant-ops.js';
+import { formatUsageHuman, type UsageResponse } from './usage-cmd.js';
 
 const USAGE_TEXT = [
   'Usage:',
@@ -76,6 +78,7 @@ const USAGE_TEXT = [
   '  aer baseline show <agent-id>',
   '  aer baseline retrain <agent-id> --last-n N | --sessions id1,id2,...',
   '  aer audit [--limit N]',
+  '  aer usage [--json]                 show this tenant\'s current usage against plan limits',
   '  aer webhooks list',
   '  aer webhooks create <url> [description] [--events findings.created,session.completed]',
   '  aer webhooks test <webhook-id>',
@@ -114,6 +117,9 @@ const USAGE_TEXT = [
   '  AER_BASE_URL          API base; falls back to aer.config.json base_url',
   '  AER_API_KEY           tenant key for the auth check (or AER_TENANT_API_KEY)',
   '  AER_AGENT_ID          validate an agent id against the tenant (optional)',
+  '  aer doctor also checks the tenant\'s usage cap (GET /v1/usage) once a key',
+  '  is set and the API is reachable, and fails with the blocked reason and',
+  '  upgrade URL when new sessions are currently refused.',
   '',
   'aer webhooks - required env:',
   '  AER_BASE_URL          e.g. https://api.aer.run',
@@ -997,6 +1003,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       return;
     }
     usage();
+  }
+
+  if (command === 'usage') {
+    // Bare form, like `aer audit`: no subcommand, just `aer usage [--json]`.
+    const args = [sub, ...rest].filter((x): x is string => x !== undefined);
+    const opts = requireTenantAuth('aer usage');
+    const usageData = (await getUsage(opts)) as UsageResponse;
+    if (args.includes('--json')) {
+      console.log(JSON.stringify(usageData, null, 2));
+    } else {
+      console.log(formatUsageHuman(usageData));
+    }
+    return;
   }
 
   if (command === 'webhooks') {
