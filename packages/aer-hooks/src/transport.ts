@@ -5,12 +5,53 @@
 import type { HttpSinkOptions } from '@adastracomputing/aer-emit';
 import type { OutboxEvent } from './session-store.js';
 
+/**
+ * The AER API's two confirmed structured 403 bodies (open session / post
+ * events): the tenant's usage cap was reached, or this agent is paused by the
+ * tenant operator. `recheckAfterSeconds` is the server's own backoff; the
+ * caller stops retrying until it elapses rather than hammering the API on
+ * every later invocation.
+ */
+export interface Refusal {
+  kind: 'usage_limit_reached' | 'agent_paused';
+  recheckAfterSeconds: number;
+  upgradeUrl?: string;
+}
+
 export type CallResult =
   | { ok: true; status: number; body: Record<string, unknown> }
-  | { ok: false; status: number; error: string | undefined; text?: string; timedOut?: boolean };
+  | { ok: false; status: number; error: string | undefined; text?: string; timedOut?: boolean; refusal?: Refusal };
 
 /** status 0: no answer at all (refused, reset, timed out). */
 const NO_ANSWER = 0;
+
+/**
+ * Recognizes the two confirmed structured 403 bodies and returns the fields
+ * the caller needs to back off instead of treating the session as gone.
+ * Returns undefined for any other body shape, so an unrelated 403 keeps
+ * today's behavior exactly.
+ */
+function parseRefusal(status: number, parsed: Record<string, unknown>): Refusal | undefined {
+  if (status !== 403) return undefined;
+  const recheckAfterSeconds = typeof parsed['recheck_after_seconds'] === 'number' ? parsed['recheck_after_seconds'] : undefined;
+  if (recheckAfterSeconds === undefined) return undefined;
+  if (parsed['error'] === 'usage_limit_reached') {
+    const upgradeUrl = typeof parsed['upgrade_url'] === 'string' ? parsed['upgrade_url'] : undefined;
+    return { kind: 'usage_limit_reached', recheckAfterSeconds, ...(upgradeUrl ? { upgradeUrl } : {}) };
+  }
+  if (parsed['error'] === 'agent_paused') {
+    return { kind: 'agent_paused', recheckAfterSeconds };
+  }
+  return undefined;
+}
+
+/** A clear, plain-English line for ctx.warn, never a raw JSON dump. */
+export function refusalMessage(r: Refusal): string {
+  if (r.kind === 'usage_limit_reached') {
+    return `the tenant's AER usage cap has been reached; recording is refused until a new period or an upgrade${r.upgradeUrl ? ` (${r.upgradeUrl})` : ''}`;
+  }
+  return 'this agent is paused by the tenant operator; recording is refused until it is resumed';
+}
 
 export interface ApiBase {
   base: HttpSinkOptions & { sourceType: string };
@@ -37,7 +78,14 @@ async function call(api: ApiBase, path: string, token: string, body: unknown, ti
       /* an empty or unparsable body still has a status */
     }
     if (res.ok) return { ok: true, status: res.status, body: parsed };
-    return { ok: false, status: res.status, error: typeof parsed['error'] === 'string' ? parsed['error'] : undefined, text: text.slice(0, 2048) };
+    const refusal = parseRefusal(res.status, parsed);
+    return {
+      ok: false,
+      status: res.status,
+      error: typeof parsed['error'] === 'string' ? parsed['error'] : undefined,
+      text: text.slice(0, 2048),
+      ...(refusal ? { refusal } : {}),
+    };
   } catch {
     // Aborted by the timer: the request ran for its whole time without an answer.
     return controller.signal.aborted

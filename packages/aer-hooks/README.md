@@ -326,6 +326,17 @@ Network calls are never in the critical path of the tool the harness is
 running; a file-content digest (below) is the one exception, since it must
 read the file before the tool call it is about to witness can complete.
 
+Two of the AER API's refusals get special handling rather than the ordinary
+retry-and-eventually-drop path: a tenant over its usage cap, or an agent
+paused by the tenant operator, both answer with a structured 403 that names
+how long to wait before trying again. The hook never treats either as the
+session being gone (it would otherwise drop the session and reopen with the
+same `client_ref`, retrying on every later hook invocation); instead it backs
+off for the time the API gave it, keeps the queued events (they are not
+dropped), and logs one clear line for the whole episode rather than one per
+hook invocation. Once the wait has passed, the next event tries again
+normally.
+
 ### How the end of a session is delivered
 
 A harness does not wait long for the hook that ends a session. Claude Code allows a
