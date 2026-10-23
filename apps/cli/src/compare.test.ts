@@ -310,6 +310,18 @@ describe('runCompare', () => {
     await expect(runCompare(['aer-a'], {})).rejects.toThrow(/usage: aer compare/);
   });
 
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and
+  // a hostile AER_BASE_URL picks Content-Encoding regardless of what was
+  // requested. Garbage bytes rather than real Brotli, so an unguarded read
+  // would fail on JSON.parse with a DIFFERENT message than the CVE refusal.
+  it('refuses a compressed bundle response without reading its body', async () => {
+    const fetchImpl = (async () =>
+      new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } })) as unknown as typeof fetch;
+    await expect(
+      runCompare(['aer-a', 'aer-b'], { baseUrl: 'https://api.test', fetchImpl, trustRoot: { aerSigningKeys: [], rekorLogs: [] } }),
+    ).rejects.toThrow(/CVE-2026-111497/);
+  });
+
   it('never leaks a secret planted in a non-id bundle field, through the full CLI path', async () => {
     const SECRET = 'SECRET-prompt-text-must-never-appear-anywhere';
     const a = await signBundle(bundle('aer-a', { content_commitments: [commitment({ request_ref: SECRET, prompt: SECRET })] }));

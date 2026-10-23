@@ -38,6 +38,19 @@ describe('listSessionIds', () => {
     const f = (async () => new Response('{"error":"unauthorized"}', { status: 401 })) as unknown as typeof fetch;
     await expect(listSessionIds({ baseUrl: 'http://api.test', apiKey: 'k', fetchImpl: f })).rejects.toThrow('401');
   });
+
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile or misconfigured base_url picks Content-Encoding regardless of
+  // what was requested. Garbage bytes rather than real Brotli, so an
+  // unguarded read would fail on JSON.parse with a DIFFERENT message than the
+  // CVE refusal, proving the guard (not a parse failure) is what rejected it.
+  it('refuses a compressed response without reading its body', async () => {
+    const f = (async () => new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { 'content-encoding': 'br' },
+    })) as unknown as typeof fetch;
+    await expect(listSessionIds({ baseUrl: 'http://api.test', apiKey: 'k', fetchImpl: f })).rejects.toThrow(/CVE-2026-111497/);
+  });
 });
 
 describe('awaitNewSession', () => {

@@ -4,7 +4,7 @@
 // plaintext.
 
 import { compareBundles, builtinTrustRoot, type CompareBundlesResult } from '@adastracomputing/aer-verify';
-import { verifyBundleSignature, type BundleSignatureResult } from './verify.js';
+import { verifyBundleSignature, assertUncompressed, type BundleSignatureResult } from './verify.js';
 
 export interface ParsedCompareArgs {
   aerA?: string;
@@ -89,6 +89,7 @@ async function loadBundle(
   const base = opts.baseUrl.replace(/\/$/, '');
   const res = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(id)}/bundle`);
   if (!res.ok) throw new Error(`failed to fetch bundle ${id}: ${res.status}`);
+  await assertUncompressed(res);
   return (await res.json()) as Record<string, unknown>;
 }
 

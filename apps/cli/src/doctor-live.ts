@@ -1,4 +1,5 @@
 import type { DoctorCheck, DoctorReport } from './init.js';
+import { assertUncompressed } from './http-guard.js';
 
 // Live connectivity + auth checks for `aer doctor`. Package-independent: pure
 // HTTP, no @adastracomputing/aer-auto-node import. Verifies the API is reachable and the
@@ -74,6 +75,7 @@ export async function runLiveChecks(input: LiveDoctorInput): Promise<DoctorRepor
     } else {
       try {
         const res = await fetchFn(`${baseUrl}/v1/agents`, { headers: { authorization: `Bearer ${input.apiKey}` } });
+        await assertUncompressed(res);
         if (res.ok) {
           const body = (await res.json()) as { agents?: Array<{ agent_id?: string }> };
           const found = (body.agents ?? []).some((a) => a.agent_id === input.agentId);
