@@ -30,8 +30,15 @@ const LIFECYCLE_EVENTS = [
   'Stop', 'SubagentStart', 'SubagentStop', 'SessionEnd',
   'PermissionRequest', 'PermissionDenied',
 ] as const;
-const CLAUDE_EVENTS = LIFECYCLE_EVENTS;
+// ConfigChange (record-only, Claude Code only): an unknown event key in
+// Codex's own hook config "risks the whole file" (see mergeEvent's
+// comment), so this must never reach CODEX_EVENTS.
+const CLAUDE_EVENTS = [...LIFECYCLE_EVENTS, 'ConfigChange'] as const;
 const CODEX_EVENTS = LIFECYCLE_EVENTS;
+/** Claude Code's own config-reload hook waits on this one: a slow AER hook
+ *  would delay the agent's own settings taking effect. Distinct from
+ *  CLAUDE_HEADROOM_TIMEOUT_S, which covers the record-opening/closing hooks. */
+const CONFIG_CHANGE_TIMEOUT_S = 5;
 // Antigravity has no SessionStart; PreInvocation stands in for it. Only the two
 // tool events accept a matcher.
 const ANTIGRAVITY_EVENTS = ['PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop'] as const;
@@ -412,7 +419,9 @@ export async function install(harness: Harness, opts: InstallOptions = {}): Prom
     // SessionEnd already had, rather than the harness's default hook budget.
     const timeout = harness === 'claude-code' && (ev === 'SessionEnd' || ev === 'SessionStart')
       ? CLAUDE_HEADROOM_TIMEOUT_S
-      : undefined;
+      : harness === 'claude-code' && ev === 'ConfigChange'
+        ? CONFIG_CHANGE_TIMEOUT_S
+        : undefined;
     const command = harnessCommand(harness, undefined, envFile, endBudgetMs(harness, ev));
     const { groups, added: didAdd, upgraded: didUpgrade } = mergeEvent(existingHooks[ev], command, timeout);
     existingHooks[ev] = groups;

@@ -297,3 +297,58 @@ describe('normalize (dispatch)', () => {
     expect(normalize(ccStop, undefined, {}).kind).toBe('session_end');
   });
 });
+
+describe('ConfigChange (Claude Code only)', () => {
+  it('maps the hook name to config_change', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'ConfigChange', source: 'project_settings', file_path: '/repo/.claude/settings.json' });
+    expect(e.kind).toBe('config_change');
+  });
+
+  it('prefers the real `source` field over the documented `config_source` name', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'ConfigChange', source: 'local_settings', config_source: 'project_settings' });
+    expect(e.configSource).toBe('local_settings');
+  });
+
+  it('falls back to config_source when source is absent', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'ConfigChange', config_source: 'user_settings' });
+    expect(e.configSource).toBe('user_settings');
+  });
+
+  it('maps an unknown or missing source to other, never throwing', () => {
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'ConfigChange', source: 'something-new' }).configSource).toBe('other');
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'ConfigChange' }).configSource).toBe('other');
+  });
+
+  it('keeps file_path local-only (never in meta, which is what rides the wire)', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'ConfigChange', source: 'project_settings', file_path: '/home/alice/.claude/settings.json' });
+    expect(e.configFilePath).toBe('/home/alice/.claude/settings.json');
+    expect(JSON.stringify(e.meta ?? {})).not.toContain('/home/alice');
+  });
+
+  it('is unreachable through normalizeCodex: Codex never fires this event', () => {
+    const e = normalizeCodex({ session_id: 's', hook_event_name: 'ConfigChange', source: 'project_settings' });
+    expect(e.kind).toBe('other');
+  });
+});
+
+describe('configBashNamed (writer attribution)', () => {
+  it('is true when a Bash PreToolUse command names a settings path', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'sed -i "s/x/y/" .claude/settings.json' } });
+    expect(e.configBashNamed).toBe(true);
+  });
+
+  it('is false for an unrelated Bash command, never throwing on a missing one', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls -la' } });
+    expect(e.configBashNamed).toBe(false);
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} }).configBashNamed).toBe(false);
+  });
+
+  it('is never set for a non-Bash tool', () => {
+    expect(normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: '/repo/.claude/settings.json' } }).configBashNamed).toBeUndefined();
+  });
+
+  it('never rides the emitted meta: the raw command text is read once, then discarded', () => {
+    const e = normalizeClaudeCode({ session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'cat .claude/settings.json' } });
+    expect(JSON.stringify(e.meta ?? {})).not.toContain('settings.json');
+  });
+});
