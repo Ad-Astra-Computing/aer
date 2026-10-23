@@ -884,3 +884,37 @@ describe('createHttpSink: client_ref reused + strict-old-server retry', () => {
     expect(attempts).toBe(2);
   });
 });
+
+describe('createHttpSink: CVE-2026-111497 (Brotli decoder RCE)', () => {
+  // fetch() decodes Brotli lazily on first read, and a hostile or
+  // compromised baseUrl picks Content-Encoding regardless of what was
+  // requested, so a compressed response must be refused before any
+  // .text()/.json() read, and must not spend the retry budget on it.
+  it('refuses a compressed event-ingest response without reading its body or retrying it', async () => {
+    let eventsAttempts = 0;
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/v1/sessions')) {
+        return jsonResponse({ agent_session_id: 's1', ingest_token: 't1' });
+      }
+      if (String(input).endsWith('/events')) {
+        eventsAttempts++;
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'content-encoding': 'br' },
+        });
+      }
+      // /complete: let it succeed, this test is only about the events path.
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+    const sink = createHttpSink({
+      baseUrl: 'https://api.test',
+      apiKey: 'k',
+      fetch: fakeFetch,
+      batchSize: 1,
+    });
+    sink.emit('tool.started', { tool: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await sink.close();
+    expect(eventsAttempts).toBe(1);
+  });
+});

@@ -10,10 +10,12 @@ const OK_POLICY = {
   llm: { denied_models: ['*-vision'], max_calls_per_session: 50 },
 };
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers(headers),
+    body: { cancel: async () => {} },
     json: async () => body,
     text: async () => JSON.stringify(body),
   } as unknown as Response;
@@ -118,5 +120,18 @@ describe('fetchUsagePolicyOutcome tells no policy from a fetch that failed', () 
 
   it('no agent is an answer: there is nothing to govern', async () => {
     expect(await fetchUsagePolicyOutcome({ baseUrl: 'https://x', apiKey: 'k' })).toEqual({ status: 'none' });
+  });
+
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile server picks Content-Encoding regardless of what was requested.
+  // A compressed response must never be read; this is fail-open, like any
+  // other unreadable response.
+  it('a compressed response is not an answer, and its body is never read', async () => {
+    let bodyRead = false;
+    const res = jsonResponse(200, OK_POLICY, { 'content-encoding': 'br' });
+    res.json = (async () => { bodyRead = true; return OK_POLICY; }) as typeof res.json;
+    const out = await run(async () => res);
+    expect(out).toEqual({ status: 'unavailable' });
+    expect(bodyRead).toBe(false);
   });
 });

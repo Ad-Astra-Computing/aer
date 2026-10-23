@@ -73,6 +73,35 @@ describe('McpApiClient', () => {
   });
 });
 
+describe('McpApiClient: CVE-2026-111497 (Brotli decoder RCE)', () => {
+  // fetch() decodes a Brotli body lazily on first read, and a hostile or
+  // compromised base_url picks Content-Encoding regardless of what was
+  // requested. Garbage bytes rather than real Brotli, so an unguarded read
+  // fails on JSON.parse with a DIFFERENT message than the CVE refusal,
+  // proving the guard (not a parse failure) is what rejected it.
+  it('refuses a compressed response without reading its body', async () => {
+    server.use(
+      http.get(`${BASE}/v1/compressed`, () => new HttpResponse(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { 'content-encoding': 'br' },
+      })),
+    );
+    const client = new McpApiClient({ baseUrl: BASE, apiKey: KEY, clientVersion: '1.0.0' });
+    await expect(client.get('/v1/compressed')).rejects.toThrow(/CVE-2026-111497/);
+  });
+
+  it('refuses a compressed error response without reading its body', async () => {
+    server.use(
+      http.get(`${BASE}/v1/compressed-error`, () => new HttpResponse(new Uint8Array([1, 2, 3]), {
+        status: 500,
+        headers: { 'content-encoding': 'br' },
+      })),
+    );
+    const client = new McpApiClient({ baseUrl: BASE, apiKey: KEY, clientVersion: '1.0.0' });
+    await expect(client.get('/v1/compressed-error')).rejects.toThrow(/CVE-2026-111497/);
+  });
+});
+
 describe('TokenBucket', () => {
   it('refills after the 60s window elapses', () => {
     let now = 0;

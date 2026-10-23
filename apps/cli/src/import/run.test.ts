@@ -101,4 +101,70 @@ describe('runClaudeCodeImport', () => {
     })).rejects.toThrow(/no Claude Code session activity.*~\/\.claude\/projects/s);
     expect(called).toBe(0);
   });
+
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile or misconfigured base_url picks Content-Encoding regardless of
+  // what was requested. Garbage bytes rather than real Brotli, so an
+  // unguarded read would fail on JSON.parse with a DIFFERENT message than the
+  // CVE refusal, proving the guard (not a parse failure) is what rejected it.
+  it('refuses a compressed session-create response without reading its body', async () => {
+    const fetchImpl = (async () =>
+      new Response(new Uint8Array([1, 2, 3]), { status: 201, headers: { 'content-encoding': 'br' } })) as unknown as typeof fetch;
+    await expect(runClaudeCodeImport({
+      stream: transcriptStream(), baseUrl: 'https://api.test', apiKey: 'k',
+      tenantId: TENANT, agentId: AGENT, environmentId: ENV, fetchImpl,
+    })).rejects.toThrow(/CVE-2026-111497/);
+  });
+
+  it('refuses a compressed event-ingest response without reading its body', async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.endsWith('/v1/sessions')) {
+        return new Response(JSON.stringify({ agent_session_id: SESSION, ingest_token: 't' }), { status: 201 });
+      }
+      return new Response(new Uint8Array([1, 2, 3]), { status: 202, headers: { 'content-encoding': 'br' } });
+    }) as unknown as typeof fetch;
+    await expect(runClaudeCodeImport({
+      stream: transcriptStream(), baseUrl: 'https://api.test', apiKey: 'k',
+      tenantId: TENANT, agentId: AGENT, environmentId: ENV, fetchImpl,
+    })).rejects.toThrow(/CVE-2026-111497/);
+  });
+
+  it('refuses a compressed session-create error response without reading its body', async () => {
+    const fetchImpl = (async () =>
+      new Response(new Uint8Array([1, 2, 3]), { status: 403, headers: { 'content-encoding': 'br' } })) as unknown as typeof fetch;
+    await expect(runClaudeCodeImport({
+      stream: transcriptStream(), baseUrl: 'https://api.test', apiKey: 'k',
+      tenantId: TENANT, agentId: AGENT, environmentId: ENV, fetchImpl,
+    })).rejects.toThrow(/CVE-2026-111497/);
+  });
+
+  it('a compressed complete response never reads its body but does not fail the import', async () => {
+    // completeRes is best-effort: a failure here (including this guard) must
+    // only skip the aer_id, since the AER was already generated server-side.
+    let jsonCalled = false;
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.endsWith('/v1/sessions')) {
+        return new Response(JSON.stringify({ agent_session_id: SESSION, ingest_token: 't' }), { status: 201 });
+      }
+      if (u.endsWith(`/v1/sessions/${SESSION}/events`)) {
+        return new Response(JSON.stringify({ accepted: 1, rejected: 0 }), { status: 202 });
+      }
+      const res = new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } });
+      const originalJson = res.json.bind(res);
+      res.json = (async () => {
+        jsonCalled = true;
+        return originalJson();
+      }) as typeof res.json;
+      return res;
+    }) as unknown as typeof fetch;
+
+    const summary = await runClaudeCodeImport({
+      stream: transcriptStream(), baseUrl: 'https://api.test', apiKey: 'k',
+      tenantId: TENANT, agentId: AGENT, environmentId: ENV, fetchImpl,
+    });
+    expect(jsonCalled).toBe(false);
+    expect(summary.aer_id).toBeUndefined();
+  });
 });

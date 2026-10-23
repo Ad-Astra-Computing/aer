@@ -120,4 +120,33 @@ describe('CLI webhooks', () => {
     expect(requestedPath).toBe('/v1/webhooks/..%2F..%2Fv1%2Fadmin%2Ftenants');
     server.resetHandlers();
   });
+
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile or misconfigured base_url picks Content-Encoding regardless of
+  // what was requested. Garbage bytes rather than real Brotli, so an
+  // unguarded read would fail on JSON.parse with a DIFFERENT message than the
+  // CVE refusal, proving the guard (not a parse failure) is what rejected it.
+  it('refuses a compressed webhook-list response without reading its body', async () => {
+    server.use(
+      http.get(`${BASE}/v1/webhooks`, () => new HttpResponse(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { 'content-encoding': 'br' },
+      })),
+    );
+    await expect(listWebhooks({ baseUrl: BASE, apiKey: KEY })).rejects.toThrow(/CVE-2026-111497/);
+    server.resetHandlers();
+  });
+
+  it('refuses a compressed error response on webhook creation without reading its body', async () => {
+    server.use(
+      http.post(`${BASE}/v1/webhooks`, () => new HttpResponse(new Uint8Array([1, 2, 3]), {
+        status: 500,
+        headers: { 'content-encoding': 'br' },
+      })),
+    );
+    await expect(
+      createWebhook({ baseUrl: BASE, apiKey: KEY, url: 'https://x' }),
+    ).rejects.toThrow(/CVE-2026-111497/);
+    server.resetHandlers();
+  });
 });

@@ -1,5 +1,16 @@
 import { newUuidV7 } from './uuid.js';
 
+/** A compressed response is a deliberate refusal (CVE-2026-111497), not a
+ * network condition: postWithRetry must recognize it and fail fast, or a
+ * hostile baseUrl turns every emit into a multi-second hang for no better
+ * odds of succeeding. */
+class CompressedResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CompressedResponseError';
+  }
+}
+
 export interface AerClientOptions {
   baseUrl: string;
   sessionId: string;
@@ -151,7 +162,17 @@ export function createAerClient(opts: AerClientOptions): AerClient {
     const controller = new AbortController();
     const timeoutTimer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
-      return await fetchImpl(url, { ...init, signal: controller.signal });
+      const res = await fetchImpl(url, { ...init, signal: controller.signal });
+      // CVE-2026-111497: fetch() decodes Brotli lazily, on whichever later
+      // read (res.json()/safeText()) this response gets, and a hostile or
+      // compromised baseUrl picks Content-Encoding on its own regardless of
+      // what was requested. One choke point for all three callers.
+      const enc = res.headers.get('content-encoding');
+      if (enc !== null && enc.toLowerCase() !== 'identity') {
+        await res.body?.cancel().catch(() => {});
+        throw new CompressedResponseError(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
+      }
+      return res;
     } finally {
       clearTimeout(timeoutTimer);
     }
@@ -171,6 +192,7 @@ export function createAerClient(opts: AerClientOptions): AerClient {
           body: JSON.stringify(chunk),
         });
       } catch (err) {
+        if (err instanceof CompressedResponseError) throw err;
         // A network error (refused, reset, DNS, the request timeout) is
         // retried like a 5xx. Event ids are stable across attempts, so a batch
         // the server did receive is not recorded twice.

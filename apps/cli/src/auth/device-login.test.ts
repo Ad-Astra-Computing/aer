@@ -336,6 +336,41 @@ describe('grant validation (P3): tenant_id UUID, role domain, expires_at parseab
   });
 });
 
+describe('CVE-2026-111497 (Brotli decoder RCE)', () => {
+  // fetch() decodes a Brotli body lazily on first read, and a hostile or
+  // compromised base_url picks Content-Encoding regardless of what was
+  // requested. Garbage bytes rather than real Brotli, so an unguarded read
+  // fails on JSON.parse with a DIFFERENT message than the CVE refusal,
+  // proving the guard (not a parse failure) is what rejected it.
+  it('startDeviceLogin refuses a compressed response without reading its body', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } }),
+    );
+    await expect(
+      startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl }),
+    ).rejects.toThrow(/CVE-2026-111497/);
+  });
+
+  it('startDeviceLogin refuses a compressed error response without reading its body', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), { status: 500, headers: { 'content-encoding': 'br' } }),
+    );
+    await expect(
+      startDeviceLogin({ baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl }),
+    ).rejects.toThrow(/CVE-2026-111497/);
+  });
+
+  it('pollForToken refuses a compressed response without reading its body, and does not spend the poll budget on it', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } }),
+    );
+    await expect(
+      pollForToken(START, { baseUrl: 'https://api.test', client: 'aer-cli/1.0.0', fetchImpl, sleep: immediateSleep() }),
+    ).rejects.toThrow(/CVE-2026-111497/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('P2-5: server error bodies are sanitized and bounded', () => {
   it('an oversized/control-character error body from /v1/cli/device is capped and cleaned', async () => {
     const huge = `\x07${'x'.repeat(5000)}`;

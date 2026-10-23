@@ -6,6 +6,7 @@
 // only the account owner can decide to revoke a key aer login never made.
 
 import { getCredential, removeCredential, listCredentialBaseUrls } from './credentials-store.js';
+import { assertUncompressed } from '../http-guard.js';
 
 export interface LogoutDeps {
   env: Record<string, string | undefined>;
@@ -57,6 +58,10 @@ async function logoutOne(baseUrl: string, deps: LogoutDeps): Promise<void> {
       method: 'POST',
       headers: { authorization: `Bearer ${cred.api_key}` },
     });
+    // CVE-2026-111497: inside the same try as the fetch, so a refusal takes
+    // the same best-effort fallback as a dropped connection, never escaping
+    // logoutOne as an uncaught exception.
+    await assertUncompressed(res);
   } catch {
     removeCredential(baseUrl, deps.env);
     deps.printErr(`Could not reach ${baseUrl}; removed the local credentials anyway.`);

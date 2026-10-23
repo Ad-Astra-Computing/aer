@@ -400,3 +400,43 @@ describe('aer mcp serve --max-rpm validation', () => {
     expect(exitSpy).toHaveBeenCalledWith(64);
   });
 });
+
+describe('aer download', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let writeSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitCalled(code ?? 0);
+    }) as never);
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.stubEnv('AER_BASE_URL', 'http://127.0.0.1:9');
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+    writeSpy.mockRestore();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile server picks Content-Encoding regardless of what was requested.
+  // The bundle endpoint is an external server this process does not control
+  // the bytes of, so a compressed response must never be read.
+  it('refuses a compressed bundle response without reading its body', async () => {
+    let bodyRead = false;
+    const res = new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } });
+    res.arrayBuffer = (async () => { bodyRead = true; return new ArrayBuffer(0); }) as typeof res.arrayBuffer;
+    vi.stubGlobal('fetch', vi.fn(async () => res));
+    // assertUncompressed throws rather than printing and exiting itself, the
+    // same as every other guarded command: bin.ts's top-level catch is what
+    // turns it into the user-facing message and exit code.
+    await expect(main(['download', 'aer-1', '-o', '-'])).rejects.toThrow(/CVE-2026-111497/);
+    expect(bodyRead).toBe(false);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+});
