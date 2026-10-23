@@ -95,6 +95,10 @@ export async function getAerMeta(opts: TenantOpts & { aerId: string }): Promise<
   return authedFetch(opts)(`/v1/aers/${encodeURIComponent(opts.aerId)}`);
 }
 
+export async function getUsage(opts: TenantOpts): Promise<unknown> {
+  return authedFetch(opts)('/v1/usage');
+}
+
 export async function getBaseline(opts: TenantOpts & { agentId: string }): Promise<unknown> {
   return authedFetch(opts)(`/v1/agents/${encodeURIComponent(opts.agentId)}/baseline`);
 }

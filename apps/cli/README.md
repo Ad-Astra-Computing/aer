@@ -34,6 +34,12 @@ completed. It succeeds only when one did; a workload that ran but recorded
 nothing exits 1. The collector, `doctor` and `smoke` all read the key from
 `AER_API_KEY`, then `AER_TENANT_API_KEY`.
 
+`doctor` also checks the tenant's usage cap (`GET /v1/usage`) once a key is
+set and the API answered `/readyz`. The check passes when the API says new
+sessions are currently allowed; when it does not, the check fails and names
+the blocked reason (`events` or `sessions`), the used/limit numbers and the
+upgrade URL, the same way every other check here names its own remediation.
+
 `doctor --json` adds `warnings` (each with a `name` and a `detail`) and
 `hooks.stale_registrations` alongside `ok` and `checks`. One warning fires
 inside a Claude Code tool shell (`CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT`
@@ -229,6 +235,17 @@ print `verified`. To check records signed by your own test keys, use
   an embeddable badge.
 - `aer agents | sessions | findings | aers | webhooks | audit`: tenant
   operations with `AER_TENANT_API_KEY` set.
+- `aer usage [--json]`: this tenant's current usage against its plan limits
+  (`GET /v1/usage`): plan, paid users, the current period, events and
+  sessions used against their limits, the enforcement state and whether new
+  sessions are currently allowed. The default output is plain text for a
+  terminal; `--json` prints the response exactly as the API returns it. When
+  usage is blocked, the text output names the blocked reason and prints the
+  upgrade URL; a pending upgrade request, if any, is shown plainly. There is
+  no per-agent breakdown yet (the API has not shipped one); this command
+  will show one automatically once it does. Exits 0 on a successful read
+  regardless of usage level; a non-zero exit means the request itself
+  failed (auth or network trouble, or the tenant key could not be resolved).
 
 Run `aer` with no arguments for the full usage text.
 

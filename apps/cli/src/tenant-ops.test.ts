@@ -6,6 +6,7 @@ import {
   listSessions, getSession,
   listFindings, listAudit,
   listAers, getAerMeta,
+  getUsage,
 } from './tenant-ops.js';
 
 const BASE = 'http://test.local';
@@ -59,6 +60,21 @@ const server = setupServer(
   }),
   http.get(`${BASE}/v1/aers/:id`, ({ params }) => {
     return HttpResponse.json({ aer_id: params.id });
+  }),
+  http.get(`${BASE}/v1/usage`, ({ request }) => {
+    lastAuth = request.headers.get('authorization');
+    return HttpResponse.json({
+      plan: 'team',
+      paid_users: 5,
+      period: { start: '2026-10-01T00:00:00.000Z', end: '2026-10-31T23:59:59.999Z' },
+      events: { used: 82340, limit: 100000, hard_limit: 125000, percent: 82 },
+      sessions: { used: 410, limit: 500, percent: 82 },
+      state: 'warning',
+      enforcement: 'enforce',
+      new_sessions_allowed: true,
+      blocked_reason: null,
+      upgrade: { available: true, url: 'https://aer.run/settings#usage', pending_request: null },
+    });
   }),
 );
 
@@ -118,6 +134,21 @@ describe('CLI tenant-ops', () => {
   it('getAerMeta hits the right path', async () => {
     const r = await getAerMeta({ baseUrl: BASE, apiKey: KEY, aerId: 'aer-zzz' }) as { aer_id: string };
     expect(r.aer_id).toBe('aer-zzz');
+  });
+
+  it('getUsage passes bearer + parses response', async () => {
+    const r = await getUsage({ baseUrl: BASE, apiKey: KEY }) as { plan: string; events: { used: number } };
+    expect(lastAuth).toBe(`Bearer ${KEY}`);
+    expect(r.plan).toBe('team');
+    expect(r.events.used).toBe(82340);
+  });
+
+  it('getUsage throws clear error on non-2xx', async () => {
+    server.use(
+      http.get(`${BASE}/v1/usage`, () => HttpResponse.json({ error: 'forbidden' }, { status: 403 })),
+    );
+    await expect(getUsage({ baseUrl: BASE, apiKey: 'wrong' })).rejects.toThrow(/403/);
+    server.resetHandlers();
   });
 
   it('throws clear error on non-2xx', async () => {

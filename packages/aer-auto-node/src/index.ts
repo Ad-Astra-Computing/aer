@@ -18,7 +18,7 @@ export type {
 export { createDpopKey, normalizeHtu as normalizeDpopHtu } from './dpop.js';
 export type { DpopKey, DpopProofArgs } from './dpop.js';
 
-export { createSessionManager } from './session.js';
+export { createSessionManager, AerRefusalError } from './session.js';
 export type {
   SessionManager,
   SessionTransport,
