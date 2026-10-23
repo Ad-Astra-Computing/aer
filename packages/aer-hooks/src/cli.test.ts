@@ -741,3 +741,69 @@ describe('main() hard-timeout budget', () => {
     expect(stderrWrites.join('')).toBe('');
   });
 });
+
+// The structural guarantee these pin: runHook/main swallow every throw and
+// the only process.stdout.write in cli.ts is behind --version, so a
+// ConfigChange that hits a bad settings file never surfaces as a blocking
+// decision to the harness. Fable's review flagged the existing "never
+// signals exit 2" tests (core.test.ts, config-change-plan.test.ts) for
+// asserting only the payload's shape, never the process behavior itself.
+describe('ConfigChange end to end: malformed and oversized settings never signal exit 2', () => {
+  it('a malformed settings file never throws, writes nothing to stdout, and never exits the process itself', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hook-configchange-'));
+    try {
+      const file = path.join(dir, 'settings.json');
+      fs.writeFileSync(file, '{ not json');
+      const { calls } = stubFetch();
+      const writes: string[] = [];
+      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+        writes.push(String(chunk));
+        return true;
+      });
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as unknown as typeof process.exit);
+
+      await expect(
+        main(['--harness', 'claude-code'], CONFIGURED, {
+          readInput: async () =>
+            JSON.stringify({ hook_event_name: 'ConfigChange', session_id: 's-cc-1', source: 'project_settings', file_path: file, cwd: dir }),
+        }),
+      ).resolves.toBeUndefined();
+
+      stdoutSpy.mockRestore();
+      exitSpy.mockRestore();
+      vi.unstubAllGlobals();
+      expect(writes.join('')).toBe('');
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(calls.length).toBeGreaterThan(0); // the event still made it onto the wire
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('an oversized settings file never throws and writes nothing to stdout', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-hook-configchange-big-'));
+    try {
+      const file = path.join(dir, 'settings.json');
+      fs.writeFileSync(file, Buffer.alloc(1024 * 1024 + 1, 0x20));
+      stubFetch();
+      const writes: string[] = [];
+      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+        writes.push(String(chunk));
+        return true;
+      });
+
+      await expect(
+        main(['--harness', 'claude-code'], CONFIGURED, {
+          readInput: async () =>
+            JSON.stringify({ hook_event_name: 'ConfigChange', session_id: 's-cc-2', source: 'project_settings', file_path: file, cwd: dir }),
+        }),
+      ).resolves.toBeUndefined();
+
+      stdoutSpy.mockRestore();
+      vi.unstubAllGlobals();
+      expect(writes.join('')).toBe('');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

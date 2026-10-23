@@ -17,8 +17,19 @@ import {
   lockFileFor,
   sweepStaleEffectStash,
   MAX_EFFECT_STASH_ENTRIES,
+  ensureConfigSalt,
+  storeConfigSnapshot,
+  stashConfigWriteTool,
+  stashConfigShellOpen,
+  closeConfigShell,
+  stashConfigPromptGrant,
+  resolveConfigWriter,
+  sweepStaleConfigStashes,
+  CONFIG_CHANGE_WINDOW_MS,
+  VCS_PUSH_STASH_TTL_MS,
   type SessionState,
 } from './session-store.js';
+import { statusOnlySnapshot, type ConfigInternalSnapshot } from './config-snapshot.js';
 
 describe('session-store', () => {
   let dir: string;
@@ -474,5 +485,168 @@ describe('sweepStaleEffectStash', () => {
     expect(loaded.effectStash!['tu1::/repo/a.ts']!.sha256Before).toBeUndefined();
     expect(loaded.effectStash!['tu2::/repo/b.ts']).toEqual({ path: '/repo/b.ts', stashedAt: T });
     expect(loaded.effectStash!['tu3::/repo/c.ts']).toBeUndefined();
+  });
+});
+
+describe('ConfigChange: writer-attribution resolution', () => {
+  const T = 1_000_000;
+  const snap = (over: Partial<ConfigInternalSnapshot> = {}): ConfigInternalSnapshot => ({
+    ...statusOnlySnapshot('absent'), config_status: 'ok', ...over,
+  });
+
+  it('generates a random per-session salt once, kept stable across calls', () => {
+    const st = freshState(T);
+    const salt1 = ensureConfigSalt(st);
+    expect(salt1.length).toBeGreaterThan(0);
+    expect(ensureConfigSalt(st)).toBe(salt1);
+  });
+
+  it('a different session gets a different salt', () => {
+    expect(ensureConfigSalt(freshState(T))).not.toBe(ensureConfigSalt(freshState(T)));
+  });
+
+  it('never puts the salt on anything resembling an emitted payload', () => {
+    const st = freshState(T);
+    const salt = ensureConfigSalt(st);
+    storeConfigSnapshot(st, '/repo/.claude/settings.json', snap(), 'a'.repeat(64), T);
+    expect(JSON.stringify(st.configSnapshots)).not.toContain(salt);
+  });
+
+  it('prefers a write_tool stash whose path matches exactly, and consumes it', () => {
+    const st = freshState(T);
+    stashConfigWriteTool(st, '/repo/.claude/settings.json', T);
+    const writer = resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + 500);
+    expect(writer).toBe('write_tool');
+    // Consumed: a second reload of the same path finds nothing.
+    expect(resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + 600)).toBe('none_observed');
+  });
+
+  it('a write_tool stash for a DIFFERENT path never attributes this reload', () => {
+    const st = freshState(T);
+    stashConfigWriteTool(st, '/repo/.claude/other.json', T);
+    expect(resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + 500)).toBe('none_observed');
+  });
+
+  it('prefers a still-open Bash call over a closed, within-window shell stash', () => {
+    const st = freshState(T);
+    stashConfigShellOpen(st, 'tu-open', false, T);
+    stashConfigShellOpen(st, 'tu-closed', true, T);
+    closeConfigShell(st, 'tu-closed');
+    const writer = resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + 5000);
+    expect(writer).toBe('shell_unnamed'); // the still-open one, even though it is "unnamed"
+  });
+
+  it('a still-open Bash call is honored even past the window (a long-running script)', () => {
+    const st = freshState(T);
+    stashConfigShellOpen(st, 'tu-open', true, T);
+    const writer = resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + CONFIG_CHANGE_WINDOW_MS * 10);
+    expect(writer).toBe('shell_named');
+  });
+
+  it('an open stash past its TTL no longer matches and falls through to none_observed', () => {
+    const st = freshState(T);
+    stashConfigShellOpen(st, 'tu-open', true, T);
+    const writer = resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + VCS_PUSH_STASH_TTL_MS + 1);
+    expect(writer).toBe('none_observed');
+  });
+
+  it('among two open stashes, the most recently opened one matches', () => {
+    const st = freshState(T);
+    // The older one is a leaked stash (its PostToolUse never arrived); the
+    // newer one is the long-running call actually in progress right now.
+    stashConfigShellOpen(st, 'tu-old', false, T);
+    stashConfigShellOpen(st, 'tu-new', true, T + 1000);
+    const writer = resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + 2000);
+    expect(writer).toBe('shell_named');
+    // The newer one was consumed, the older leaked one is untouched.
+    expect(st.configShellStash?.['tu-new']).toBeUndefined();
+    expect(st.configShellStash?.['tu-old']).toBeDefined();
+  });
+
+  it('falls back to shell_named over shell_unnamed when both are closed and within window', () => {
+    const st = freshState(T);
+    stashConfigShellOpen(st, 'tu-1', false, T);
+    closeConfigShell(st, 'tu-1');
+    stashConfigShellOpen(st, 'tu-2', true, T + 10);
+    closeConfigShell(st, 'tu-2');
+    expect(resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + 500)).toBe('shell_named');
+  });
+
+  it('drops a closed shell stash once it is outside the window', () => {
+    const st = freshState(T);
+    stashConfigShellOpen(st, 'tu-1', true, T);
+    closeConfigShell(st, 'tu-1');
+    const writer = resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + CONFIG_CHANGE_WINDOW_MS + 1);
+    expect(writer).toBe('none_observed');
+  });
+
+  it('attributes prompt_grant only for local_settings with exactly an allow_added delta', () => {
+    const st = freshState(T);
+    stashConfigPromptGrant(st, T);
+    expect(resolveConfigWriter(st, '/repo/.claude/settings.local.json', 'local_settings', ['allow_added'], T + 500)).toBe('prompt_grant');
+  });
+
+  it('never attributes prompt_grant for a different source or a different delta', () => {
+    const st1 = freshState(T);
+    stashConfigPromptGrant(st1, T);
+    expect(resolveConfigWriter(st1, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T + 500)).toBe('none_observed');
+
+    const st2 = freshState(T);
+    stashConfigPromptGrant(st2, T);
+    expect(resolveConfigWriter(st2, '/repo/.claude/settings.local.json', 'local_settings', ['deny_removed'], T + 500)).toBe('none_observed');
+  });
+
+  it('resolves to none_observed with no stash of any kind', () => {
+    const st = freshState(T);
+    expect(resolveConfigWriter(st, '/repo/.claude/settings.json', 'project_settings', ['allow_added'], T)).toBe('none_observed');
+  });
+
+  it('sweepStaleConfigStashes evicts stale closed stashes but keeps a still-open one', () => {
+    const st = freshState(T);
+    stashConfigWriteTool(st, '/repo/a.json', T);
+    stashConfigShellOpen(st, 'tu-open', true, T);
+    stashConfigShellOpen(st, 'tu-closed', true, T);
+    closeConfigShell(st, 'tu-closed');
+    stashConfigPromptGrant(st, T);
+
+    sweepStaleConfigStashes(st, T + CONFIG_CHANGE_WINDOW_MS * 3);
+
+    expect(st.configWriteToolStash).toBeUndefined();
+    expect(st.configPromptGrantStash).toBeUndefined();
+    expect(st.configShellStash?.['tu-open']).toBeDefined();
+    expect(st.configShellStash?.['tu-closed']).toBeUndefined();
+  });
+
+  it('sweepStaleConfigStashes evicts an open stash once it is past its TTL', () => {
+    const st = freshState(T);
+    stashConfigShellOpen(st, 'tu-open', true, T);
+
+    sweepStaleConfigStashes(st, T + VCS_PUSH_STASH_TTL_MS + 1);
+
+    expect(st.configShellStash?.['tu-open']).toBeUndefined();
+  });
+
+  it('round-trips the snapshot store and stashes through save/load', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aer-config-store-'));
+    try {
+      const env = { XDG_CACHE_HOME: dir };
+      const st = freshState(T);
+      ensureConfigSalt(st);
+      storeConfigSnapshot(st, '/repo/.claude/settings.json', snap({ allow_rules: 2 }), 'b'.repeat(64), T);
+      stashConfigWriteTool(st, '/repo/.claude/settings.local.json', T);
+      stashConfigShellOpen(st, 'tu-1', true, T);
+      stashConfigPromptGrant(st, T);
+      saveState('cfg-roundtrip', st, env);
+
+      const loaded = loadState('cfg-roundtrip', env, T + 10)!;
+      expect(loaded.configSalt).toBe(st.configSalt);
+      expect(loaded.configSnapshots?.['/repo/.claude/settings.json']?.contentHash).toBe('b'.repeat(64));
+      expect(loaded.configSnapshots?.['/repo/.claude/settings.json']?.snapshot.allow_rules).toBe(2);
+      expect(loaded.configWriteToolStash?.['/repo/.claude/settings.local.json']).toEqual({ at: T });
+      expect(loaded.configShellStash?.['tu-1']).toEqual({ kind: 'shell_named', at: T, open: true });
+      expect(loaded.configPromptGrantStash).toEqual({ at: T });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -40,7 +40,10 @@ function bounded(v: unknown): string | undefined {
 // The same call has a different tool name in each harness.
 const SHELL_TOOLS = new Set(['Bash', 'BashOutput', 'shell', 'run_command', 'run_terminal_command']);
 const READ_TOOLS = new Set(['Read', 'NotebookRead', 'read_file', 'view_file']);
-const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'write_file', 'edit_file', 'write_to_file', 'replace_file_content']);
+/** Exported so session-store.ts's config-change writer attribution (stashing
+ *  a PreToolUse of a write tool whose target is a Claude settings/skills
+ *  path) reuses this same set, rather than keeping a second one in step by hand. */
+export const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'write_file', 'edit_file', 'write_to_file', 'replace_file_content']);
 const FETCH_TOOLS = new Set(['WebFetch', 'web_fetch', 'read_url_content']);
 // Grep/Glob previously emitted no typed event (visibility research gap).
 // Claude Code's own names; other harnesses that expose an equivalent search
