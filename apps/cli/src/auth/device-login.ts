@@ -4,6 +4,7 @@
 // prefilled, so only the plain `verification_uri` is shown or opened.
 
 import { sanitizeForTerminal } from '../cli-error.js';
+import { assertUncompressed } from '../http-guard.js';
 
 export interface DeviceStartResponse {
   device_code: string;
@@ -174,6 +175,7 @@ export async function startDeviceLogin(opts: DeviceLoginOptions): Promise<Device
       ...(opts.hostname ? { hostname: opts.hostname } : {}),
     }),
   });
+  await assertUncompressed(res);
   if (!res.ok) {
     const body = await readJson(res);
     const errorCode = typeof body['error'] === 'string' ? body['error'] : undefined;
@@ -216,6 +218,7 @@ export async function pollForToken(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ device_code: start.device_code }),
     });
+    await assertUncompressed(res);
 
     if (res.status === 201) {
       return parseGrant(await readJson(res));
