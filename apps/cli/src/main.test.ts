@@ -432,9 +432,11 @@ describe('aer download', () => {
     const res = new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } });
     res.arrayBuffer = (async () => { bodyRead = true; return new ArrayBuffer(0); }) as typeof res.arrayBuffer;
     vi.stubGlobal('fetch', vi.fn(async () => res));
-    await expect(main(['download', 'aer-1', '-o', '-'])).rejects.toThrow(ProcessExitCalled);
-    expect(exitSpy).toHaveBeenCalledWith(1);
+    // assertUncompressed throws rather than printing and exiting itself, the
+    // same as every other guarded command: bin.ts's top-level catch is what
+    // turns it into the user-facing message and exit code.
+    await expect(main(['download', 'aer-1', '-o', '-'])).rejects.toThrow(/CVE-2026-111497/);
     expect(bodyRead).toBe(false);
-    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('CVE-2026-111497'));
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 });

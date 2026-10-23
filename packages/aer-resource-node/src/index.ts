@@ -18,7 +18,7 @@ export const ATTESTATION_TYP = 'aer-attestation+jwt';
 async function assertUncompressed(res: Response): Promise<void> {
   const enc = res.headers.get('content-encoding');
   if (enc !== null && enc.toLowerCase() !== 'identity') {
-    await res.body?.cancel();
+    await res.body?.cancel().catch(() => {});
     throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
   }
 }

@@ -13,25 +13,3 @@ export async function assertUncompressed(res: Response): Promise<void> {
     throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
   }
 }
-
-/** A compressed response is a deliberate refusal, not a network condition: a
- * retry or poll loop must recognize it and give up immediately, or a hostile
- * endpoint turns every call into a wasted retry/poll budget for no better
- * odds of succeeding. */
-export class CompressedResponseError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'CompressedResponseError';
-  }
-}
-
-/** Same check as assertUncompressed, but raises a CompressedResponseError so
- * a retry/poll loop's catch block can single it out and fail fast instead of
- * retrying it like a dropped connection. */
-export async function assertUncompressedOrRetryable(res: Response): Promise<void> {
-  const enc = res.headers.get('content-encoding');
-  if (enc !== null && enc.toLowerCase() !== 'identity') {
-    await res.body?.cancel().catch(() => {});
-    throw new CompressedResponseError(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
-  }
-}
