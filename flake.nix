@@ -46,9 +46,9 @@
         # `nix build .#checks.<system>.default` on that system, and copy the
         # "got:" value back in.
         pnpmDepsHashes = {
-          x86_64-linux = "sha256-7yFEe81WfabNy8WuPE+GXinNaCP0cc5Oci5+QJojf+E=";
-          aarch64-darwin = "sha256-ZWYa6T7qtwugimJoSowIoOudaML4V7nJx7CJF8Q2pvc=";
-          aarch64-linux = "sha256-/aVEzTL7Sj1ynhE7K7jb1SBU8sa2wJkmd6NFR9lz6dc=";
+          x86_64-linux = "sha256-CnExqlo724qlI3m+xsP/aMbtVF1FPpJ9LNAs+gi5HIU=";
+          aarch64-darwin = "sha256-29+MsynhtD4NA+RigFKxe80IyEkLkD3hpxOgNIVtXKU=";
+          aarch64-linux = "sha256-pSC39KbQBxhJHawNIZgObOW4duvfLgaOhD4PzPPImfs=";
         };
 
         pnpmDeps = pkgs.fetchPnpmDeps {
