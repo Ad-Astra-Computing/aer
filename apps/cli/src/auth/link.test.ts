@@ -228,4 +228,33 @@ describe('cmdLink', () => {
     expect(code).toBe(1);
     expect(err.join('\n')).toMatch(/agent_id/);
   });
+
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile or misconfigured base_url picks Content-Encoding regardless of
+  // what was requested. Garbage bytes rather than real Brotli, so an
+  // unguarded read would fail on JSON.parse with a DIFFERENT message than the
+  // CVE refusal, proving the guard (not a parse failure) is what rejected it.
+  it('refuses a compressed agent-list response without reading its body', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } }),
+      );
+    const code = await cmdLink({}, deps({ isTTY: true, fetchImpl }));
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/CVE-2026-111497/);
+  });
+
+  it('refuses a compressed create-agent error response without reading its body', async () => {
+    setCredential(BASE_URL, CRED, env);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(new Uint8Array([1, 2, 3]), { status: 500, headers: { 'content-encoding': 'br' } }),
+      );
+    const code = await cmdLink({ createAgentName: 'x' }, deps({ fetchImpl }));
+    expect(code).toBe(1);
+    expect(err.join('\n')).toMatch(/CVE-2026-111497/);
+  });
 });

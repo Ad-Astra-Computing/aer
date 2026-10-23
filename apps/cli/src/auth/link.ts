@@ -63,12 +63,26 @@ async function safeResponseText(res: Response): Promise<string> {
   }
 }
 
+/** CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+ * hostile or misconfigured base_url picks Content-Encoding regardless of
+ * what was requested. Every call below reads from an operator-configured
+ * base_url this process does not control the bytes of, so none of their
+ * bodies (including an error path's) are read until this passes. */
+async function assertUncompressed(res: Response): Promise<void> {
+  const enc = res.headers.get('content-encoding');
+  if (enc !== null && enc.toLowerCase() !== 'identity') {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
+  }
+}
+
 async function createAgent(baseUrl: string, apiKey: string, name: string, fetchImpl: typeof fetch): Promise<string> {
   const res = await fetchImpl(`${trimUrl(baseUrl)}/v1/agents`, {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({ name }),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`could not create agent "${name}" (HTTP ${res.status}): ${await safeResponseText(res)}`);
   const body = (await res.json()) as { agent_id?: string };
   if (!body.agent_id || !UUID_RE.test(body.agent_id)) {
@@ -81,6 +95,7 @@ async function listAgents(baseUrl: string, apiKey: string, fetchImpl: typeof fet
   const res = await fetchImpl(`${trimUrl(baseUrl)}/v1/agents`, {
     headers: { authorization: `Bearer ${apiKey}` },
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`could not list agents (HTTP ${res.status}): ${await safeResponseText(res)}`);
   const body = (await res.json()) as { agents?: AgentSummary[] };
   return body.agents ?? [];
@@ -90,6 +105,7 @@ async function listEnvironments(baseUrl: string, apiKey: string, fetchImpl: type
   const res = await fetchImpl(`${trimUrl(baseUrl)}/v1/environments`, {
     headers: { authorization: `Bearer ${apiKey}` },
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`could not list environments (HTTP ${res.status}): ${await safeResponseText(res)}`);
   const body = (await res.json()) as { environments?: unknown };
   const rows = Array.isArray(body.environments) ? body.environments : [];
