@@ -172,10 +172,10 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
 
   // 1. Download the canonical bundle.
   const bundleRes = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(opts.aerId)}/bundle`);
+  await assertUncompressed(bundleRes);
   if (!bundleRes.ok) {
     throw new Error(`failed to fetch bundle: ${bundleRes.status} ${await bundleRes.text()}`);
   }
-  await assertUncompressed(bundleRes);
   const bundle = (await bundleRes.json()) as AerBundle;
   const integrity = bundle.integrity;
   if (!integrity || typeof integrity.signing_key_id !== 'string') {

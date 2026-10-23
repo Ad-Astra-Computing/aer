@@ -235,6 +235,27 @@ describe('verifyAer', () => {
     }
   });
 
+  // The 200 case above goes through assertUncompressed before .json(), but an
+  // error response built its message from .text() BEFORE that check ran, so a
+  // compressed body on a non-2xx bundle fetch still reached the decoder.
+  it('refuses a compressed bundle error response without reading its body', async () => {
+    server.use(
+      http.get('http://test.local/v1/aers/:id/bundle', () => {
+        return new HttpResponse(new Uint8Array([1, 2, 3]), {
+          status: 500,
+          headers: { 'content-encoding': 'br' },
+        });
+      }),
+    );
+    try {
+      await expect(verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
+        /CVE-2026-111497/,
+      );
+    } finally {
+      server.resetHandlers();
+    }
+  });
+
   it('reports the strip-integrity canonical hash in the result', async () => {
     currentBundle = buildBundle();
     const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID });
