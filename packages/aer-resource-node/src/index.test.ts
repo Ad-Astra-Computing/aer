@@ -758,3 +758,30 @@ describe('JWKS outages', () => {
     await expect(verifyAttestation(other.token, opts(jwk, down('503'), { now: () => now }))).rejects.toMatchObject({ code: 'jwks_unavailable' });
   });
 });
+
+// CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+// hostile server picks Content-Encoding regardless of what was requested.
+// The JWKS and introspection endpoints are external HTTP servers this
+// process does not control the bytes of.
+describe('CVE-2026-111497: compressed responses are refused unread', () => {
+  it('a compressed JWKS response is jwks_unavailable, and its body is never read', async () => {
+    const { token, jwk } = await mint();
+    let bodyRead = false;
+    const res = new Response(JSON.stringify({ keys: [jwk] }), { status: 200, headers: { 'content-encoding': 'br' } });
+    res.json = (async () => { bodyRead = true; return { keys: [jwk] }; }) as typeof res.json;
+    const impl = vi.fn(async () => res) as unknown as typeof fetch;
+    await expect(verifyAttestation(token, opts(jwk, impl))).rejects.toMatchObject({ code: 'jwks_unavailable' });
+    expect(bodyRead).toBe(false);
+  });
+
+  it('a compressed introspection response is introspection_unavailable, and its body is never read', async () => {
+    const { token, jwk } = await mint();
+    let bodyRead = false;
+    const res = new Response(JSON.stringify({ active: true }), { status: 200, headers: { 'content-encoding': 'br' } });
+    res.json = (async () => { bodyRead = true; return { active: true }; }) as typeof res.json;
+    const impl = vi.fn(async () => res) as unknown as typeof fetch;
+    const withOpts = opts(jwk, jwksFetch([jwk]), { introspect: { url: INTROSPECT_URL, verifierKey: 'aerv_test', fetchImpl: impl } });
+    await expect(verifyAttestation(token, withOpts)).rejects.toMatchObject({ code: 'introspection_unavailable' });
+    expect(bodyRead).toBe(false);
+  });
+});

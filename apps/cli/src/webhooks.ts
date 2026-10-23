@@ -1,3 +1,5 @@
+import { assertUncompressed } from './http-guard.js';
+
 export interface WebhookCmdOptions {
   baseUrl: string;
   apiKey: string;
@@ -13,6 +15,7 @@ export async function listWebhooks(opts: WebhookCmdOptions): Promise<unknown> {
   const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks`, {
     headers: authHeaders(opts.apiKey),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
 }
@@ -30,6 +33,7 @@ export async function createWebhook(
       ...(opts.eventTypes ? { event_types: opts.eventTypes } : {}),
     }),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
 }
@@ -40,6 +44,7 @@ export async function rotateWebhookSecret(opts: WebhookCmdOptions & { webhookId:
     method: 'POST',
     headers: authHeaders(opts.apiKey),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
 }
@@ -50,6 +55,7 @@ export async function testWebhook(opts: WebhookCmdOptions & { webhookId: string 
     method: 'POST',
     headers: authHeaders(opts.apiKey),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
 }
@@ -60,6 +66,7 @@ export async function deleteWebhook(opts: WebhookCmdOptions & { webhookId: strin
     method: 'DELETE',
     headers: authHeaders(opts.apiKey),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
 }
 
@@ -69,6 +76,7 @@ export async function listDeliveries(opts: WebhookCmdOptions & { webhookId: stri
   const res = await f(`${opts.baseUrl.replace(/\/$/, '')}/v1/webhooks/${encodeURIComponent(opts.webhookId)}/deliveries${q}`, {
     headers: authHeaders(opts.apiKey),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
 }

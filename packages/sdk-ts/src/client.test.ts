@@ -332,3 +332,30 @@ describe('createAerClient: configurable timeout', () => {
     expect(sawAbort).toBe(true);
   });
 });
+
+describe('createAerClient: CVE-2026-111497 (Brotli decoder RCE)', () => {
+  // fetch() decodes Brotli lazily on first read, and a hostile or
+  // compromised baseUrl picks Content-Encoding regardless of what was
+  // requested, so this must refuse before res.json()/safeText() ever runs.
+  it('refuses a compressed response without reading its body, and does not spend the retry budget on it', async () => {
+    const fetchImpl = vi.fn(
+      () =>
+        new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } }),
+    ) as unknown as typeof fetch;
+
+    const c = createAerClient({
+      baseUrl: 'http://localhost:4000',
+      sessionId,
+      ingestToken: 'test-token-12char-plus-more',
+      batchSize: 1,
+      flushIntervalMs: 100_000,
+      maxRetries: 3,
+      retryBaseMs: 1_000,
+      fetchImpl,
+    });
+    const started = Date.now();
+    await expect(c.emit('tool.started', {})).rejects.toThrow(/CVE-2026-111497/);
+    expect(Date.now() - started).toBeLessThan(400);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

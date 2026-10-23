@@ -20,6 +20,17 @@ import type { Principal } from './principal.js';
 
 export type { Principal } from './principal.js';
 
+/** A compressed response is a deliberate refusal (CVE-2026-111497), not a
+ * network condition: postChunkWithRetry must recognize it and give up
+ * immediately, or a hostile baseUrl turns every batch into a wasted retry
+ * budget for no better odds of succeeding. */
+class CompressedResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CompressedResponseError';
+  }
+}
+
 // What the API's Uuid schema accepts. A caller-supplied eventId that does
 // not fit this shape is treated as not supplied: the generator still runs
 // rather than sending a value ingest would reject the whole event over.
@@ -229,7 +240,17 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
-      return await doFetch(url, { ...init, signal: controller.signal });
+      const res = await doFetch(url, { ...init, signal: controller.signal });
+      // CVE-2026-111497: fetch() decodes Brotli lazily, on whichever later
+      // read (.text()/.json()) this response gets, and a hostile or
+      // compromised baseUrl picks Content-Encoding on its own regardless of
+      // what was requested. One choke point for open/events/complete.
+      const enc = res.headers.get('content-encoding');
+      if (enc !== null && enc.toLowerCase() !== 'identity') {
+        await res.body?.cancel().catch(() => {});
+        throw new CompressedResponseError(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
+      }
+      return res;
     } finally {
       clearTimeout(timer);
     }
@@ -335,6 +356,10 @@ export function createHttpSink(opts: HttpSinkOptions): EventSink {
           body: JSON.stringify(chunk),
         });
       } catch (err) {
+        if (err instanceof CompressedResponseError) {
+          noteOnce('event-ingest-dropped', `${label}: dropping a batch of ${chunk.length} events: ${err.message}`);
+          return;
+        }
         if (attempt < MAX_RETRIES) {
           attempt++;
           await sleep(RETRY_BASE_MS * 2 ** (attempt - 1));

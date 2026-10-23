@@ -55,6 +55,17 @@ export {
   type VerifyAerOptions,
 } from './verify-aer.js';
 
+// Cross-session equality/divergence proof (bodies-off-safe reading of
+// "replay"): compare two already-signed bundles' content commitments,
+// execution graph and observation summaries without ever needing plaintext.
+export {
+  compareBundles,
+  type CompareBundlesResult,
+  type DivergenceReason,
+  type TagDimension,
+  type ActionsDimension,
+} from './compare.js';
+
 // Rekor transparency-log evidence (Tier-1 phase 2): verify OFFLINE that an anchored
 // AER is committed to a signed tree head, without trusting a live Rekor read.
 export {

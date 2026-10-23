@@ -227,4 +227,17 @@ describe('withRequestTimeout keeps a caller signal', () => {
     const f = withRequestTimeout(hangingUntilAbort, 30);
     await expect(f('https://x', { signal: new AbortController().signal })).rejects.toThrow('timed out');
   });
+
+  // CVE-2026-111497: fetch() decodes Brotli lazily on first read, and a
+  // hostile or compromised AER_BASE_URL picks Content-Encoding regardless of
+  // what was requested. withRequestTimeout reads every response's body
+  // (arrayBuffer) to re-wrap it, which is the one choke point all five
+  // session calls share, so the guard belongs here rather than at each call
+  // site.
+  it('refuses a compressed response without reading its body', async () => {
+    const compressed = (async () =>
+      new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } })) as unknown as typeof fetch;
+    const f = withRequestTimeout(compressed, 10_000);
+    await expect(f('https://x')).rejects.toThrow(/CVE-2026-111497/);
+  });
 });

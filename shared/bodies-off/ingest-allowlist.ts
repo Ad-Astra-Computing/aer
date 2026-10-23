@@ -3,11 +3,10 @@
 // cost and gets nothing in the record. Source of truth is
 // BODIES_OFF_PAYLOAD_KEYS in the API repo, which pins the same digest.
 //
-// The server allows five keys this package does not yet send: also_ran,
-// hosts_unreduced, via, resources_seen, prompts_seen (skill now sent below).
-// Run scripts/check-client-allowlist-parity.mjs in the monorepo after
-// changing this file or the server's allowlist, since the two repos have
-// no shared CI to catch drift automatically.
+// also_ran/hosts_unreduced/resources_seen/prompts_seen are allowed
+// server-side ahead of this package sending them. The config_source..writer
+// run is config.changed's fields. Run scripts/check-client-allowlist-parity.mjs
+// in the monorepo after changing this file or the server's allowlist.
 //
 // harness_agent_id, subagent_events_unattached and events_dropped_budget are
 // listed ahead of the server allowlist, which strips and counts them until it
@@ -63,9 +62,16 @@ export const INGEST_PAYLOAD_KEYS: ReadonlySet<string> = new Set<string>([
   'env_set_class', 'history_cleared', 'interpreter_inline', 'ai_cli',
   // Claude Code Skill-tool invocation (skill.invoked): the skill name only.
   'skill',
-  // config.changed (Claude Code ConfigChange, record-only): a client-side
-  // feature snapshot of a settings file, never the path, rule strings, hook
-  // commands or env values.
+  // Shell pipeline evidence (also_ran: executable names a shell line ran
+  // after its first) and a coverage counter for hosts seen but not reduced
+  // to a name (hosts_unreduced, on the closing collector.report).
+  'also_ran', 'hosts_unreduced',
+  // MCP resources/read + prompts/get coverage (mcp.recorder.report): the
+  // resource URIs / prompt names seen, same shape as tools_seen.
+  'resources_seen', 'prompts_seen',
+  // config.changed (ConfigChange self-elevation detection, record-only):
+  // closed-set labels, bounded counts and booleans computed client-side
+  // from the settings file's bytes, never the file content or path.
   'config_source', 'trigger', 'config_status', 'allow_rules', 'deny_rules',
   'broad_allow_rules', 'default_mode', 'hooks_disabled', 'aer_hook_count',
   'config_changes', 'writer',
