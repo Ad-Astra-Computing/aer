@@ -19,6 +19,31 @@ export interface CollectorEvent {
   severity_hint?: SeverityHint;
 }
 
+/**
+ * Thrown by a transport (see transport.ts's createHttpTransport) in place of a
+ * generic Error when the AER API refuses a request with one of its two
+ * structured 403 bodies: the tenant's usage cap was reached, or this agent is
+ * paused by the tenant operator. Carries a clear, plain-English message (never
+ * the raw JSON body) plus the fields the session manager needs to back off
+ * instead of hammering the API on every subsequent batch.
+ *
+ * Defined here, not in transport.ts, to avoid an import cycle: transport.ts
+ * already imports CollectorEvent/SessionTransport from this module, so a
+ * transport importing this class back from here (as transport.ts does, via
+ * its re-export) keeps the dependency running only one way.
+ */
+export class AerRefusalError extends Error {
+  readonly kind: 'usage_limit_reached' | 'agent_paused';
+  readonly recheckAfterSeconds: number;
+
+  constructor(kind: 'usage_limit_reached' | 'agent_paused', recheckAfterSeconds: number, message: string) {
+    super(message);
+    this.name = 'AerRefusalError';
+    this.kind = kind;
+    this.recheckAfterSeconds = recheckAfterSeconds;
+  }
+}
+
 export interface SessionTransport {
   /** Create the underlying AER session. */
   open(): Promise<void>;
@@ -103,6 +128,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   let draining: Promise<void> | null = null;
   let eventsDropped = 0;
 
+  // Set when transport.emit refuses with AerRefusalError (usage cap reached or
+  // agent paused): no further transport.emit calls are made until this time,
+  // so a long-running session does not hammer the API on every drain while the
+  // tenant is over its cap or the agent is paused. Cleared (by reaching it)
+  // once the cooldown elapses, at which point the next attempt is a fresh
+  // episode: if it refuses again, one new log line and one new cooldown.
+  let refusedUntilMs: number | null = null;
+
   // Attestation token cache + concurrent-mint dedupe, per audience (2b).
   interface CachedToken { token: string; expiresAtMs: number; mintedAtMs: number }
   const tokenCache = new Map<string, CachedToken>();
@@ -124,6 +157,18 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await transport.open();
     } catch (err) {
       fail(err, 'open');
+      if (err instanceof AerRefusalError) {
+        // A refusal on open (most commonly agent_paused) is not a reason to
+        // stop recording for the rest of the process: go back to idle with
+        // the same cooldown gate capture() already honors for an emit
+        // refusal, so the next capture() once the window elapses tries a
+        // fresh episode instead of staying silent until restart.
+        refusedUntilMs = clock() + err.recheckAfterSeconds * 1000;
+        state = 'idle';
+        queue.length = 0;
+        openPromise = null;
+        return;
+      }
       state = 'closed';
       queue.length = 0;
       return;
@@ -170,6 +215,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // A failed batch is dropped rather than requeued, so this terminates.
       // The bound is belt and braces against a transport that captures.
       for (let pass = 0; pass < 64 && state === 'open' && queue.length > 0; pass++) {
+        // A refusal cooldown still in effect: drop the rest of the queue
+        // without calling transport.emit again, and without a second fail()
+        // for the same episode. The operator already saw the one clear
+        // message when the cooldown started.
+        if (refusedUntilMs !== null) {
+          if (clock() < refusedUntilMs) {
+            eventsDropped += queue.length;
+            queue.length = 0;
+            break;
+          }
+          // Cooldown elapsed: the next attempt below is a fresh episode.
+          refusedUntilMs = null;
+        }
         const batch = queue.splice(0, queue.length);
         try {
           await transport.emit(batch);
@@ -177,6 +235,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // Never-throw: drop the batch rather than requeue-and-loop, and
           // count it so the closing report says the record is short.
           eventsDropped += batch.length;
+          if (err instanceof AerRefusalError) {
+            refusedUntilMs = clock() + err.recheckAfterSeconds * 1000;
+          }
           fail(err, 'emit');
         }
       }
@@ -190,6 +251,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   function capture(event: CollectorEvent): void {
     if (state === 'closing' || state === 'closed') return; // drop post-close
+    if (state === 'idle' && refusedUntilMs !== null) {
+      if (clock() < refusedUntilMs) {
+        // Still cooling down from an open() refusal: drop rather than queue
+        // indefinitely (a usage-cap cooldown can last until period end), and
+        // don't retry transport.open() on every event.
+        eventsDropped += 1;
+        return;
+      }
+      refusedUntilMs = null; // cooldown elapsed: the attempt below is a fresh episode
+    }
     queue.push(event);
     if (state === 'idle') {
       void ensureOpen();
@@ -217,8 +288,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     state = 'closing';
     try {
       const closing = deps.closingReport?.({ eventsDropped });
-      if (closing) {
+      // A cooldown still in effect means the last attempt already logged the
+      // one clear refusal line for this episode; sending the closing report
+      // now would just be a second guaranteed-refused request and a second
+      // log line for the same cause.
+      const cooling = refusedUntilMs !== null && clock() < refusedUntilMs;
+      if (closing && !cooling) {
         try { await transport.emit([closing]); } catch (err) { fail(err, 'closing-report'); }
+      } else if (closing) {
+        eventsDropped += 1;
       }
       await transport.complete();
     } catch (err) {
