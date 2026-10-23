@@ -64,6 +64,15 @@ export interface SessionState {
   /** Consecutive failed opens and when the next may be tried. */
   openFailures?: number;
   retryOpenAt?: number;
+  /**
+   * Set when the AER API refuses with usage_limit_reached or agent_paused
+   * (a structured 403, never treated as the session being gone): no further
+   * open/post attempts are made for this harness session until this time,
+   * so a long run does not hammer the API on every hook invocation while the
+   * tenant is over its cap or the agent is paused. Queued events are kept,
+   * not dropped: the refusal is expected to clear on its own.
+   */
+  refusedUntil?: number;
   /** Complete the record once every queued event is accepted. */
   complete?: 'checkpoint' | 'end';
   /** The harness session ended and its record completed; kept only so a transcript is never read twice. */
@@ -514,6 +523,7 @@ function parseState(p: Record<string, unknown>): SessionState | null {
   }
   if (isInt(p['openFailures'])) s.openFailures = p['openFailures'];
   if (isInt(p['retryOpenAt'])) s.retryOpenAt = p['retryOpenAt'];
+  if (isInt(p['refusedUntil'])) s.refusedUntil = p['refusedUntil'];
   if (p['complete'] === 'checkpoint' || p['complete'] === 'end') s.complete = p['complete'];
   if (p['ended'] === true) s.ended = true;
   if (isInt(p['postLimit']) && p['postLimit'] > 0) s.postLimit = p['postLimit'];

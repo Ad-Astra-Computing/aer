@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createHttpTransport, withRequestTimeout } from './transport.js';
+import { createHttpTransport, withRequestTimeout, AerRefusalError } from './transport.js';
 
 interface Call { url: string; method: string; headers: Record<string, string>; body: unknown }
 
@@ -170,6 +170,96 @@ describe('createHttpTransport', () => {
   it('open() throws on a non-2xx create-session response', async () => {
     const { fetchImpl } = fakeFetch([() => new Response('nope', { status: 401 })]);
     await expect(makeTransport(fetchImpl).open()).rejects.toThrow();
+  });
+
+  it('open() throws AerRefusalError with a clear message on a usage_limit_reached 403', async () => {
+    const body = JSON.stringify({
+      error: 'usage_limit_reached', unit: 'events', scope: 'hard', limit: 125000, used: 125000,
+      period_end: '2026-10-31T23:59:59.999Z', recheck_after_seconds: 3600, upgrade_url: 'https://aer.run/settings#usage',
+    });
+    const { fetchImpl } = fakeFetch([() => new Response(body, { status: 403 })]);
+    let caught: unknown;
+    try { await makeTransport(fetchImpl).open(); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AerRefusalError);
+    const err = caught as InstanceType<typeof AerRefusalError>;
+    expect(err.kind).toBe('usage_limit_reached');
+    expect(err.recheckAfterSeconds).toBe(3600);
+    expect(err.message).not.toContain('{');
+    expect(err.message).toContain('events 125000/125000');
+    expect(err.message).toContain('https://aer.run/settings#usage');
+  });
+
+  it('open() throws AerRefusalError with a clear message on an agent_paused 403', async () => {
+    const body = JSON.stringify({ error: 'agent_paused', agent_id: 'agt_1', recheck_after_seconds: 120 });
+    const { fetchImpl } = fakeFetch([() => new Response(body, { status: 403 })]);
+    let caught: unknown;
+    try { await makeTransport(fetchImpl).open(); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AerRefusalError);
+    const err = caught as InstanceType<typeof AerRefusalError>;
+    expect(err.kind).toBe('agent_paused');
+    expect(err.recheckAfterSeconds).toBe(120);
+    expect(err.message).not.toContain('{');
+    expect(err.message.toLowerCase()).toContain('paused');
+  });
+
+  it('open() clamps an out-of-range recheck_after_seconds instead of trusting it verbatim', async () => {
+    const cases: Array<[number, number]> = [[0, 1], [-5, 1], [1.4, 2], [1e12, 86_400]];
+    for (const [sent, expected] of cases) {
+      const body = JSON.stringify({ error: 'agent_paused', agent_id: 'agt_1', recheck_after_seconds: sent });
+      const { fetchImpl } = fakeFetch([() => new Response(body, { status: 403 })]);
+      let caught: unknown;
+      try { await makeTransport(fetchImpl).open(); } catch (e) { caught = e; }
+      expect((caught as InstanceType<typeof AerRefusalError>).recheckAfterSeconds).toBe(expected);
+    }
+  });
+
+  it('open() keeps the generic Error for an unrelated 403 body', async () => {
+    const { fetchImpl } = fakeFetch([() => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 })]);
+    let caught: unknown;
+    try { await makeTransport(fetchImpl).open(); } catch (e) { caught = e; }
+    expect(caught).not.toBeInstanceOf(AerRefusalError);
+    expect(caught).toBeInstanceOf(Error);
+  });
+
+  it('open() keeps the generic Error for a 401 (unrelated to refusal shapes)', async () => {
+    const { fetchImpl } = fakeFetch([() => new Response('nope', { status: 401 })]);
+    let caught: unknown;
+    try { await makeTransport(fetchImpl).open(); } catch (e) { caught = e; }
+    expect(caught).not.toBeInstanceOf(AerRefusalError);
+  });
+
+  it('emit() throws AerRefusalError on a usage_limit_reached 403', async () => {
+    const body = JSON.stringify({
+      error: 'usage_limit_reached', unit: 'events', scope: 'hard', limit: 125000, used: 125000,
+      period_end: '2026-10-31T23:59:59.999Z', recheck_after_seconds: 3600, upgrade_url: 'https://aer.run/settings#usage',
+    });
+    const { fetchImpl } = fakeFetch([opened, () => new Response(body, { status: 403 })]);
+    const t = makeTransport(fetchImpl);
+    await t.open();
+    let caught: unknown;
+    try { await t.emit([{ event_type: 'x', payload: {} }]); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AerRefusalError);
+  });
+
+  it('emit() throws AerRefusalError on an agent_paused 403', async () => {
+    const body = JSON.stringify({ error: 'agent_paused', agent_id: 'agt_1', recheck_after_seconds: 60 });
+    const { fetchImpl } = fakeFetch([opened, () => new Response(body, { status: 403 })]);
+    const t = makeTransport(fetchImpl);
+    await t.open();
+    let caught: unknown;
+    try { await t.emit([{ event_type: 'x', payload: {} }]); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AerRefusalError);
+    expect((caught as InstanceType<typeof AerRefusalError>).recheckAfterSeconds).toBe(60);
+  });
+
+  it('emit() keeps the generic Error for a 500', async () => {
+    const { fetchImpl } = fakeFetch([opened, () => new Response('oops', { status: 500 })]);
+    const t = makeTransport(fetchImpl);
+    await t.open();
+    let caught: unknown;
+    try { await t.emit([{ event_type: 'x', payload: {} }]); } catch (e) { caught = e; }
+    expect(caught).not.toBeInstanceOf(AerRefusalError);
+    expect(caught).toBeInstanceOf(Error);
   });
 });
 

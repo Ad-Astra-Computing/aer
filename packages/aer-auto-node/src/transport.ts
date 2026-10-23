@@ -3,8 +3,15 @@
 // All auto-captured events are stamped source_type='wrapper'.
 
 import type { CollectorEvent, SessionTransport } from './session.js';
+import { AerRefusalError } from './session.js';
 import type { Principal } from './config.js';
 import { newUuidV7 } from './uuid.js';
+
+// Re-exported so callers of this module (e.g. session.ts, and anyone using
+// the transport directly) can import it from here too, without creating an
+// import cycle: AerRefusalError is defined in session.ts, which this module
+// already depends on.
+export { AerRefusalError };
 
 /** Collector self-declaration for capability negotiation (all fields optional). */
 export interface CollectorInfo {
@@ -92,7 +99,10 @@ export function createHttpTransport(opts: HttpTransportOptions): SessionTranspor
       }),
     });
     if (!res.ok) {
-      throw new Error(`AER open session failed: ${res.status} ${await safeText(res)}`);
+      const text = await safeText(res);
+      const refusal = parseRefusal(res.status, text);
+      if (refusal) throw refusal;
+      throw new Error(`AER open session failed: ${res.status} ${text}`);
     }
     const json = (await res.json()) as { agent_session_id?: string; ingest_token?: string };
     if (!json.agent_session_id || !json.ingest_token) {
@@ -121,7 +131,10 @@ export function createHttpTransport(opts: HttpTransportOptions): SessionTranspor
       body: JSON.stringify(wire),
     });
     if (res.status !== 202 && res.status !== 207) {
-      throw new Error(`AER emit failed: ${res.status} ${await safeText(res)}`);
+      const text = await safeText(res);
+      const refusal = parseRefusal(res.status, text);
+      if (refusal) throw refusal;
+      throw new Error(`AER emit failed: ${res.status} ${text}`);
     }
   }
 
@@ -176,4 +189,49 @@ async function safeText(res: Response): Promise<string> {
   } catch {
     return '';
   }
+}
+
+/**
+ * Recognizes the AER API's two confirmed structured 403 refusal bodies
+ * (usage_limit_reached, agent_paused) and turns either into an AerRefusalError
+ * with a clear, plain-English message instead of a raw JSON dump. Returns
+ * null for anything else (a different 403 body, a non-403 status, or text
+ * that doesn't parse as JSON), so the caller's existing generic-Error
+ * behavior is unchanged for every other case.
+ */
+function parseRefusal(status: number, bodyText: string): AerRefusalError | null {
+  if (status !== 403) return null;
+  let body: unknown;
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    return null;
+  }
+  if (!body || typeof body !== 'object') return null;
+  const o = body as Record<string, unknown>;
+  const rawRecheck = typeof o['recheck_after_seconds'] === 'number' ? o['recheck_after_seconds'] : undefined;
+  if (rawRecheck === undefined) return null;
+  // Clamp a server-sent value before it drives a setTimeout-equivalent
+  // cooldown: zero/negative would remove the backoff entirely (hammering the
+  // API on every batch), and an unbounded value would silence the collector
+  // for good. Ceil so a fractional value still rounds up to at least 1s.
+  const recheckAfterSeconds = Math.ceil(Math.min(Math.max(rawRecheck, 1), 86_400));
+
+  if (o['error'] === 'usage_limit_reached') {
+    const unit = typeof o['unit'] === 'string' ? o['unit'] : 'usage';
+    const used = o['used'];
+    const limit = o['limit'];
+    const upgradeUrl = typeof o['upgrade_url'] === 'string' ? o['upgrade_url'] : undefined;
+    const usageDesc = used !== undefined && limit !== undefined ? `${unit} ${used}/${limit}` : unit;
+    const message = `AER tenant usage cap reached (${usageDesc}); further recording is refused until a `
+      + `new period or an upgrade.${upgradeUrl ? ` See ${upgradeUrl}.` : ''}`;
+    return new AerRefusalError('usage_limit_reached', recheckAfterSeconds, message);
+  }
+
+  if (o['error'] === 'agent_paused') {
+    const message = 'AER recording for this agent is paused by the tenant operator; recheck later.';
+    return new AerRefusalError('agent_paused', recheckAfterSeconds, message);
+  }
+
+  return null;
 }

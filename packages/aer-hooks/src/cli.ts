@@ -66,7 +66,7 @@ import { isInvokedDirectly } from './invoked-directly.js';
 import { envWithFile, parseEnvFileFlag } from './env-file.js';
 import { registeredEvents, repoHead, HOOKS_VERSION } from './evidence.js';
 import { stripToIngestPayload } from './shared/ingest-allowlist.js';
-import { openSession, postEvents, completeSession, isRetryable, type ApiBase, type CallResult } from './transport.js';
+import { openSession, postEvents, completeSession, isRetryable, refusalMessage, type ApiBase, type CallResult } from './transport.js';
 
 // Production POST /v1/sessions has been measured at 3-4s (see aer-hooks README
 // and the tenant-key Argon2id verification cost noted in the project docs), so
@@ -689,6 +689,12 @@ function decide(state: SessionState | null, now: number, ctx: Ctx): { result: St
   if (state.session?.closeFirst) {
     step = { kind: 'complete', session: state.session, mode: 'close' };
   } else if (state.outbox.length > 0) {
+    // A usage cap or agent-paused refusal: wait it out rather than attempt
+    // another open/post that will only be refused again. Events stay queued.
+    if (state.refusedUntil !== undefined && now < state.refusedUntil && !ctx.final) {
+      releaseLease(state, ctx);
+      return { result: { kind: 'done' }, save: state };
+    }
     if (!state.session) {
       if (state.retryOpenAt !== undefined && now < state.retryOpenAt && !ctx.final) {
         releaseLease(state, ctx);
@@ -813,6 +819,17 @@ async function deliver(ctx: Ctx): Promise<void> {
         });
         continue;
       }
+      if (r.failed.refusal) {
+        const refusal = r.failed.refusal;
+        await withState(ctx, (st, now) => {
+          if (st === null) return { result: undefined };
+          st.refusedUntil = now + refusal.recheckAfterSeconds * 1000;
+          releaseLease(st, ctx);
+          return { result: undefined, save: st };
+        });
+        ctx.warn('open', `aer-hook: ${refusalMessage(refusal)}; ${afterFailure(ctx, 'events are queued and will be sent once this clears')}`);
+        return;
+      }
       if (isRetryable(r.failed) && !openRetried && remaining(ctx) > 2 * MIN_CALL_MS + 250) {
         openRetried = true;
         await sleep(250);
@@ -842,6 +859,20 @@ async function deliver(ctx: Ctx): Promise<void> {
           return { result: undefined, save: st };
         });
         continue;
+      }
+      if (r.refusal) {
+        // Usage cap reached or this agent paused: this is not the session
+        // being gone, so never drop it or reopen. Back off and keep the
+        // batch queued; it will be retried once the cooldown elapses.
+        const refusal = r.refusal;
+        await withState(ctx, (st, now) => {
+          if (st === null) return { result: undefined };
+          st.refusedUntil = now + refusal.recheckAfterSeconds * 1000;
+          releaseLease(st, ctx);
+          return { result: undefined, save: st };
+        });
+        ctx.warn('send', `aer-hook: ${refusalMessage(refusal)}; ${afterFailure(ctx, 'events are queued and will be sent once this clears')}`);
+        return;
       }
       if (sessionGone(r)) {
         // Closed by the server (a watchdog, a completion elsewhere) or no
