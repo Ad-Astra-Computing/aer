@@ -3,6 +3,7 @@
 // this only adds the headers, client-side rate limiting and error mapping.
 
 import { sanitizeForTerminal } from '../cli-error.js';
+import { assertUncompressed } from '../http-guard.js';
 
 export interface McpClientOptions {
   baseUrl: string;
@@ -119,6 +120,7 @@ export class McpApiClient {
         'x-aer-client': `aer-mcp/${this.opts.clientVersion}`,
       },
     });
+    await assertUncompressed(res);
 
     if (res.status === 429) {
       const retryAfterSeconds = retryAfterFromResponse(res);
