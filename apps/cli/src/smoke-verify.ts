@@ -4,6 +4,8 @@
 // workload ran; a collector with no key, a wrong base URL or a refused session
 // open all exit 0 too.
 
+import { assertUncompressed } from './http-guard.js';
+
 /**
  * The API key the Node collector reads: AER_API_KEY, then AER_TENANT_API_KEY.
  * doctor, smoke and the collector must agree on this, or smoke passes its
@@ -33,6 +35,7 @@ async function listRows(opts: SessionListOpts): Promise<SessionRow[]> {
   const res = await f(`${opts.baseUrl.replace(/\/+$/, '')}/v1/sessions?${q.toString()}`, {
     headers: { authorization: `Bearer ${opts.apiKey}` },
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`GET /v1/sessions answered ${res.status}`);
   const body = (await res.json()) as { sessions?: unknown };
   return Array.isArray(body.sessions) ? (body.sessions as SessionRow[]) : [];

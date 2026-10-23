@@ -762,6 +762,11 @@ function sessionGone(r: CallResult): boolean {
 }
 
 function outcome(r: CallResult): string {
+  // A compressed-response refusal (CVE-2026-111497) carries its own error
+  // text (status < 0); reporting it as "no answer" would hide from the
+  // operator that this is a deliberate, non-transient refusal, not a dropped
+  // connection.
+  if (!r.ok && r.status < 0 && r.error !== undefined) return r.error;
   return r.status === 0 ? 'no answer' : `HTTP ${r.status}`;
 }
 

@@ -11,6 +11,19 @@
 
 import type { PolicyMode, UsagePolicy, UsagePolicyLlm } from './policy.js';
 
+// CVE-2026-111497 (Node Brotli decoder OOB write, RCE-capable): fetch() decodes
+// a body lazily on first read, based on the server's own Content-Encoding, and
+// a hostile server picks that header regardless of what was requested. This
+// endpoint is operator-configured but still an external server whose bytes
+// this process does not control, so the body is never read until this passes.
+async function assertUncompressed(res: Response): Promise<void> {
+  const enc = res.headers.get('content-encoding');
+  if (enc !== null && enc.toLowerCase() !== 'identity') {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
+  }
+}
+
 export interface FetchUsagePolicyOptions {
   baseUrl: string;
   agentId?: string | undefined;
@@ -51,6 +64,7 @@ export async function fetchUsagePolicyOutcome(opts: FetchUsagePolicyOptions): Pr
     });
     if (res.status === 404) return { status: 'none' };
     if (!res.ok) return { status: 'unavailable' };
+    await assertUncompressed(res);
     const policy = parsePolicy((await res.json()) as unknown);
     return policy ? { status: 'policy', policy } : { status: 'unavailable' };
   } catch {

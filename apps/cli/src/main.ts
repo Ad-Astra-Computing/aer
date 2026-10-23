@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { planInit, applyInit, runDoctor, type FsLike, type InitOptions } from './init.js';
+import { assertUncompressed } from './http-guard.js';
 import { cmdLogin } from './auth/login.js';
 import { cmdLogout } from './auth/logout.js';
 import { cmdWhoami } from './auth/whoami.js';
@@ -804,6 +805,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (!aerId || !baseUrl) usage();
     const outPath = readFlag(rest, '-o') ?? readFlag(rest, '--out') ?? `${aerId}.json`;
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/aers/${encodeURIComponent(aerId)}/bundle`);
+    await assertUncompressed(res);
     if (!res.ok) {
       console.error(`Failed: ${res.status} ${sanitizeForTerminal(await res.text())}`);
       process.exit(1);

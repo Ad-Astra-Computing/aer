@@ -150,4 +150,27 @@ describe('ingestJsonlStream', () => {
     });
     expect(requestedPath).toBe('/v1/sessions/..%2F..%2Fv1%2Fadmin%2Ftenants/events');
   });
+
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile or misconfigured base_url picks Content-Encoding regardless of
+  // what was requested. Garbage bytes rather than real Brotli, so an
+  // unguarded read would fail on JSON.parse with a DIFFERENT message than the
+  // CVE refusal, proving the guard (not a parse failure) is what rejected it.
+  it('refuses a compressed ingest response without reading its body', async () => {
+    server.use(
+      http.post('http://localhost:4000/v1/sessions/:id/events', () => new HttpResponse(new Uint8Array([1, 2, 3]), {
+        status: 202,
+        headers: { 'content-encoding': 'br' },
+      })),
+    );
+    await expect(
+      ingestJsonlStream({
+        stream: jsonl([{ x: 1 }]),
+        baseUrl: 'http://localhost:4000',
+        sessionId: 's1',
+        token: 't',
+        batchSize: 10,
+      }),
+    ).rejects.toThrow(/CVE-2026-111497/);
+  });
 });

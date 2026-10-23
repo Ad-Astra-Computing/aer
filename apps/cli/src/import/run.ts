@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream';
 import { createInterface } from 'node:readline';
 import { claudeCodeTranscriptToEvents, type TranscriptCtx } from './claude-code.js';
+import { assertUncompressed } from '../http-guard.js';
 
 // H4 - end-to-end Claude Code transcript import. Reads a session JSONL transcript,
 // creates an AER session, maps entries to bodies-off events on the CLIENT, POSTs
@@ -80,6 +81,7 @@ export async function runClaudeCodeImport(opts: ImportRunOptions): Promise<Impor
       metadata: { imported_from: 'claude-code' },
     }),
   });
+  await assertUncompressed(createRes);
   if (createRes.status !== 201) {
     throw new Error(`session create failed: ${createRes.status} ${await safeText(createRes)}`);
   }
@@ -105,6 +107,7 @@ export async function runClaudeCodeImport(opts: ImportRunOptions): Promise<Impor
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify(chunk),
     });
+    await assertUncompressed(res);
     if (!(res.status === 202 || res.status === 207)) {
       throw new Error(`event ingest failed: ${res.status} ${await safeText(res)}`);
     }
@@ -121,7 +124,12 @@ export async function runClaudeCodeImport(opts: ImportRunOptions): Promise<Impor
     body: '{}',
   });
   if (completeRes.status === 200 || completeRes.status === 201) {
-    const done = (await completeRes.json().catch(() => null)) as { aer_id?: string } | null;
+    // Best-effort, like the .catch() just below: a compressed response here
+    // must not fail the whole import (the AER was already generated
+    // server-side), only skip reading the aer_id out of it.
+    const done = (await assertUncompressed(completeRes).then(() => completeRes.json()).catch(() => null)) as {
+      aer_id?: string;
+    } | null;
     if (done?.aer_id) aerId = done.aer_id;
   }
 

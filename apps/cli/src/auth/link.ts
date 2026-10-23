@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { getCredential } from './credentials-store.js';
 import { resolveBaseUrl } from './resolve.js';
 import { sanitizeForTerminal } from '../cli-error.js';
+import { assertUncompressed } from '../http-guard.js';
 
 export interface LinkOptions {
   agentId?: string | undefined;
@@ -69,6 +70,7 @@ async function createAgent(baseUrl: string, apiKey: string, name: string, fetchI
     headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
     body: JSON.stringify({ name }),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`could not create agent "${name}" (HTTP ${res.status}): ${await safeResponseText(res)}`);
   const body = (await res.json()) as { agent_id?: string };
   if (!body.agent_id || !UUID_RE.test(body.agent_id)) {
@@ -81,6 +83,7 @@ async function listAgents(baseUrl: string, apiKey: string, fetchImpl: typeof fet
   const res = await fetchImpl(`${trimUrl(baseUrl)}/v1/agents`, {
     headers: { authorization: `Bearer ${apiKey}` },
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`could not list agents (HTTP ${res.status}): ${await safeResponseText(res)}`);
   const body = (await res.json()) as { agents?: AgentSummary[] };
   return body.agents ?? [];
@@ -90,6 +93,7 @@ async function listEnvironments(baseUrl: string, apiKey: string, fetchImpl: type
   const res = await fetchImpl(`${trimUrl(baseUrl)}/v1/environments`, {
     headers: { authorization: `Bearer ${apiKey}` },
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`could not list environments (HTTP ${res.status}): ${await safeResponseText(res)}`);
   const body = (await res.json()) as { environments?: unknown };
   const rows = Array.isArray(body.environments) ? body.environments : [];
