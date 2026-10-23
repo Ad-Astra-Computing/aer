@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { getCredential } from './credentials-store.js';
 import { resolveBaseUrl } from './resolve.js';
 import { sanitizeForTerminal } from '../cli-error.js';
+import { assertUncompressed } from '../http-guard.js';
 
 export interface LinkOptions {
   agentId?: string | undefined;
@@ -60,19 +61,6 @@ async function safeResponseText(res: Response): Promise<string> {
     return sanitizeForTerminal(await res.text(), RESPONSE_TEXT_CAP);
   } catch {
     return '';
-  }
-}
-
-/** CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
- * hostile or misconfigured base_url picks Content-Encoding regardless of
- * what was requested. Every call below reads from an operator-configured
- * base_url this process does not control the bytes of, so none of their
- * bodies (including an error path's) are read until this passes. */
-async function assertUncompressed(res: Response): Promise<void> {
-  const enc = res.headers.get('content-encoding');
-  if (enc !== null && enc.toLowerCase() !== 'identity') {
-    await res.body?.cancel().catch(() => {});
-    throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
   }
 }
 

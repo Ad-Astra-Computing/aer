@@ -6,20 +6,9 @@ import {
   type AnchorStatus,
   type AnchorEvidence,
 } from '@adastracomputing/aer-verify';
+import { assertUncompressed } from './http-guard.js';
 
-// CVE-2026-111497 (Node Brotli decoder OOB write, RCE-capable): fetch() decodes
-// a body lazily on first read, based on the server's own Content-Encoding, and
-// a hostile server picks that header regardless of what was requested. Every
-// bundle/key/evidence fetch below reads from an operator-configured AER_BASE_URL
-// this process does not control the bytes of, so none of their bodies are read
-// until this passes. Shared by compare.ts and commitments-verify.ts too.
-export async function assertUncompressed(res: Response): Promise<void> {
-  const enc = res.headers.get('content-encoding');
-  if (enc !== null && enc.toLowerCase() !== 'identity') {
-    await res.body?.cancel();
-    throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
-  }
-}
+export { assertUncompressed } from './http-guard.js';
 
 export interface VerifyOptions {
   baseUrl: string;
