@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.5.0
+
+### Minor Changes
+
+- [`e0f6e7a`](https://github.com/Ad-Astra-Computing/aer/commit/e0f6e7a0a12f734efcbe2c467b0f321e9a9d38cc) - Add `compareBundles` and a new `aer compare <a> <b>` command that checks
+  whether two signed AER bundles prove the same prompts, responses and tool
+  arguments and results, the same tool calls in the same order, and the same
+  observed outcomes (tools used, domains contacted, files touched, processes
+  spawned), without ever reading either bundle's plaintext. Both bundles are
+  signature-verified before any comparison runs, and the command only ever
+  reports a match when every position in both runs was actually checked: a
+  commitment-key rotation partway through either run is reported instead of
+  silently passing. Useful for confirming two sessions, or two runs of the
+  same agent, actually did the same thing.
+- [`c74dd7b`](https://github.com/Ad-Astra-Computing/aer/commit/c74dd7be3f12314a7a660b706bf2121f366363ac) - Add `aer mcp serve`, a stdio Model Context Protocol server built into the
+  CLI, and `aer mcp login`, a device-flow login labelled for an AI assistant.
+  Nine read-only tools (`list_agents`, `get_agent`, `list_sessions`,
+  `get_session`, `list_session_events`, `get_session_hosts`, `list_findings`,
+  `get_baseline`, `search_observations`) wrap the same tenant-authenticated
+  REST routes the CLI already calls, with an explicit field projection per
+  tool and read-path re-sanitization of every event payload, so this new
+  surface never returns more than ingest would accept today. The server
+  refuses to start with an admin-role key unless `--allow-admin-key`, enforces
+  its own 60/min client-side rate ceiling, and requires the tenant to opt in
+  server-side before any tool call succeeds.
+- [`25990de`](https://github.com/Ad-Astra-Computing/aer/commit/25990deac127bfbbd04bb3807188274284022fb9) - Add `aer usage`, a new CLI command that reads `GET /v1/usage` and prints
+  this tenant's plan, period and events/sessions usage against their limits
+  in plain text by default, or the raw response with `--json`. `aer doctor`
+  now checks the tenant's usage cap too, failing with the blocked reason and
+  upgrade URL when the API currently refuses new sessions.
+
+  `aer-auto-node`'s HTTP transport now recognizes the AER API's two
+  structured usage refusals (a tenant's usage cap reached, or an agent paused
+  by the tenant operator) and throws the new exported `AerRefusalError`
+  instead of a generic error, with a clear plain-English message. The session
+  manager backs off for the time the API gave it instead of retrying on every
+  later batch, so a long-running session does not hammer the API while a
+  tenant is over its cap or an agent is paused; events captured during that
+  window are dropped (not queued, since the window can be long) and counted
+  toward the closing report's delivery stats.
+
+  `aer-hooks` now gives the same two refusals the same treatment: a usage cap
+  or paused-agent 403 is never mistaken for the session being gone (which
+  previously dropped and reopened it on every later hook invocation), and the
+  hook backs off for the time the API gave it. Queued events wait for that
+  retry rather than being dropped outright, but the outbox's ordinary 1,000-
+  event cap still applies underneath a long wait, with the usual
+  `events_dropped_budget` accounting. One clear log line covers the whole
+  episode rather than one per hook invocation.
+
+### Patch Changes
+
+- [`ef1db85`](https://github.com/Ad-Astra-Computing/aer/commit/ef1db851464f744a465d129ec1a4807827965261) - `aer link` now offers the environments already seen on a tenant and lets you
+  name a new one on a terminal, instead of always writing a silently-generated
+  id to `aer.config.json`. Leaving the answer blank keeps the old behavior
+  exactly.
+- [`d4df7ac`](https://github.com/Ad-Astra-Computing/aer/commit/d4df7ac0d6b4e7edbf1320b21c7f92dbd0a3abfe) - Node's fetch decompresses a response by its Content-Encoding header, including Brotli, whose decoder has an out-of-bounds write that can run arbitrary code (CVE-2026-111497, fixed upstream in Node 22.23.4/24.22.1/26.12.1 but not yet available through nixpkgs). The JWKS key fetch, the usage-policy fetch, the auto-node and hooks session transports, the SDK's and emit sink's event/complete/abort calls, the CLI's link command, and every bundle/key/evidence read in the CLI's download, verify, compare, and commitments verify commands each read a response body from a server outside this process's control, so each now refuses a response whose Content-Encoding is anything other than identity before any of it is read, closing the one path bytes could reach that decoder.
+
 ## 0.4.3
 
 ### Patch Changes
