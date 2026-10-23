@@ -13,6 +13,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -27,6 +28,11 @@ import { normalize, type Harness, type HookEvent, type Lifecycle } from './norma
 import { emitHookEvent, shapesOf } from './core.js';
 import { computeEffectDigestPlan, applyEffectDigestPlan } from './effect-digest-plan.js';
 import { computeVcsPushPlan, applyVcsPushPlan } from './vcs-push-plan.js';
+import {
+  computeConfigChangePlan, applyConfigChangePlan,
+  computeConfigBaselinePlan, applyConfigBaselinePlan,
+  stashConfigWriterOnToolStart, closeConfigWriterOnToolEnd,
+} from './config-change-plan.js';
 import {
   loadState,
   saveState,
@@ -1069,6 +1075,13 @@ async function orchestrateAndEmit(
   const vcsPushPlan = (event.kind === 'tool_start' || event.kind === 'tool_end')
     ? await computeVcsPushPlan(event, probe?.vcsPushStash, process.cwd(), now)
     : { kind: 'none' as const };
+  // ConfigChange (Claude Code only): the settings-file read happens here too,
+  // outside the lock, same split as the two plans above. SessionStart reads
+  // up to four baseline files; ConfigChange reads the one the hook named.
+  const configChangePlan = event.kind === 'config_change' ? computeConfigChangePlan(event, process.cwd()) : { kind: 'none' as const };
+  const configBaselinePlan = event.kind === 'session_start' && harness === 'claude-code'
+    ? computeConfigBaselinePlan(event, process.cwd(), env['HOME'] || os.homedir())
+    : [];
 
   const { ageMs, quietMs } = parseCheckpointMs(env);
   const queued = await withState(ctx, (st, at) => {
@@ -1097,6 +1110,19 @@ async function orchestrateAndEmit(
 
     applyEffectDigestPlan(event, state, effectPlan, at);
     applyVcsPushPlan(event, state, vcsPushPlan, at);
+    applyConfigChangePlan(event, state, configChangePlan, at);
+    if (configBaselinePlan.length > 0) applyConfigBaselinePlan(event, state, configBaselinePlan, at);
+    // ConfigChange writer attribution: stash a write-tool/Bash PreToolUse,
+    // close a Bash stash at tool_end. A no-op for every tool/harness this
+    // feature does not cover.
+    if (event.kind === 'tool_start') {
+      const toolUseId = event.meta?.['tool_use_id'] as string | undefined;
+      stashConfigWriterOnToolStart(state, event.tool, toolUseId, shapesOf(event), event.cwd, process.cwd(), event.configBashNamed, at);
+    }
+    if (event.kind === 'tool_end') {
+      const toolUseId = event.meta?.['tool_use_id'] as string | undefined;
+      closeConfigWriterOnToolEnd(state, event.tool, toolUseId);
+    }
     const events = buildQueuedEvents(event, state, at, evidence, ctx.storeKey, env, true);
     // The end of a session whose last record a checkpoint already completed:
     // opening a record to hold only this marker would add an empty record to

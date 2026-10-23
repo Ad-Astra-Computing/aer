@@ -310,6 +310,16 @@ crash, a timeout, a killed process, never reaching the collector) never
 gets its `approval.decided` guessed onto an unrelated open call: an
 unmatched approval request is counted unresolved instead.
 
+A third event, Claude Code only: `config.changed`, record-only, fired when a
+settings file (or, read-only, a skill file) reloads mid-session, or at
+session start as a baseline. It never carries the file path, a rule string,
+a hook command, an env value or an MCP server name, only closed-set counts
+and labels (rule counts, whether hooks are disabled, what changed since the
+last snapshot of that file, and the hook's own best-effort guess at which
+local action produced the reload). An install from before this shipped
+needs `aer-hooks install claude-code` (or `doctor`) run again to pick up the
+`ConfigChange` registration; `status`/`doctor` warn when it is missing.
+
 ## Fail-open, never blocking
 
 The `aer-hook` binary is designed so it can never break or slow the harness. It

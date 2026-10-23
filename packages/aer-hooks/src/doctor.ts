@@ -8,7 +8,7 @@
 import type { Harness } from './install.js';
 import type { StatusEntry } from './install.js';
 
-export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env' | 'no_end_budget' | 'relative_codex_home' | 'antigravity_flat_tool_entry' | 'missing_oversight_markers';
+export type StaleReason = 'missing_lifecycle_v2' | 'outdated_collector' | 'nix_profile_shadow' | 'key_in_shell_env' | 'no_end_budget' | 'relative_codex_home' | 'antigravity_flat_tool_entry' | 'missing_oversight_markers' | 'missing_config_change';
 
 export interface StaleRegistration {
   harness: Harness | 'any';
@@ -74,6 +74,20 @@ export function diagnoseOversightMarkers(harness: Harness, wiredEvents: string[]
   }];
 }
 
+/** A wired claude-code entry missing the ConfigChange hook: record-only
+ *  self-elevation evidence (a settings/skills reload mid-session) is never
+ *  emitted until `aer-hooks install claude-code` is re-run. Codex and
+ *  Antigravity have no such hook, so this never fires for them. */
+export function diagnoseMissingConfigChange(harness: Harness, wiredEvents: string[]): StaleRegistration[] {
+  if (harness !== 'claude-code' || wiredEvents.includes('ConfigChange')) return [];
+  return [{
+    harness,
+    reason: 'missing_config_change',
+    detail: `the ${harness} entry is wired but ConfigChange is not, so a mid-session settings or skills reload is never recorded`,
+    fix: `aer-hooks install ${harness}`,
+  }];
+}
+
 /** Every stale-command finding across a `status()` listing, deduplicated per harness+reason. */
 export function diagnoseRegistrations(entries: StatusEntry[]): StaleRegistration[] {
   const out: StaleRegistration[] = [];
@@ -81,6 +95,7 @@ export function diagnoseRegistrations(entries: StatusEntry[]): StaleRegistration
   for (const entry of entries) {
     if (entry.wiredEvents.length === 0) continue;
     for (const finding of diagnoseOversightMarkers(entry.harness, entry.wiredEvents)) out.push(finding);
+    for (const finding of diagnoseMissingConfigChange(entry.harness, entry.wiredEvents)) out.push(finding);
     if ((entry.flatToolEvents ?? []).length > 0) {
       out.push({
         harness: entry.harness,
