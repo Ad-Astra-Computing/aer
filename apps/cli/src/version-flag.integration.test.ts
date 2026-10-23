@@ -75,7 +75,10 @@ describe.each(Object.entries(manifest.bin))('%s --version', (_name, entry) => {
 });
 
 // The nix flake's `aer` app copies only the built entry file, with no
-// package.json alongside it, unlike the npm install layout.
+// package.json alongside it, unlike the npm install layout. It names that
+// copy main.mjs, not main.js (flake.nix): a plain .js extension with no
+// nearby package.json makes Node default to CommonJS and fail on the
+// bundle's ESM import syntax, while .mjs forces ESM regardless.
 describe('aer --version away from its own package.json', () => {
   let scratchDir: string;
 
@@ -85,7 +88,7 @@ describe('aer --version away from its own package.json', () => {
 
   it('still reports the real version, mirroring the flake app layout', () => {
     scratchDir = mkdtempSync(join(tmpdir(), 'aer-cli-no-manifest-'));
-    const copy = join(scratchDir, 'main.js');
+    const copy = join(scratchDir, 'main.mjs');
     copyFileSync(join(pkgRoot, 'dist/main.js'), copy);
     const out = execFileSync(process.execPath, [copy, '--version'], {
       encoding: 'utf8',

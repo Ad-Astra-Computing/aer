@@ -120,7 +120,7 @@ describe('a usage_limit_reached refusal on events', () => {
     });
     await fire({ ...lead, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'a' } }, { now: T0 + 1000 });
 
-    const st = loadState('cc-usage-cap-clamp', env())!;
+    const st = loadState('cc-usage-cap-clamp', env(), T0 + 2000)!;
     // Clamped up to 1s, not 0 (which would otherwise remove the backoff
     // entirely); allow a tiny margin for the harness's own clock reads.
     expect(st.refusedUntil).toBeGreaterThanOrEqual(T0 + 1000 + 1000);
@@ -166,7 +166,7 @@ describe('an agent_paused refusal on session open', () => {
     // This is the refusal cooldown, not the ordinary open-retry backoff: no
     // openFailures/retryOpenAt bookkeeping, and no new request (or log line)
     // from a second event inside the 120s window.
-    const st = loadState('cc-paused', env())!;
+    const st = loadState('cc-paused', env(), T0)!;
     expect(st.openFailures).toBeUndefined();
     expect(st.retryOpenAt).toBeUndefined();
     expect(st.refusedUntil).toBeGreaterThanOrEqual(T0 + 120_000);

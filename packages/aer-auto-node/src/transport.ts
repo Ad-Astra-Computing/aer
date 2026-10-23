@@ -54,6 +54,14 @@ export function withRequestTimeout(rawFetch: typeof fetch, timeoutMs: number): (
     const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
     try {
       const res = await rawFetch(url, { ...init, signal });
+      // CVE-2026-111497: fetch() decodes Brotli lazily, on the arrayBuffer()
+      // read just below, and a hostile or compromised AER_BASE_URL picks
+      // Content-Encoding on its own regardless of what was requested.
+      const enc = res.headers.get('content-encoding');
+      if (enc !== null && enc.toLowerCase() !== 'identity') {
+        await res.body?.cancel().catch(() => {});
+        throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
+      }
       const body = await res.arrayBuffer();
       return new Response(body.byteLength > 0 ? body : null, { status: res.status, statusText: res.statusText, headers: res.headers });
     } finally {

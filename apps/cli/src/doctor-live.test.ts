@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { runLiveChecks } from './doctor-live.js';
 
 // A tiny fetch stub keyed by URL suffix → Response-like.
-function stubFetch(routes: Record<string, { status: number; json?: unknown }>): typeof fetch {
+function stubFetch(routes: Record<string, { status: number; json?: unknown; contentEncoding?: string }>): typeof fetch {
   return (async (url: string | URL) => {
     const u = String(url);
     const key = Object.keys(routes).find((k) => u.endsWith(k));
@@ -11,6 +11,7 @@ function stubFetch(routes: Record<string, { status: number; json?: unknown }>): 
     return {
       ok: r.status >= 200 && r.status < 300,
       status: r.status,
+      headers: new Headers(r.contentEncoding ? { 'content-encoding': r.contentEncoding } : {}),
       json: async () => r.json ?? {},
     } as Response;
   }) as unknown as typeof fetch;
@@ -240,5 +241,22 @@ describe('runLiveChecks', () => {
     expect(check.ok).toBe(false);
     expect(check.detail).toContain('unrecognised response');
     expect(check.detail).not.toContain('blocked on');
+  });
+
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile or misconfigured base_url picks Content-Encoding regardless of
+  // what was requested. The /readyz and tenant-auth checks never read a body
+  // (only .ok/.status) so they are not exposed; agent_id is the one check
+  // here that does, via res.json().
+  it('turns a compressed agent_id response into a failing check, not a throw', async () => {
+    const r = await runLiveChecks({
+      baseUrl: 'https://api.test', apiKey: 'k', agentId: 'a-1',
+      fetchFn: stubFetch({
+        '/readyz': { status: 200 },
+        '/v1/agents': { status: 200, contentEncoding: 'br' },
+      }),
+    });
+    expect(byName(r.checks, 'agent_id')).toMatchObject({ ok: false });
+    expect(byName(r.checks, 'agent_id').detail).toMatch(/CVE-2026-111497/);
   });
 });

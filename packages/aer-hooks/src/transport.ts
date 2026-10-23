@@ -18,12 +18,29 @@ export interface Refusal {
   upgradeUrl?: string;
 }
 
+// CVE-2026-111497 (Node Brotli decoder OOB write, RCE-capable): fetch() decodes
+// a body lazily on first read, based on the server's own Content-Encoding, and
+// a hostile server picks that header regardless of what was requested. The
+// session API is operator-configured but still an external server whose
+// bytes this process does not control, so the body is never read until this
+// passes.
+function isCompressed(res: Response): string | null {
+  const enc = res.headers.get('content-encoding');
+  return enc !== null && enc.toLowerCase() !== 'identity' ? enc : null;
+}
+
 export type CallResult =
   | { ok: true; status: number; body: Record<string, unknown> }
   | { ok: false; status: number; error: string | undefined; text?: string; timedOut?: boolean; refusal?: Refusal };
 
 /** status 0: no answer at all (refused, reset, timed out). */
 const NO_ANSWER = 0;
+/** A compressed response is a deliberate refusal (CVE-2026-111497), not a
+ * network condition: giving it its own status keeps isRetryable from
+ * retrying a hostile or misconfigured endpoint that will answer the same
+ * way every time, and keeps outcome() from reporting it as "no answer",
+ * which would hide the real reason from the operator. */
+const REFUSED_COMPRESSED = -1;
 
 /**
  * Recognizes the two confirmed structured 403 bodies and returns the fields
@@ -74,6 +91,11 @@ async function call(api: ApiBase, path: string, token: string, body: unknown, ti
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+    const compressedAs = isCompressed(res);
+    if (compressedAs !== null) {
+      await res.body?.cancel();
+      return { ok: false, status: REFUSED_COMPRESSED, error: `compressed_response_${compressedAs}` };
+    }
     const text = await res.text().catch(() => '');
     let parsed: Record<string, unknown> = {};
     try {

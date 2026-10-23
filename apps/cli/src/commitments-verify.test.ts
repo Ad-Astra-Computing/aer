@@ -177,6 +177,21 @@ describe('runCommitmentsVerify (runner)', () => {
     expect(result.all_matched).toBe(true);
   });
 
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and
+  // a hostile AER_BASE_URL picks Content-Encoding regardless of what was
+  // requested. This exercises commitments-verify.ts's OWN --aer bundle
+  // fetch, a distinct call site from verifyBundleSignature's key fetch.
+  it('refuses a compressed bundle response (via --aer) without reading its body', async () => {
+    const fetchImpl = (async () =>
+      new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } })) as unknown as typeof fetch;
+    await expect(
+      runCommitmentsVerify(
+        ['--requests', 'reqs.json', '--aer', 'aer-9'],
+        { baseUrl: 'https://api.test', commitmentKey: KEY_HEX, readFile: async () => REQS, fetchImpl },
+      ),
+    ).rejects.toThrow(/CVE-2026-111497/);
+  });
+
   it('fails with the SAME key_not_pinned reason as `aer verify` for a mathematically-valid signature under an unpinned key (blocker parity)', async () => {
     const { signed, publicKeyHex, kid } = await signBundle(unsignedBundle([commitmentFor(KEY, REQUEST)]));
     const files: Record<string, string> = { 'reqs.json': REQS, 'bundle.json': JSON.stringify(signed) };
@@ -277,5 +292,22 @@ describe('verifyBundleSignature and the unsigned anchoring claim', () => {
     const noKey = await verifyBundleSignature(flipped, { trustRoot, fetchImpl: fetch });
     expect(noKey.anchored).toBe(false);
     expect(noKey.anchor_status).toBe('claimed');
+  });
+});
+
+// CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+// hostile AER_BASE_URL picks Content-Encoding regardless of what was
+// requested. This is the key fetch verifyBundleSignature makes on its own,
+// a distinct code path from verifyAer's: it is only exercised when a caller
+// (compare, commitments verify) asks it to resolve the key over the network.
+describe('verifyBundleSignature refuses a compressed key response', () => {
+  it('never reads the body of a compressed signing-key response', async () => {
+    const { signed, kid } = await signBundle({ aer_id: 'aer-compressed-key', content_commitments: [] });
+    const fakeFetch = (async () =>
+      new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-encoding': 'br' } })) as unknown as typeof fetch;
+    await expect(
+      verifyBundleSignature(signed, { baseUrl: 'http://test.local', fetchImpl: fakeFetch }),
+    ).rejects.toThrow(/CVE-2026-111497/);
+    void kid;
   });
 });
