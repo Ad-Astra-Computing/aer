@@ -119,9 +119,12 @@
           '';
           installPhaseScript = ''
             mkdir -p $out/lib $out/bin
-            cp apps/cli/dist/main.js $out/lib/main.js
+            # .mjs, not .js: this directory has no package.json, so a plain
+            # .js extension makes Node default to CommonJS and fail on the
+            # bundle's ESM import syntax. .mjs forces ESM regardless.
+            cp apps/cli/dist/main.js $out/lib/main.mjs
             makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/aer \
-              --add-flags $out/lib/main.js
+              --add-flags $out/lib/main.mjs
           '';
         };
 
