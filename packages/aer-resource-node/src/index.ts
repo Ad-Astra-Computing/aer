@@ -10,6 +10,19 @@ export const DEFAULT_ISSUER = 'https://aer-api.adastra.computer';
 export const DEFAULT_JWKS_URL = 'https://api.aer.run/.well-known/aer-attestation-jwks.json';
 export const ATTESTATION_TYP = 'aer-attestation+jwt';
 
+// CVE-2026-111497 (Node Brotli decoder OOB write, RCE-capable): fetch() decodes
+// a body lazily on first read, based on the server's own Content-Encoding, and
+// a hostile server picks that header regardless of what was requested. Both
+// JWKS and introspection endpoints are external HTTP servers this process
+// does not control the bytes of, so neither body is read until this passes.
+async function assertUncompressed(res: Response): Promise<void> {
+  const enc = res.headers.get('content-encoding');
+  if (enc !== null && enc.toLowerCase() !== 'identity') {
+    await res.body?.cancel();
+    throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
+  }
+}
+
 export interface AttestationClaims {
   iss: string; aud: string; sub: string;
   tenant_id: string; agent_id: string; agent_session_id: string; environment_id: string;
@@ -275,6 +288,7 @@ class JwksCache {
   private async fetch(url: string, fetchImpl: typeof fetch, nowMs: number): Promise<CacheEntry> {
     const res = await fetchImpl(url);
     if (!res.ok) throw new Error(`status ${res.status}`);
+    await assertUncompressed(res);
     const body = (await res.json()) as { keys?: unknown };
     // A document with no key list is not a JWKS; it cannot say a kid is unknown.
     if (!body || !Array.isArray(body.keys)) throw new Error('response is not a JWKS');
@@ -339,6 +353,11 @@ class IntrospectionCache {
       throw new AttestationError('introspection_unavailable');
     }
     if (!res.ok) throw new AttestationError('introspection_unavailable', `status ${res.status}`);
+    try {
+      await assertUncompressed(res);
+    } catch {
+      throw new AttestationError('introspection_unavailable', 'compressed_response');
+    }
     const body = (await res.json().catch(() => null)) as { active?: boolean; reason?: string } | null;
     if (!body || typeof body.active !== 'boolean') throw new AttestationError('introspection_unavailable', 'bad_response');
 
