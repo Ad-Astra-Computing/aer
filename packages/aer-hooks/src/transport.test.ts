@@ -29,3 +29,18 @@ describe('openSession', () => {
     expect(bodyRead).toBe(false);
   });
 });
+
+import { isRetryable } from './transport.js';
+
+describe('isRetryable', () => {
+  it('does not treat a compressed-response refusal as retryable, unlike a real no-answer', async () => {
+    let bodyRead = false;
+    const res = new Response(JSON.stringify({ id: 's1', ingest_token: 't1' }), { status: 200, headers: { 'content-encoding': 'br' } });
+    res.text = (async () => { bodyRead = true; return '{}'; }) as typeof res.text;
+    const impl = vi.fn(async () => res) as unknown as typeof fetch;
+    const r = await openSession(api(impl), undefined, 1000);
+    expect(bodyRead).toBe(false);
+    if ('opened' in r) throw new Error('expected a failure');
+    expect(isRetryable(r.failed)).toBe(false);
+  });
+});

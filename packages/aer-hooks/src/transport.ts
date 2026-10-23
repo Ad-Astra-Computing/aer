@@ -22,6 +22,12 @@ export type CallResult =
 
 /** status 0: no answer at all (refused, reset, timed out). */
 const NO_ANSWER = 0;
+/** A compressed response is a deliberate refusal (CVE-2026-111497), not a
+ * network condition: giving it its own status keeps isRetryable from
+ * retrying a hostile or misconfigured endpoint that will answer the same
+ * way every time, and keeps outcome() from reporting it as "no answer",
+ * which would hide the real reason from the operator. */
+const REFUSED_COMPRESSED = -1;
 
 export interface ApiBase {
   base: HttpSinkOptions & { sourceType: string };
@@ -42,7 +48,7 @@ async function call(api: ApiBase, path: string, token: string, body: unknown, ti
     const compressedAs = isCompressed(res);
     if (compressedAs !== null) {
       await res.body?.cancel();
-      return { ok: false, status: NO_ANSWER, error: `compressed_response_${compressedAs}` };
+      return { ok: false, status: REFUSED_COMPRESSED, error: `compressed_response_${compressedAs}` };
     }
     const text = await res.text().catch(() => '');
     let parsed: Record<string, unknown> = {};
