@@ -56,6 +56,31 @@ describe('cmdLogout', () => {
     expect(err.join('\n')).toMatch(/unreachable|could not reach/i);
   });
 
+  // CVE-2026-111497: fetch() decodes a Brotli body lazily on first read, and a
+  // hostile or misconfigured base_url picks Content-Encoding regardless of
+  // what was requested. logoutOne's design never lets a server response
+  // escape as an uncaught exception, so a refusal must land here too.
+  it('never reads a compressed 403 response\'s body, and still exits cleanly', async () => {
+    // readErrorCode(res) only runs on the 403 branch; a 2xx never reads the
+    // body at all. readErrorCode also already swallows a JSON parse error, so
+    // exit code and local-credential removal are identical whether or not the
+    // body was ever touched: the only observable signal is whether .json()
+    // was called at all.
+    setCredential(BASE_URL, CRED, env);
+    let jsonCalled = false;
+    const res = new Response(new Uint8Array([1, 2, 3]), { status: 403, headers: { 'content-encoding': 'br' } });
+    const originalJson = res.json.bind(res);
+    res.json = (async () => {
+      jsonCalled = true;
+      return originalJson();
+    }) as typeof res.json;
+    const fetchImpl = vi.fn().mockResolvedValue(res);
+    const code = await cmdLogout({ baseUrl: BASE_URL }, deps(fetchImpl));
+    expect(jsonCalled).toBe(false);
+    expect(code).toBe(0);
+    expect(getCredential(BASE_URL, env)).toBeUndefined();
+  });
+
   it('403 not_a_cli_key: removes locally and says to revoke in Settings', async () => {
     setCredential(BASE_URL, CRED, env);
     const fetchImpl = vi.fn().mockResolvedValue(

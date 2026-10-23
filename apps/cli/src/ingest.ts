@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream';
 import { createInterface } from 'node:readline';
+import { assertUncompressed } from './http-guard.js';
 
 export interface IngestOptions {
   stream: Readable;
@@ -55,6 +56,7 @@ export async function ingestJsonlStream(opts: IngestOptions): Promise<IngestSumm
       },
       body: JSON.stringify(chunk),
     });
+    await assertUncompressed(res);
     if (!(res.status === 202 || res.status === 207)) {
       throw new Error(`ingest failed: ${res.status} ${await res.text()}`);
     }

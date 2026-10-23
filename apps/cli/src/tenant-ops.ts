@@ -3,6 +3,8 @@
  * apiKey + an optional fetch override (msw-friendly).
  */
 
+import { assertUncompressed } from './http-guard.js';
+
 export interface TenantOpts {
   baseUrl: string;
   apiKey: string;
@@ -24,6 +26,7 @@ function authedFetch(opts: TenantOpts) {
         authorization: `Bearer ${opts.apiKey}`,
       },
     });
+    await assertUncompressed(res);
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     // 204s have no body
     const text = await res.text();
@@ -112,6 +115,7 @@ export async function retrainBaseline(opts: TenantOpts & {
       ...(opts.sessionIds ? { session_ids: opts.sessionIds } : {}),
     }),
   });
+  await assertUncompressed(res);
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
 }

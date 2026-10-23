@@ -5,18 +5,21 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { planInit, applyInit, runDoctor, type FsLike, type InitOptions } from './init.js';
+import { assertUncompressed } from './http-guard.js';
 import { cmdLogin } from './auth/login.js';
 import { cmdLogout } from './auth/logout.js';
 import { cmdWhoami } from './auth/whoami.js';
 import { cmdLink, type AgentSummary, type EnvironmentSummary } from './auth/link.js';
 import { resolveAuth, resolveBaseUrl } from './auth/resolve.js';
 import { runLiveChecks } from './doctor-live.js';
+import { runMcpServe } from './mcp/serve.js';
 import { staleRegistrations } from '@adastracomputing/aer-hooks';
 import { ingestJsonlStream } from './ingest.js';
 import { CLI_VERSION } from './version.generated.js';
 import { runClaudeCodeImport } from './import/run.js';
 import { verifyAer } from './verify.js';
 import { runCommitmentsVerify } from './commitments-verify.js';
+import { runCompare } from './compare.js';
 import { buildSmokeScript } from './smoke-script.js';
 import { collectorApiKey, listSessionIds, awaitNewSession } from './smoke-verify.js';
 import { formatCliError, sanitizeForTerminal, stripControlChars } from './cli-error.js';
@@ -45,6 +48,9 @@ const USAGE_TEXT = [
   '  aer doctor [--json]                check config + live API reachability and tenant auth',
   '  aer smoke                          run a tiny instrumented workload end to end',
   '  aer login [--base-url <url>] [--no-browser]   sign in once per machine, save credentials',
+  '  aer mcp login [--base-url <url>] [--no-browser]   same device flow, labelled for an AI assistant (approve as read)',
+  '  aer mcp serve [--base-url <url>] [--allow-admin-key] [--max-rpm <n>]',
+  '           (stdio MCP server, nine read-only tools over this tenant\'s AER data; see README.md)',
   '  aer logout [--base-url <url> | --all]   revoke the CLI key aer login minted and forget it locally',
   '  aer whoami [--base-url <url>]      show what aer login stored (never the key itself)',
   '  aer link [--agent <id> | --create-agent <name>] [--env <id>] [--base-url <url>]',
@@ -54,6 +60,10 @@ const USAGE_TEXT = [
   '  aer verify <aer-id>',
   '  aer commitments verify --requests <file.json> (--aer <aer-id> | --bundle <file.json>) [--key <public-key.json>]',
   '           (offline: recompute content-commitment tags from YOUR key + plaintext and diff the bundle)',
+  '  aer compare <aer-id-a> <aer-id-b> | --bundle-a <file.json> --bundle-b <file.json>',
+  '           (verifies both signatures, then reports whether the two sessions received',
+  '            identical inputs and took identical actions, and where they first diverged;',
+  '            never reads or needs plaintext - see README.md, "Other commands")',
   '  aer badge <aer-id>                 (prints markdown for embedding the AER badge)',
   '  aer agents list',
   '  aer agents create <name> [--framework <type>]',
@@ -572,6 +582,59 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
+  if (command === 'mcp') {
+    const args = rest.filter((x): x is string => x !== undefined);
+    if (sub === 'login') {
+      const baseUrlFlag = readFlag(args, '--base-url');
+      const noBrowser = args.includes('--no-browser');
+      const code = await cmdLogin(
+        { baseUrlFlag, noBrowser, clientName: 'aer-mcp' },
+        {
+          env: process.env,
+          defaultBaseUrl: DEFAULT_BASE_URL,
+          clientVersion: ownVersion(),
+          hostname: () => osHostname(),
+          hasDisplay,
+          openBrowser: openBrowserBestEffort,
+          print: (l) => console.log(l),
+          printErr: (l) => console.error(l),
+        },
+      );
+      if (code !== 0) process.exit(code);
+      return;
+    }
+    if (sub === 'serve') {
+      const baseUrlFlag = readFlag(args, '--base-url');
+      const allowAdminKey = args.includes('--allow-admin-key');
+      const maxRpmArg = readFlag(args, '--max-rpm');
+      let maxRpm: number | undefined;
+      if (maxRpmArg !== undefined) {
+        const parsed = Number(maxRpmArg);
+        if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+          console.error(`--max-rpm must be a positive integer, got "${maxRpmArg}"\n`);
+          usage();
+        }
+        maxRpm = parsed;
+      }
+      const code = await runMcpServe(
+        { baseUrlFlag, allowAdminKey, ...(maxRpm !== undefined ? { maxRpm } : {}) },
+        {
+          env: process.env,
+          defaultBaseUrl: DEFAULT_BASE_URL,
+          cliVersion: ownVersion(),
+          stdin: process.stdin,
+          stdout: process.stdout,
+          printErr: (l) => console.error(l),
+        },
+        projectConfig(),
+      );
+      if (code !== 0) process.exit(code);
+      return;
+    }
+    console.error('aer mcp needs a subcommand: aer mcp serve, or aer mcp login\n');
+    usage();
+  }
+
   if (command === 'logout') {
     const args = [sub, ...rest].filter((x): x is string => x !== undefined);
     const baseUrlFlag = readFlag(args, '--base-url');
@@ -742,6 +805,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (!aerId || !baseUrl) usage();
     const outPath = readFlag(rest, '-o') ?? readFlag(rest, '--out') ?? `${aerId}.json`;
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/aers/${encodeURIComponent(aerId)}/bundle`);
+    await assertUncompressed(res);
     if (!res.ok) {
       console.error(`Failed: ${res.status} ${sanitizeForTerminal(await res.text())}`);
       process.exit(1);
@@ -765,6 +829,24 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const result = await verifyAer({ baseUrl, aerId });
       console.log(JSON.stringify(result, null, 2));
       if (!result.verified) process.exit(1);
+    } catch (err) {
+      console.error(formatCliError(err));
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (command === 'compare') {
+    // Positional AER ids need AER_BASE_URL to fetch their bundles; --bundle-a/
+    // --bundle-b work fully offline. Either way both signatures are verified
+    // before any comparison is reported (fail closed, same posture as `aer
+    // verify` and `aer commitments verify`).
+    try {
+      const { result, exitCode } = await runCompare([sub, ...rest].filter((x): x is string => x !== undefined), {
+        ...(baseUrl ? { baseUrl } : {}),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      if (exitCode !== 0) process.exit(exitCode);
     } catch (err) {
       console.error(formatCliError(err));
       process.exit(1);

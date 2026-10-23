@@ -6,6 +6,9 @@ import {
   type AnchorStatus,
   type AnchorEvidence,
 } from '@adastracomputing/aer-verify';
+import { assertUncompressed } from './http-guard.js';
+
+export { assertUncompressed } from './http-guard.js';
 
 export interface VerifyOptions {
   baseUrl: string;
@@ -130,6 +133,7 @@ export async function verifyBundleSignature(
     if (!keyRes.ok) {
       return { hash_match: false, signature_valid: false, verified: false, anchored: false, anchor_status: claimStatus, canonical_hash: '', signing_key_id: integrity.signing_key_id, reason: `key_not_found: ${keyRes.status}` };
     }
+    await assertUncompressed(keyRes);
     keyData = (await keyRes.json()) as KeyResponse;
   }
 
@@ -157,6 +161,7 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
 
   // 1. Download the canonical bundle.
   const bundleRes = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(opts.aerId)}/bundle`);
+  await assertUncompressed(bundleRes);
   if (!bundleRes.ok) {
     throw new Error(`failed to fetch bundle: ${bundleRes.status} ${await bundleRes.text()}`);
   }
@@ -174,7 +179,10 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
   //    pinned; the key is public, not a secret).
   let publicKeyHex: string | undefined;
   const keyRes = await fetchImpl(`${base}/v1/keys/${encodeURIComponent(integrity.signing_key_id)}`);
-  if (keyRes.ok) publicKeyHex = ((await keyRes.json()) as KeyResponse).public_key_hex;
+  if (keyRes.ok) {
+    await assertUncompressed(keyRes);
+    publicKeyHex = ((await keyRes.json()) as KeyResponse).public_key_hex;
+  }
 
   // 3. Fetch the anchor evidence. Three outcomes:
   //    - 404 → no evidence; the verdict follows the bundle's own anchoring claim.
@@ -186,6 +194,7 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
   let anchorEvidenceMalformed = false;
   const evRes = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(opts.aerId)}/anchor-evidence`);
   if (evRes.ok) {
+    await assertUncompressed(evRes);
     const ev = (await evRes.json()) as AnchorEvidence & { projection_status?: string };
     if (ev && ev.projection_status === 'malformed') anchorEvidenceMalformed = true;
     else anchorEvidence = ev as AnchorEvidence;
