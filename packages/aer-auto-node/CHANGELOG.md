@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.8.0
+
+### Minor Changes
+
+- [`25990de`](https://github.com/Ad-Astra-Computing/aer/commit/25990deac127bfbbd04bb3807188274284022fb9) - Add `aer usage`, a new CLI command that reads `GET /v1/usage` and prints
+  this tenant's plan, period and events/sessions usage against their limits
+  in plain text by default, or the raw response with `--json`. `aer doctor`
+  now checks the tenant's usage cap too, failing with the blocked reason and
+  upgrade URL when the API currently refuses new sessions.
+
+  `aer-auto-node`'s HTTP transport now recognizes the AER API's two
+  structured usage refusals (a tenant's usage cap reached, or an agent paused
+  by the tenant operator) and throws the new exported `AerRefusalError`
+  instead of a generic error, with a clear plain-English message. The session
+  manager backs off for the time the API gave it instead of retrying on every
+  later batch, so a long-running session does not hammer the API while a
+  tenant is over its cap or an agent is paused; events captured during that
+  window are dropped (not queued, since the window can be long) and counted
+  toward the closing report's delivery stats.
+
+  `aer-hooks` now gives the same two refusals the same treatment: a usage cap
+  or paused-agent 403 is never mistaken for the session being gone (which
+  previously dropped and reopened it on every later hook invocation), and the
+  hook backs off for the time the API gave it. Queued events wait for that
+  retry rather than being dropped outright, but the outbox's ordinary 1,000-
+  event cap still applies underneath a long wait, with the usual
+  `events_dropped_budget` accounting. One clear log line covers the whole
+  episode rather than one per hook invocation.
+
+### Patch Changes
+
+- [`d4df7ac`](https://github.com/Ad-Astra-Computing/aer/commit/d4df7ac0d6b4e7edbf1320b21c7f92dbd0a3abfe) - Node's fetch decompresses a response by its Content-Encoding header, including Brotli, whose decoder has an out-of-bounds write that can run arbitrary code (CVE-2026-111497, fixed upstream in Node 22.23.4/24.22.1/26.12.1 but not yet available through nixpkgs). The JWKS key fetch, the usage-policy fetch, the auto-node and hooks session transports, the SDK's and emit sink's event/complete/abort calls, the CLI's link command, and every bundle/key/evidence read in the CLI's download, verify, compare, and commitments verify commands each read a response body from a server outside this process's control, so each now refuses a response whose Content-Encoding is anything other than identity before any of it is read, closing the one path bytes could reach that decoder.
+
 ## 0.7.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.6
+
+### Patch Changes
+
+- [`9ebd986`](https://github.com/Ad-Astra-Computing/aer/commit/9ebd986edb64bb105ae557e97bfb0908e5bb5599) - Record Claude Code's `ConfigChange` hook as a new `config.changed` event: a closed-set feature snapshot and diff of the settings file, computed client-side, record-only (no detection rule yet).
+- Updated dependencies
+  - @adastracomputing/aer-emit@0.5.1
+
 ## 0.3.5
 
 ### Patch Changes
