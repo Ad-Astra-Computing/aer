@@ -7,6 +7,20 @@ import {
   type AnchorEvidence,
 } from '@adastracomputing/aer-verify';
 
+// CVE-2026-111497 (Node Brotli decoder OOB write, RCE-capable): fetch() decodes
+// a body lazily on first read, based on the server's own Content-Encoding, and
+// a hostile server picks that header regardless of what was requested. Every
+// bundle/key/evidence fetch below reads from an operator-configured AER_BASE_URL
+// this process does not control the bytes of, so none of their bodies are read
+// until this passes. Shared by compare.ts and commitments-verify.ts too.
+export async function assertUncompressed(res: Response): Promise<void> {
+  const enc = res.headers.get('content-encoding');
+  if (enc !== null && enc.toLowerCase() !== 'identity') {
+    await res.body?.cancel();
+    throw new Error(`refusing a response compressed as '${enc}' (CVE-2026-111497)`);
+  }
+}
+
 export interface VerifyOptions {
   baseUrl: string;
   aerId: string;
@@ -130,6 +144,7 @@ export async function verifyBundleSignature(
     if (!keyRes.ok) {
       return { hash_match: false, signature_valid: false, verified: false, anchored: false, anchor_status: claimStatus, canonical_hash: '', signing_key_id: integrity.signing_key_id, reason: `key_not_found: ${keyRes.status}` };
     }
+    await assertUncompressed(keyRes);
     keyData = (await keyRes.json()) as KeyResponse;
   }
 
@@ -160,6 +175,7 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
   if (!bundleRes.ok) {
     throw new Error(`failed to fetch bundle: ${bundleRes.status} ${await bundleRes.text()}`);
   }
+  await assertUncompressed(bundleRes);
   const bundle = (await bundleRes.json()) as AerBundle;
   const integrity = bundle.integrity;
   if (!integrity || typeof integrity.signing_key_id !== 'string') {
@@ -174,7 +190,10 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
   //    pinned; the key is public, not a secret).
   let publicKeyHex: string | undefined;
   const keyRes = await fetchImpl(`${base}/v1/keys/${encodeURIComponent(integrity.signing_key_id)}`);
-  if (keyRes.ok) publicKeyHex = ((await keyRes.json()) as KeyResponse).public_key_hex;
+  if (keyRes.ok) {
+    await assertUncompressed(keyRes);
+    publicKeyHex = ((await keyRes.json()) as KeyResponse).public_key_hex;
+  }
 
   // 3. Fetch the anchor evidence. Three outcomes:
   //    - 404 → no evidence; the verdict follows the bundle's own anchoring claim.
@@ -186,6 +205,7 @@ export async function verifyAer(opts: VerifyOptions): Promise<VerifyResult> {
   let anchorEvidenceMalformed = false;
   const evRes = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(opts.aerId)}/anchor-evidence`);
   if (evRes.ok) {
+    await assertUncompressed(evRes);
     const ev = (await evRes.json()) as AnchorEvidence & { projection_status?: string };
     if (ev && ev.projection_status === 'malformed') anchorEvidenceMalformed = true;
     else anchorEvidence = ev as AnchorEvidence;

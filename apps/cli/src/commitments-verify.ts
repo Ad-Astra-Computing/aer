@@ -19,7 +19,7 @@ import {
   type CanonRequest,
 } from '@adastracomputing/aer-auto-node/commitment';
 import { builtinTrustRoot } from '@adastracomputing/aer-verify';
-import { verifyBundleSignature, type BundleSignatureResult } from './verify.js';
+import { verifyBundleSignature, assertUncompressed, type BundleSignatureResult } from './verify.js';
 
 // The object GET /v1/keys/:key_id returns. A locally saved copy of that
 // response, passed via --key, lets --bundle mode check the outer signature
@@ -287,6 +287,7 @@ export async function runCommitmentsVerify(
     const base = opts.baseUrl.replace(/\/$/, '');
     const res = await fetchImpl(`${base}/v1/aers/${encodeURIComponent(parsed.aerId!)}/bundle`);
     if (!res.ok) throw new Error(`failed to fetch bundle: ${res.status}`);
+    await assertUncompressed(res);
     bundle = (await res.json()) as BundleLike;
   }
 
