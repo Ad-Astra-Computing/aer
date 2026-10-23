@@ -469,7 +469,9 @@ const GTFOBIN_NAMES: ReadonlySet<string> = new Set([
  *  (T6, shell-out recursion). `python`/`perl`/`ruby` -c/-e stay opaque:
  *  interpreter_inline only, never parsed, per the build instructions. */
 const SHELL_DASH_C: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
-const INTERPRETER_INLINE_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+/** Exported so config-snapshot.ts's broad-allow-rule classifier (`Bash(<interpreter>:*)`)
+ *  reuses the same interpreter set, rather than keeping a second list in step by hand. */
+export const INTERPRETER_INLINE_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['python', new Set(['-c'])],
   ['python3', new Set(['-c'])],
   ['perl', new Set(['-e'])],

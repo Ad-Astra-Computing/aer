@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SHA as SHA_RE } from './evidence.js';
+import type { ConfigInternalSnapshot } from './config-snapshot.js';
 
 /** One event waiting for the server, already in its final shape except for the session id. */
 export interface OutboxEvent {
@@ -139,6 +140,28 @@ export interface SessionState {
   /** vcsPushStash entries evicted by TTL with no matching tool_end: computed
    *  but lost, reported the same way effectStashesUnattached is. */
   vcsPushStashesUnattached?: number;
+  /**
+   * ConfigChange (Claude Code only): the last snapshot read for each
+   * resolved settings path, so the next reload can be diffed against it.
+   * Survives across ConfigChange events for the life of the session; never
+   * emitted (see config-snapshot.ts's module header).
+   */
+  configSnapshots?: Record<string, { snapshot: ConfigInternalSnapshot; contentHash: string; storedAt: number }>;
+  /** Random per-session salt for configSnapshots' content hash. Generated
+   *  once, kept only here, never emitted. */
+  configSalt?: string;
+  /** Writer attribution (ConfigChange): a PreToolUse of a write tool whose
+   *  target resolved to a Claude settings/skills path, keyed by that
+   *  resolved path. */
+  configWriteToolStash?: Record<string, { at: number }>;
+  /** Writer attribution: a PreToolUse of Bash, keyed by tool_use_id so a
+   *  still-open call can be told apart from one already closed. `open`
+   *  flips to false at tool_end rather than deleting the entry, so the
+   *  window-based shell_named/shell_unnamed fallback still has it. */
+  configShellStash?: Record<string, { kind: 'shell_named' | 'shell_unnamed'; at: number; open: boolean }>;
+  /** Writer attribution: the most recent approval.decided allowed/prompted
+   *  marker core.ts already computes for the P0-1 oversight signal. */
+  configPromptGrantStash?: { at: number };
   outbox: OutboxEvent[];
   /**
    * The most events sent in one request since a batch ran its full request
@@ -173,6 +196,15 @@ export const VCS_PUSH_STASH_TTL_MS = 5 * 60 * 1000;
 
 /** State untouched this long is presumed left by a harness that went away. */
 const TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Most settings files tracked per session (user/project/local/managed, a
+ *  few skills); oldest dropped first. */
+export const MAX_CONFIG_SNAPSHOT_ENTRIES = 16;
+/** Most open write-tool/shell writer-attribution stash entries kept at once. */
+export const MAX_CONFIG_STASH_ENTRIES = 32;
+/** Window from a writer stash to the ConfigChange event it may attribute
+ *  (design doc 2.4: about 5x the worst observed reload lag). */
+export const CONFIG_CHANGE_WINDOW_MS = 15_000;
 
 // ── where the state lives ───────────────────────────────────────────────────
 
@@ -350,6 +382,66 @@ function validPendingApprovals(v: unknown): Array<{ id: string; pushedAt: number
   return kept.length === 0 ? undefined : kept.slice(-MAX_APPROVAL_TRACKING_ENTRIES);
 }
 
+// ConfigChange's own stashes/snapshot store are read back leniently: a
+// malformed or unrecognised shape is simply dropped (the file is re-read on
+// the next ConfigChange, costing one `prior_unknown`), never thrown.
+function validConfigSnapshots(v: unknown): SessionState['configSnapshots'] {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const entries: Array<[string, { snapshot: ConfigInternalSnapshot; contentHash: string; storedAt: number }]> = [];
+  for (const [p, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (p.length === 0 || p.length > EFFECT_STASH_PATH_MAX_LEN) continue;
+    const rec = raw as Record<string, unknown> | null;
+    if (typeof rec !== 'object' || rec === null) continue;
+    const snapshot = rec['snapshot'];
+    const contentHash = rec['contentHash'];
+    const storedAt = rec['storedAt'];
+    if (typeof snapshot !== 'object' || snapshot === null || Array.isArray(snapshot)) continue;
+    if (typeof contentHash !== 'string' || !HEX64_RE.test(contentHash)) continue;
+    if (!isInt(storedAt)) continue;
+    entries.push([p, { snapshot: snapshot as ConfigInternalSnapshot, contentHash, storedAt }]);
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((a, b) => a[1].storedAt - b[1].storedAt);
+  return Object.fromEntries(entries.slice(-MAX_CONFIG_SNAPSHOT_ENTRIES));
+}
+
+function validConfigWriteToolStash(v: unknown): SessionState['configWriteToolStash'] {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const entries: Array<[string, { at: number }]> = [];
+  for (const [p, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (p.length === 0 || p.length > EFFECT_STASH_PATH_MAX_LEN) continue;
+    const at = (raw as Record<string, unknown> | null)?.['at'];
+    if (!isInt(at)) continue;
+    entries.push([p, { at }]);
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((a, b) => a[1].at - b[1].at);
+  return Object.fromEntries(entries.slice(-MAX_CONFIG_STASH_ENTRIES));
+}
+
+function validConfigShellStash(v: unknown): SessionState['configShellStash'] {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const entries: Array<[string, { kind: 'shell_named' | 'shell_unnamed'; at: number; open: boolean }]> = [];
+  for (const [id, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!isPendingApprovalId(id)) continue;
+    const rec = raw as Record<string, unknown> | null;
+    if (typeof rec !== 'object' || rec === null) continue;
+    const kind = rec['kind'];
+    const at = rec['at'];
+    if (kind !== 'shell_named' && kind !== 'shell_unnamed') continue;
+    if (!isInt(at)) continue;
+    entries.push([id, { kind, at, open: rec['open'] === true }]);
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((a, b) => a[1].at - b[1].at);
+  return Object.fromEntries(entries.slice(-MAX_CONFIG_STASH_ENTRIES));
+}
+
+function validConfigPromptGrantStash(v: unknown): SessionState['configPromptGrantStash'] {
+  const at = (v as Record<string, unknown> | null)?.['at'];
+  return isInt(at) ? { at } : undefined;
+}
+
 function validOutbox(v: unknown): OutboxEvent[] {
   if (!Array.isArray(v)) return [];
   return v.filter((e): e is OutboxEvent =>
@@ -407,6 +499,15 @@ function parseState(p: Record<string, unknown>): SessionState | null {
   const vcsPushStash = validVcsPushStash(p['vcsPushStash']);
   if (vcsPushStash !== undefined) s.vcsPushStash = vcsPushStash;
   if (isInt(p['vcsPushStashesUnattached'])) s.vcsPushStashesUnattached = p['vcsPushStashesUnattached'];
+  if (isStr(p['configSalt'])) s.configSalt = p['configSalt'];
+  const configSnapshots = validConfigSnapshots(p['configSnapshots']);
+  if (configSnapshots !== undefined) s.configSnapshots = configSnapshots;
+  const configWriteToolStash = validConfigWriteToolStash(p['configWriteToolStash']);
+  if (configWriteToolStash !== undefined) s.configWriteToolStash = configWriteToolStash;
+  const configShellStash = validConfigShellStash(p['configShellStash']);
+  if (configShellStash !== undefined) s.configShellStash = configShellStash;
+  const configPromptGrantStash = validConfigPromptGrantStash(p['configPromptGrantStash']);
+  if (configPromptGrantStash !== undefined) s.configPromptGrantStash = configPromptGrantStash;
   copyTranscript(p, s);
   const reg = p['eventsRegistered'];
   if (Array.isArray(reg) && reg.every((x) => typeof x === 'string')) s.eventsRegistered = reg as string[];
@@ -578,6 +679,139 @@ export function sweepStaleVcsPushStash(state: SessionState, now: number, ttlMs: 
   else state.vcsPushStash = Object.fromEntries(final);
   if (evicted > 0) state.vcsPushStashesUnattached = (state.vcsPushStashesUnattached ?? 0) + evicted;
   return evicted;
+}
+
+// ── ConfigChange: snapshot store + writer-attribution stashes ──────────────
+
+/** The session's content-hash salt, generated once and kept only here. */
+export function ensureConfigSalt(state: SessionState): string {
+  if (state.configSalt === undefined) state.configSalt = randomBytes(16).toString('hex');
+  return state.configSalt;
+}
+
+/** Remember the snapshot read for a resolved settings path, replacing
+ *  whatever was stored for it before. Capped at MAX_CONFIG_SNAPSHOT_ENTRIES. */
+export function storeConfigSnapshot(state: SessionState, resolvedPath: string, snapshot: ConfigInternalSnapshot, contentHash: string, now: number): void {
+  const next = { ...(state.configSnapshots ?? {}), [resolvedPath]: { snapshot, contentHash, storedAt: now } };
+  const entries = Object.entries(next).sort((a, b) => a[1].storedAt - b[1].storedAt);
+  state.configSnapshots = Object.fromEntries(entries.slice(-MAX_CONFIG_SNAPSHOT_ENTRIES));
+}
+
+/** PreToolUse of a write tool targeting a Claude settings/skills path. */
+export function stashConfigWriteTool(state: SessionState, resolvedPath: string, now: number): void {
+  const next = { ...(state.configWriteToolStash ?? {}), [resolvedPath]: { at: now } };
+  const entries = Object.entries(next).sort((a, b) => a[1].at - b[1].at);
+  state.configWriteToolStash = Object.fromEntries(entries.slice(-MAX_CONFIG_STASH_ENTRIES));
+}
+
+/** PreToolUse of Bash: stash it as open, named per whether the (already
+ *  discarded) command text mentioned a settings/skills path. */
+export function stashConfigShellOpen(state: SessionState, toolUseId: string, named: boolean, now: number): void {
+  const next = { ...(state.configShellStash ?? {}), [toolUseId]: { kind: named ? 'shell_named' as const : 'shell_unnamed' as const, at: now, open: true } };
+  const entries = Object.entries(next).sort((a, b) => a[1].at - b[1].at);
+  state.configShellStash = Object.fromEntries(entries.slice(-MAX_CONFIG_STASH_ENTRIES));
+}
+
+/** tool_end for a Bash call: the stash (if any) stays, but is no longer "still open". */
+export function closeConfigShell(state: SessionState, toolUseId: string): void {
+  const entry = state.configShellStash?.[toolUseId];
+  if (entry === undefined) return;
+  state.configShellStash = { ...state.configShellStash, [toolUseId]: { ...entry, open: false } };
+}
+
+/** approval.decided allowed/prompted: the signal core.ts already computes
+ *  for the P0-1 oversight marker, reused here rather than recomputed. */
+export function stashConfigPromptGrant(state: SessionState, now: number): void {
+  state.configPromptGrantStash = { at: now };
+}
+
+export type ConfigWriter = 'write_tool' | 'shell_named' | 'shell_unnamed' | 'prompt_grant' | 'none_observed';
+
+/**
+ * Attribution at ConfigChange time, in priority order (design doc 2.4):
+ * a write_tool stash whose path equals the resolved file; any still-open
+ * Bash call; a shell_named, then shell_unnamed stash within the window;
+ * prompt_grant only for a local_settings file whose only delta is
+ * allow_added; otherwise none_observed. The matched stash is consumed so it
+ * cannot attribute a second reload.
+ */
+export function resolveConfigWriter(
+  state: SessionState,
+  resolvedPath: string,
+  configSource: string,
+  changeLabels: readonly string[],
+  now: number,
+  windowMs: number = CONFIG_CHANGE_WINDOW_MS,
+): ConfigWriter {
+  const writeTool = state.configWriteToolStash?.[resolvedPath];
+  if (writeTool !== undefined && now - writeTool.at <= windowMs) {
+    const { [resolvedPath]: _removed, ...rest } = state.configWriteToolStash ?? {};
+    state.configWriteToolStash = rest;
+    return 'write_tool';
+  }
+
+  // An open stash past VCS_PUSH_STASH_TTL_MS is presumed leaked, not still
+  // running; among several fresh open stashes the most recent wins.
+  const shellEntries = Object.entries(state.configShellStash ?? {});
+  const openCandidates = shellEntries.filter(([, e]) => e.open && now - e.at <= VCS_PUSH_STASH_TTL_MS);
+  const stillOpen = openCandidates.length === 0
+    ? undefined
+    : openCandidates.reduce((latest, candidate) => (candidate[1].at > latest[1].at ? candidate : latest));
+  if (stillOpen !== undefined) {
+    const [id, entry] = stillOpen;
+    const { [id]: _removed, ...rest } = state.configShellStash ?? {};
+    state.configShellStash = rest;
+    return entry.kind;
+  }
+
+  const closedInWindow = shellEntries.filter(([, e]) => !e.open && now - e.at <= windowMs);
+  const named = closedInWindow.find(([, e]) => e.kind === 'shell_named');
+  if (named !== undefined) {
+    const [id] = named;
+    const { [id]: _removed, ...rest } = state.configShellStash ?? {};
+    state.configShellStash = rest;
+    return 'shell_named';
+  }
+  const unnamed = closedInWindow.find(([, e]) => e.kind === 'shell_unnamed');
+  if (unnamed !== undefined) {
+    const [id] = unnamed;
+    const { [id]: _removed, ...rest } = state.configShellStash ?? {};
+    state.configShellStash = rest;
+    return 'shell_unnamed';
+  }
+
+  const promptGrant = state.configPromptGrantStash;
+  if (
+    promptGrant !== undefined && now - promptGrant.at <= windowMs &&
+    configSource === 'local_settings' && changeLabels.length === 1 && changeLabels[0] === 'allow_added'
+  ) {
+    delete state.configPromptGrantStash;
+    return 'prompt_grant';
+  }
+
+  return 'none_observed';
+}
+
+/** Evict writer-attribution stash entries past the window (plus a margin)
+ *  with no match, mirroring sweepStaleEffectStash's shape. Snapshots
+ *  themselves are not TTL'd: they are the baseline for the whole session. */
+export function sweepStaleConfigStashes(state: SessionState, now: number, windowMs: number = CONFIG_CHANGE_WINDOW_MS): void {
+  const margin = windowMs * 2;
+  if (state.configWriteToolStash !== undefined) {
+    const kept = Object.entries(state.configWriteToolStash).filter(([, e]) => now - e.at <= margin);
+    if (kept.length === 0) delete state.configWriteToolStash;
+    else state.configWriteToolStash = Object.fromEntries(kept);
+  }
+  if (state.configShellStash !== undefined) {
+    // An open stash gets VCS_PUSH_STASH_TTL_MS, not an indefinite reprieve.
+    const kept = Object.entries(state.configShellStash).filter(([, e]) =>
+      e.open ? now - e.at <= VCS_PUSH_STASH_TTL_MS : now - e.at <= margin);
+    if (kept.length === 0) delete state.configShellStash;
+    else state.configShellStash = Object.fromEntries(kept);
+  }
+  if (state.configPromptGrantStash !== undefined && now - state.configPromptGrantStash.at > margin) {
+    delete state.configPromptGrantStash;
+  }
 }
 
 function isClosing(e: OutboxEvent): boolean {

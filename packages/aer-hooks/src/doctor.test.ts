@@ -3,6 +3,7 @@ import {
   diagnoseCommand,
   diagnoseRegistrations,
   diagnoseOversightMarkers,
+  diagnoseMissingConfigChange,
   diagnoseVersion,
   diagnoseNixShadow,
   isOlderVersion,
@@ -47,11 +48,29 @@ describe('diagnoseRegistrations', () => {
   it('is clean for a fully current registration', () => {
     const findings = diagnoseRegistrations([
       entry({
-        wiredEvents: ['PreToolUse', 'PermissionRequest', 'PermissionDenied'],
+        wiredEvents: ['PreToolUse', 'PermissionRequest', 'PermissionDenied', 'ConfigChange'],
         commands: ['aer-hook --harness claude-code --lifecycle v2'],
       }),
     ]);
     expect(findings).toEqual([]);
+  });
+});
+
+describe('diagnoseMissingConfigChange', () => {
+  it('flags a wired claude-code entry with no ConfigChange hook', () => {
+    const findings = diagnoseMissingConfigChange('claude-code', ['PreToolUse', 'PostToolUse']);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.reason).toBe('missing_config_change');
+    expect(findings[0]!.fix).toBe('aer-hooks install claude-code');
+  });
+
+  it('is clean once ConfigChange is wired', () => {
+    expect(diagnoseMissingConfigChange('claude-code', ['PreToolUse', 'ConfigChange'])).toEqual([]);
+  });
+
+  it('never flags codex or antigravity: neither has this hook', () => {
+    expect(diagnoseMissingConfigChange('codex', ['PreToolUse'])).toEqual([]);
+    expect(diagnoseMissingConfigChange('antigravity', ['PreToolUse'])).toEqual([]);
   });
 });
 

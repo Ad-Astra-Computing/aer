@@ -31,6 +31,10 @@ export interface ApprovalCorrelationState {
   pendingApprovals?: Array<{ id: string; pushedAt: number }>;
   pendingApprovalSeq?: number;
   approvalsUnresolved?: number;
+  /** ConfigChange writer attribution: stashed whenever a call resolves
+   *  `approval.decided{decision:'allowed',decided_by:'prompted'}` below, the
+   *  same signal the P0-1 oversight marker already computes. */
+  configPromptGrantStash?: { at: number };
 }
 
 /**
@@ -252,6 +256,7 @@ export function emitHookEvent(
           // tool_use_id/turn_id already ride via `common` (commonMeta already
           // carries both for kind tool_end); `decided_by` is the only new key.
           send('approval.decided', { decision: 'allowed', decided_by: 'prompted' });
+          state.configPromptGrantStash = { at: now };
         }
         if (event.tool === undefined) return unnamedTool(send);
         const fields: Record<string, unknown> = { tool: event.tool };
@@ -288,8 +293,23 @@ export function emitHookEvent(
         }
         return sent;
       }
+      case 'config_change': {
+        // ConfigChange (Claude Code only): the config.changed event(s)
+        // config-change-plan.ts's apply half already computed; nothing to
+        // send for a no-op reload or a file this feature does not cover.
+        for (const shape of event.configChangeShapes ?? []) send(shape.eventType, shape.payload);
+        return sent;
+      }
       case 'turn_start': {
         send('human.input', { kind: 'prompt' });
+        return sent;
+      }
+      case 'session_start': {
+        // SessionStart baseline (ConfigChange, Claude Code only): up to four
+        // config.changed{trigger:'session_start'} events, alongside the
+        // ordinary collector.report this kind already falls through to.
+        for (const shape of event.configChangeShapes ?? []) send(shape.eventType, shape.payload);
+        send('collector.report', { collector: 'aer-hooks', phase: event.kind });
         return sent;
       }
       case 'turn_end': {
