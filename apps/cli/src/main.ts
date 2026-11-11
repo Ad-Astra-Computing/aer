@@ -40,6 +40,27 @@ import {
   getUsage,
 } from './tenant-ops.js';
 import { formatUsageHuman, isUsageResponse } from './usage-cmd.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { HttpSentinelLocalApiClient } from './sentinel-local/http-client.js';
+import { runInstall } from './sentinel-local/install.js';
+import { runUninstall } from './sentinel-local/uninstall.js';
+import { runStatus } from './sentinel-local/status.js';
+import { runPause, runResume } from './sentinel-local/pause-resume.js';
+import { runDaemonForever } from './sentinel-local/daemon.js';
+import { readPushCredential, readPerInstallKey } from './sentinel-local/state.js';
+import { enumerateForPlatform } from './sentinel-local/real-enumerate.js';
+
+const execFileAsync = promisify(execFile);
+async function sentinelLocalExecFn(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync(cmd, args);
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    const e = err as { code?: number; stdout?: string; stderr?: string };
+    return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+  }
+}
 
 const USAGE_TEXT = [
   'Usage:',
@@ -86,6 +107,11 @@ const USAGE_TEXT = [
   '  aer webhooks rotate <webhook-id>',
   '  aer webhooks delete <webhook-id>',
   '  aer webhooks deliveries <webhook-id> [--limit N]',
+  '  aer sentinel-local install [--env <id>] [--label <name>]',
+  '           (Linux/macOS only: installs the local-poll network sensor as a user daemon)',
+  '  aer sentinel-local uninstall [--erase]',
+  '  aer sentinel-local status [--json]',
+  '  aer sentinel-local pause | resume    (local daemon stop/start only; never changes server state)',
   '',
   '  Pass --help (or -h) after any command to print this text and exit, without',
   '  writing anything or making a network call.',
@@ -1082,6 +1108,94 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     usage();
   }
 
+  if (command === 'sentinel-local') {
+    await cmdSentinelLocal(sub, rest.filter((x): x is string => x !== undefined));
+    return;
+  }
+
   usage();
+}
+
+async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promise<void> {
+  if (sub === 'run-daemon') {
+    const credential = readPushCredential(process.env);
+    const perInstallKey = readPerInstallKey(process.env);
+    if (!credential || !perInstallKey) {
+      console.error('sentinel-local run-daemon: not installed. Run `aer sentinel-local install` first.');
+      process.exit(1);
+    }
+    const auth = resolveAuth({ env: process.env, cfg: projectConfig(), defaultBaseUrl: DEFAULT_BASE_URL });
+    const apiClient = new HttpSentinelLocalApiClient({ baseUrl: auth.baseUrl, apiKey: auth.apiKey ?? '' });
+    await runDaemonForever({
+      perInstallKey,
+      sensorSourceId: credential.sensorSourceId,
+      pushToken: credential.pushToken,
+      apiClient,
+      enumerate: enumerateForPlatform(),
+    });
+    return;
+  }
+
+  if (sub === 'install') {
+    const opts = requireTenantAuth('aer sentinel-local install');
+    const apiClient = new HttpSentinelLocalApiClient({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
+    const environmentId = readFlag(args, '--env');
+    const deviceLabel = readFlag(args, '--label');
+    try {
+      await runInstall({
+        apiClient,
+        execFn: sentinelLocalExecFn,
+        ...(environmentId !== undefined ? { environmentId } : {}),
+        ...(deviceLabel !== undefined ? { deviceLabel } : {}),
+        print: (l) => console.log(l),
+      });
+    } catch (err) {
+      console.error(formatCliError(err));
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'uninstall') {
+    const opts = requireTenantAuth('aer sentinel-local uninstall');
+    const apiClient = new HttpSentinelLocalApiClient({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
+    const erase = args.includes('--erase');
+    await runUninstall({ apiClient, execFn: sentinelLocalExecFn, erase, print: (l) => console.log(l) });
+    return;
+  }
+
+  if (sub === 'status') {
+    const report = await runStatus({ execFn: sentinelLocalExecFn });
+    if (args.includes('--json')) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(`installed:        ${report.installed}`);
+      console.log(`unit file exists: ${report.unitExists}`);
+      console.log(`daemon active:    ${report.daemonActive ?? 'unknown'}`);
+      console.log(`device id:        ${report.deviceId ?? '(none)'}`);
+      console.log(`sensor source id: ${report.sensorSourceId ?? '(none)'}`);
+      console.log(`outbox depth:     ${report.outboxDepth}`);
+      console.log(`dropped rows:     ${report.droppedCount}`);
+      if (report.codexHome) {
+        console.log(`CODEX_HOME:       recorded=${report.codexHome.recordedValue ?? report.codexHome.recorded} current=${report.codexHome.current ?? '(unset)'}${report.codexHome.stale ? ' [STALE: re-run install]' : ''}`);
+      }
+    }
+    return;
+  }
+
+  if (sub === 'pause') {
+    await runPause({ execFn: sentinelLocalExecFn });
+    console.log('Paused the local-poll daemon (local only; the server registration is unchanged).');
+    return;
+  }
+
+  if (sub === 'resume') {
+    await runResume({ execFn: sentinelLocalExecFn });
+    console.log('Resumed the local-poll daemon.');
+    return;
+  }
+
+  console.error('Usage: aer sentinel-local <install|uninstall|status|pause|resume> [options]');
+  process.exit(64);
 }
 
