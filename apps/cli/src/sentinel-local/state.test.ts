@@ -66,7 +66,7 @@ describe('sentinel-local.json', () => {
 
 describe('push credential', () => {
   it('writes, reads, and deletes', () => {
-    writePushCredential({ sensorSourceId: 's1', pushToken: 't1', ingestUrl: 'https://x/y', expectedClaimId: 'c1' }, env);
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't1', ingestUrl: 'https://x/y' }, env);
     expect(readPushCredential(env)?.sensorSourceId).toBe('s1');
     deletePushCredential(env);
     expect(readPushCredential(env)).toBeUndefined();

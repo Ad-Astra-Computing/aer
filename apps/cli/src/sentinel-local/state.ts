@@ -96,6 +96,18 @@ export function ensureDeviceId(env?: Record<string, string | undefined>): string
   return id;
 }
 
+/** Always mints and persists a NEW device id, overwriting any existing one.
+ * Used only for `install --regenerate-device-id`, the remedy the server's
+ * `device_already_registered` 409 explicitly tells a user to run when this
+ * device id collides with a stale registration from a different machine. */
+export function regenerateDeviceId(env?: Record<string, string | undefined>): string {
+  const file = deviceIdPath(env);
+  assertNotSymlink(file);
+  const id = randomUUID();
+  atomicWriteFile(file, id + '\n');
+  return id;
+}
+
 // --- sentinel-local.json: install-time config (codexHome state, etc) ---
 
 export interface SentinelLocalConfig {
@@ -126,6 +138,16 @@ export function readSentinelLocalConfig(env?: Record<string, string | undefined>
 
 export function writeSentinelLocalConfig(config: SentinelLocalConfig, env?: Record<string, string | undefined>): void {
   atomicWriteFile(sentinelLocalConfigPath(env), JSON.stringify(config, null, 2) + '\n');
+}
+
+export function deleteSentinelLocalConfig(env?: Record<string, string | undefined>): void {
+  const file = sentinelLocalConfigPath(env);
+  try {
+    assertNotSymlink(file);
+    rmSync(file, { force: true });
+  } catch {
+    /* best effort: uninstall must not fail just because this was already gone */
+  }
 }
 
 // --- per-install key: used only to derive observation_id locally, never
@@ -172,8 +194,12 @@ export interface PushCredential {
   sensorSourceId: string;
   pushToken: string;
   ingestUrl: string;
-  /** Captured from the registration response, used by `uninstall --erase`. */
-  expectedClaimId?: string | undefined;
+  // NOTE: no cached claim id here. The server never returns one on register
+  // (the POST /v1/fleet/local-sensors response has no such field - only
+  // GET /v1/fleet/sensors exposes `claim_id`, per row), and per spec §10.4 a
+  // cached claim id would go stale across an admin reassignment: `uninstall
+  // --erase` must fetch the CURRENT claim id at erase time, never reuse one
+  // captured at install time.
 }
 
 export function pushCredentialPath(env?: Record<string, string | undefined>): string {
@@ -254,6 +280,27 @@ export function removeFromOutboxFront(count: number, env?: Record<string, string
   outbox.rows.splice(0, count);
   writeOutbox(outbox, env);
   return outbox;
+}
+
+/** Removes the first `count` rows AND counts them as dropped (never silently
+ * discarded) - for a whole-batch-rejected push (server 400: the envelope
+ * itself was malformed) that retrying can never fix. */
+export function dropFromOutboxFront(count: number, env?: Record<string, string | undefined>): Outbox {
+  const outbox = readOutbox(env);
+  const removed = outbox.rows.splice(0, count);
+  outbox.droppedCount += removed.length;
+  writeOutbox(outbox, env);
+  return outbox;
+}
+
+export function deleteOutbox(env?: Record<string, string | undefined>): void {
+  const file = outboxPath(env);
+  try {
+    assertNotSymlink(file);
+    rmSync(file, { force: true });
+  } catch {
+    /* best effort: uninstall must not fail just because this was already gone */
+  }
 }
 
 export { OUTBOX_CAP };
