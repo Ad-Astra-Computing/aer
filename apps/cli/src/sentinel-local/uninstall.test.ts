@@ -1,10 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runUninstall } from './uninstall.js';
-import { writePushCredential, readPushCredential } from './state.js';
-import type { SentinelLocalApiClient } from './http-client.js';
+import { runStatus } from './status.js';
+import {
+  writePushCredential, readPushCredential,
+  writeSentinelLocalConfig, readSentinelLocalConfig,
+  appendToOutbox, readOutbox,
+} from './state.js';
+import { systemdUnitPath, launchdPlistPath } from './platform-process.js';
+import { SentinelLocalApiError, type SentinelLocalApiClient, type SensorListRow } from './http-client.js';
 
 let dir: string;
 let env: Record<string, string | undefined>;
@@ -18,13 +24,36 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function fakeClient(): SentinelLocalApiClient {
-  return { register: vi.fn(), disable: vi.fn(), eraseObservations: vi.fn(), push: vi.fn() };
+function fakeClient(sensors: SensorListRow[] = []): SentinelLocalApiClient {
+  return {
+    register: vi.fn(),
+    disable: vi.fn(),
+    eraseObservations: vi.fn(),
+    getSensors: vi.fn(async () => sensors),
+    push: vi.fn(),
+  };
 }
+
+function sensorRow(overrides: Partial<SensorListRow> = {}): SensorListRow {
+  return {
+    sensor_source_id: 's1', kind: 'local_poll', environment_id: null, enabled: 1,
+    last_ingested_at: null, device_id: 'd1', device_label: null, claim_id: 'claim-current',
+    ...overrides,
+  };
+}
+
+const outboxRow = {
+  observation_id: 'a'.repeat(64),
+  observed_at: '2026-01-01T00:00:00Z',
+  destination_evidence: 'none' as const,
+  destination_family: null,
+  tool: 'claude_code' as const,
+  instrumentation: 'none' as const,
+};
 
 describe('runUninstall', () => {
   it('deletes the push credential but never the device id', async () => {
-    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u', expectedClaimId: 'c1' }, env);
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
     const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     const client = fakeClient();
     await runUninstall({ apiClient: client, execFn, env, erase: false, platform: 'linux', print: () => {} });
@@ -33,12 +62,25 @@ describe('runUninstall', () => {
     expect(client.eraseObservations).not.toHaveBeenCalled();
   });
 
-  it('erases observations when --erase is requested, using the captured claim id', async () => {
-    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u', expectedClaimId: 'claim-xyz' }, env);
+  it('fetches the CURRENT claim id via GET /v1/fleet/sensors at erase time (never a cached one)', async () => {
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
     const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
-    const client = fakeClient();
+    const client = fakeClient([sensorRow({ claim_id: 'claim-fresh' })]);
     await runUninstall({ apiClient: client, execFn, env, erase: true, platform: 'linux', print: () => {} });
-    expect(client.eraseObservations).toHaveBeenCalledWith('s1', 'claim-xyz');
+    expect(client.getSensors).toHaveBeenCalled();
+    expect(client.eraseObservations).toHaveBeenCalledWith('s1', 'claim-fresh');
+  });
+
+  it('surfaces a 409 device_release_conflict as a real error, not a silent retry', async () => {
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
+    const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const client = fakeClient([sensorRow({ claim_id: 'claim-stale' })]);
+    (client.eraseObservations as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new SentinelLocalApiError('erase failed: 409', 409),
+    );
+    await expect(
+      runUninstall({ apiClient: client, execFn, env, erase: true, platform: 'linux', print: () => {} }),
+    ).rejects.toThrow(/409|device_release_conflict/);
   });
 
   it('tolerates a missing/broken unit without failing the rest of uninstall', async () => {
@@ -55,5 +97,44 @@ describe('runUninstall', () => {
     await runUninstall({ apiClient: client, execFn, env, erase: true, platform: 'linux', print: () => {} });
     expect(client.disable).not.toHaveBeenCalled();
     expect(client.eraseObservations).not.toHaveBeenCalled();
+  });
+
+  it('removes the unit file, config, and outbox - and status reports not-installed afterward', async () => {
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
+    writeSentinelLocalConfig(
+      { deviceId: 'd1', consentVersion: 'v1', installedAt: 'x', sourcePlatform: 'linux', codexHome: { kind: 'unset' } },
+      env,
+    );
+    appendToOutbox([outboxRow], env);
+    const unitPath = systemdUnitPath(env);
+    const { atomicWriteFile } = await import('./state.js');
+    atomicWriteFile(unitPath, '[Unit]\n');
+    expect(existsSync(unitPath)).toBe(true);
+
+    const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const client = fakeClient();
+    await runUninstall({ apiClient: client, execFn, env, erase: false, platform: 'linux', print: () => {} });
+
+    expect(existsSync(unitPath)).toBe(false);
+    expect(readSentinelLocalConfig(env)).toBeUndefined();
+    expect(readOutbox(env).rows).toHaveLength(0);
+
+    const status = await runStatus({ execFn, env, platform: 'linux' });
+    expect(status.installed).toBe(false);
+    expect(status.unitExists).toBe(false);
+  });
+
+  it('removes the launchd plist on macOS', async () => {
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
+    const plistPath = launchdPlistPath(env);
+    const { atomicWriteFile } = await import('./state.js');
+    atomicWriteFile(plistPath, '<plist/>\n');
+    expect(existsSync(plistPath)).toBe(true);
+
+    const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const client = fakeClient();
+    await runUninstall({ apiClient: client, execFn, env, erase: false, platform: 'macos', print: () => {} });
+
+    expect(existsSync(plistPath)).toBe(false);
   });
 });

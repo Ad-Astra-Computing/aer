@@ -61,9 +61,10 @@ describe('runStatus', () => {
     const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     await runInstall({
       apiClient: {
-        register: vi.fn(async () => ({ sensor_source_id: 's1', push_token: 't', ingest_url: 'u', expected_claim_id: 'c' })),
+        register: vi.fn(async () => ({ sensor_source_id: 's1', push_token: 't', ingest_url: 'u' })),
         disable: vi.fn(),
         eraseObservations: vi.fn(),
+        getSensors: vi.fn(async () => []),
         push: vi.fn(),
       } as unknown as SentinelLocalApiClient,
       execFn,
@@ -71,6 +72,7 @@ describe('runStatus', () => {
       platform: 'linux',
       execPath: '/usr/bin/node',
       scriptPath: '/opt/aer/main.js',
+      consentAcknowledged: true,
       print: () => {},
     });
     const result = await runStatus({ execFn, env: { ...env, CODEX_HOME: '/home/dev/.codex-new' }, platform: 'linux' });
