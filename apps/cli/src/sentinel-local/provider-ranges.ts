@@ -138,6 +138,49 @@ function isIpv6Literal(ip: string): boolean {
   return ip.includes(':');
 }
 
+/** Normalizes a remote address before any range/set match: strips a macOS
+ * lsof-style `[...]` bracket wrapper (and any zone id already handled by
+ * ipv6ToBigInt), and collapses an IPv4-mapped IPv6 form (e.g. Linux
+ * /proc/net/tcp6's `0:0:0:0:0:ffff:a04f:6801`, or the bracketed macOS
+ * literal `::ffff:160.79.104.1`) down to plain IPv4 - so a v4-mapped v6
+ * address matches an IPv4 CIDR/resolved-set entry instead of silently never
+ * matching because the two sides disagree on family. */
+export function normalizeIp(ip: string): string {
+  let addr = ip.trim();
+  if (addr.startsWith('[') && addr.endsWith(']')) addr = addr.slice(1, -1);
+  if (!isIpv6Literal(addr)) return addr;
+
+  const value = ipv6ToBigInt(addr);
+  if (value === undefined) return addr;
+
+  // ::ffff:a.b.c.d: top 96 bits are zero except the 5th hextet, which is
+  // 0xffff. Checking `value >> 32n === 0xffffn` is exactly that: the top 96
+  // bits, as a number, equal 0xffff only when bits 32-111 are all zero
+  // except the low 16 of that range (the 0xffff hextet itself).
+  if ((value >> 32n) === 0xffffn) {
+    const v4Int = Number(value & 0xffffffffn);
+    return [
+      (v4Int >>> 24) & 0xff,
+      (v4Int >>> 16) & 0xff,
+      (v4Int >>> 8) & 0xff,
+      v4Int & 0xff,
+    ].join('.');
+  }
+  return addr;
+}
+
+/** Canonical form for IPv6 EQUALITY comparisons (never range matching,
+ * which already goes through ipInCidr's own bigint math): collapses
+ * compressed vs uncompressed forms (`2607:6bc0::1` vs
+ * `2607:6bc0:0:0:0:0:0:1`) to the same key, so a resolved-hostname set never
+ * misses a match purely over string formatting. */
+function canonicalForEquality(ip: string): string {
+  const normalized = normalizeIp(ip);
+  if (!isIpv6Literal(normalized)) return normalized;
+  const value = ipv6ToBigInt(normalized);
+  return value !== undefined ? `v6:${value.toString()}` : normalized;
+}
+
 /** Whether `ip` falls inside `cidr`. Supports IPv4-in-IPv4 and IPv6-in-IPv6
  * only (a v4 address is never checked against a v6 range or vice versa). */
 export function ipInCidr(ip: string, cidr: string): boolean {
@@ -172,21 +215,28 @@ export interface DestinationClassification {
 
 /** Checks `ip` against the static provider-owned ranges only (no DNS). */
 export function classifyAgainstOwnedRanges(ip: string): DestinationClassification | undefined {
+  const normalized = normalizeIp(ip);
   for (const range of PROVIDER_OWNED_RANGES) {
-    if (ipInCidr(ip, range.cidr)) return { evidence: 'provider_owned_range', family: range.family };
+    if (ipInCidr(normalized, range.cidr)) return { evidence: 'provider_owned_range', family: range.family };
   }
   return undefined;
 }
 
 /** Checks `ip` against a resolved-hostname address set (already looked up by
- * the caller via dns-resolver.ts), restricted to actively-matched families. */
+ * the caller via dns-resolver.ts), restricted to actively-matched families.
+ * Compares by normalized value (bracket-stripped, v4-mapped-collapsed, and
+ * for IPv6, by BigInt value) - never by raw string equality, which misses a
+ * bracketed or differently-compressed form of the very same address. */
 export function classifyAgainstResolvedSet(
   ip: string,
   resolvedByFamily: Record<string, Set<string>>,
 ): DestinationClassification | undefined {
+  const target = canonicalForEquality(ip);
   for (const [family, addrs] of Object.entries(resolvedByFamily)) {
     if (!isFamilyActivelyMatched(family)) continue;
-    if (addrs.has(ip)) return { evidence: 'resolved_exact_ip', family };
+    for (const addr of addrs) {
+      if (canonicalForEquality(addr) === target) return { evidence: 'resolved_exact_ip', family };
+    }
   }
   return undefined;
 }

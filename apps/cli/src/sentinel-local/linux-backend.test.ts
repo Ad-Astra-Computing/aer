@@ -30,10 +30,26 @@ describe('parseTcp6Address - known vector, byte order locked in', () => {
     expect(parseTcp6Address(hex)).toBe('0:0:0:0:0:0:0:1');
   });
 
+  it('decodes a real /proc/net/tcp6 IPv4-mapped peer (160.79.104.1) to its mapped literal', () => {
+    // groups 0,0,0,0,0,ffff,a04f,6801 -> ::ffff:160.79.104.1, encoded the
+    // same per-word-little-endian way as every other /proc/net/tcp6 field.
+    const hex = '0000000000000000ffff000001684fa0';
+    expect(parseTcp6Address(hex)).toBe('0:0:0:0:0:ffff:a04f:6801');
+  });
+
   it('round-trips through ipInCidr for the owned IPv6 range', async () => {
     const { ipInCidr } = await import('./provider-ranges.js');
     const addr = parseTcp6Address('C06B0726000000000000000001000000');
     expect(ipInCidr(addr, '2607:6bc0::/32')).toBe(true);
+  });
+
+  it('a Linux v4-mapped tcp6 remote address matches the owned IPv4 CIDR range (B7)', async () => {
+    const { classifyAgainstOwnedRanges } = await import('./provider-ranges.js');
+    // The literal form Linux's /proc/net/tcp6 produces for an IPv4-mapped
+    // peer (160.79.104.1), per parseTcp6Address's own documented output
+    // shape (8 colon-separated hex groups, uncompressed).
+    const v4Mapped = '0:0:0:0:0:ffff:a04f:6801';
+    expect(classifyAgainstOwnedRanges(v4Mapped)).toEqual({ evidence: 'provider_owned_range', family: 'anthropic' });
   });
 });
 

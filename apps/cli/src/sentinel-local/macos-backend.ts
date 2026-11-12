@@ -29,11 +29,21 @@ export interface ExecFn {
   (cmd: string, args: string[]): Promise<string>;
 }
 
+/** Strips lsof's `[...]` bracket wrapper around an IPv6 literal (e.g.
+ * `[2607:6bc0::1]` -> `2607:6bc0::1`). A no-op for an IPv4 address or an
+ * already-unbracketed one. */
+function stripBrackets(addr: string): string {
+  return addr.startsWith('[') && addr.endsWith(']') ? addr.slice(1, -1) : addr;
+}
+
 /**
  * Parses `lsof -nP -a -i -F pcnPTt +c 0` output: `-F` field-mode emits one
  * line per field, `p<pid>`/`c<command>`/`n<name>` among them, with a new `p`
  * line starting each process's record. The `n` field for a TCP socket looks
- * like `<local>-><remote>` (e.g. `10.0.0.5:54321->160.79.104.1:443`).
+ * like `<local>-><remote>` (e.g. `10.0.0.5:54321->160.79.104.1:443`, or for
+ * IPv6, `[2607:6bc0::1]:54321->[2607:6bc0::2]:443` - lsof brackets an IPv6
+ * literal so its own embedded colons don't collide with the `:port`
+ * separator).
  */
 export function parseLsofSocketList(output: string): MacSocket[] {
   const out: MacSocket[] = [];
@@ -57,9 +67,9 @@ export function parseLsofSocketList(output: string): MacSocket[] {
       out.push({
         pid,
         comm,
-        localAddress: localAddress!,
+        localAddress: stripBrackets(localAddress!),
         localPort: Number(localPortStr),
-        remoteAddress: remoteAddress!,
+        remoteAddress: stripBrackets(remoteAddress!),
         remotePort: Number(remotePortStr),
       });
     }

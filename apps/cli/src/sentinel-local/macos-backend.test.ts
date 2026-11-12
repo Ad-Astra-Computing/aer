@@ -28,6 +28,21 @@ describe('parseLsofSocketList', () => {
     const output = ['p1', 'cfoo', 'n/var/log/foo.log'].join('\n');
     expect(parseLsofSocketList(output)).toHaveLength(0);
   });
+
+  it('strips brackets from a bracketed IPv6 connection (B7)', () => {
+    const output = [
+      'p123',
+      'cclaude',
+      'n[2607:6bc0::1]:54321->[2607:6bc0::2]:443',
+    ].join('\n');
+    const sockets = parseLsofSocketList(output);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]).toMatchObject({
+      localAddress: '2607:6bc0::1',
+      remoteAddress: '2607:6bc0::2',
+      remotePort: 443,
+    });
+  });
 });
 
 describe('parsePsArgs', () => {
