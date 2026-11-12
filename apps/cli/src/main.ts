@@ -107,8 +107,10 @@ const USAGE_TEXT = [
   '  aer webhooks rotate <webhook-id>',
   '  aer webhooks delete <webhook-id>',
   '  aer webhooks deliveries <webhook-id> [--limit N]',
-  '  aer sentinel-local install [--env <id>] [--label <name>]',
-  '           (Linux/macOS only: installs the local-poll network sensor as a user daemon)',
+  '  aer sentinel-local install [--env <id>] [--label <name>] [--i-understand-local-monitoring] [--regenerate-device-id]',
+  '           (Linux/macOS only: installs the local-poll network sensor as a user daemon;',
+  '            requires interactive confirmation of what it reads/sends, or the',
+  '            --i-understand-local-monitoring flag for non-interactive use)',
   '  aer sentinel-local uninstall [--erase]',
   '  aer sentinel-local status [--json]',
   '  aer sentinel-local pause | resume    (local daemon stop/start only; never changes server state)',
@@ -1116,6 +1118,40 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   usage();
 }
 
+// §10.1's disclosure: shown before any interactive install confirmation, and
+// before a non-interactive install is accepted as one `--i-understand-local-
+// monitoring` can skip, but what it says must be read regardless.
+const LOCAL_MONITORING_DISCLOSURE = [
+  'AER Sentinel local-poll sensor - what this installs:',
+  '  Runs as a background daemon on this machine.',
+  '  Reads: process names and command lines of locally running processes that',
+  '    hold open network sockets to AI-provider IPs, classified locally',
+  '    against a closed set of known AI CLI/tool names.',
+  '  Sends upstream: only closed-set labels, counts, booleans, and hashes -',
+  '    never raw process arguments, file paths, or hostnames.',
+];
+
+async function confirmLocalMonitoringConsent(): Promise<boolean> {
+  for (const line of LOCAL_MONITORING_DISCLOSURE) console.log(line);
+  // Never install silently as part of a scripted setup with no explicit
+  // signal either way (§10.1): a non-interactive session with no flag is a
+  // refusal, not a default "yes".
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question("Type 'yes' to confirm and install: ");
+    return answer.trim().toLowerCase() === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+// H3: the resident daemon process only ever needs the push token (stored
+// locally at install time) to call push() - it must never load the tenant
+// API key into a long-running background process. The base URL it talks to
+// is derived from the stored ingest_url's own origin, never re-resolved
+// from env/project config (which is also how it would end up needing the
+// tenant key via resolveAuth/projectConfig in the first place).
 async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promise<void> {
   if (sub === 'run-daemon') {
     const credential = readPushCredential(process.env);
@@ -1124,8 +1160,8 @@ async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promis
       console.error('sentinel-local run-daemon: not installed. Run `aer sentinel-local install` first.');
       process.exit(1);
     }
-    const auth = resolveAuth({ env: process.env, cfg: projectConfig(), defaultBaseUrl: DEFAULT_BASE_URL });
-    const apiClient = new HttpSentinelLocalApiClient({ baseUrl: auth.baseUrl, apiKey: auth.apiKey ?? '' });
+    const baseUrl = new URL(credential.ingestUrl).origin;
+    const apiClient = new HttpSentinelLocalApiClient({ baseUrl, apiKey: '' });
     await runDaemonForever({
       perInstallKey,
       sensorSourceId: credential.sensorSourceId,
@@ -1141,12 +1177,24 @@ async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promis
     const apiClient = new HttpSentinelLocalApiClient({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
     const environmentId = readFlag(args, '--env');
     const deviceLabel = readFlag(args, '--label');
+    const regenerateDeviceIdFlag = args.includes('--regenerate-device-id');
+    const nonInteractiveConsent = args.includes('--i-understand-local-monitoring');
+    const consentAcknowledged = nonInteractiveConsent || await confirmLocalMonitoringConsent();
+    if (!consentAcknowledged) {
+      console.error(
+        'sentinel-local install: consent not confirmed; aborting. Re-run and type `yes` at the ' +
+        'prompt, or pass --i-understand-local-monitoring for non-interactive use.',
+      );
+      process.exit(1);
+    }
     try {
       await runInstall({
         apiClient,
         execFn: sentinelLocalExecFn,
+        consentAcknowledged,
         ...(environmentId !== undefined ? { environmentId } : {}),
         ...(deviceLabel !== undefined ? { deviceLabel } : {}),
+        ...(regenerateDeviceIdFlag ? { regenerateDeviceId: true } : {}),
         print: (l) => console.log(l),
       });
     } catch (err) {
@@ -1160,7 +1208,12 @@ async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promis
     const opts = requireTenantAuth('aer sentinel-local uninstall');
     const apiClient = new HttpSentinelLocalApiClient({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
     const erase = args.includes('--erase');
-    await runUninstall({ apiClient, execFn: sentinelLocalExecFn, erase, print: (l) => console.log(l) });
+    try {
+      await runUninstall({ apiClient, execFn: sentinelLocalExecFn, erase, print: (l) => console.log(l) });
+    } catch (err) {
+      console.error(formatCliError(err));
+      process.exit(1);
+    }
     return;
   }
 
