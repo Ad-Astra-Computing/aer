@@ -1,11 +1,12 @@
-// HTTP client boundary for the Sentinel local-poll sensor. The server routes
-// (/v1/fleet/local-sensors, the ingest route) don't exist yet: this is the
-// interface boundary every caller depends on, so wiring in
-// HttpSentinelLocalApiClient once they ship is a one-line swap, not a
-// redesign. TODO(server): confirm the exact registration shape against the
-// real route; this follows the design doc's documented fields.
+// HTTP client boundary for the Sentinel local-poll sensor, matching the
+// real server routes in the private monorepo exactly (never an invented
+// shape): POST/DELETE /v1/fleet/local-sensors[/...] (fleet-local-sensors.ts),
+// GET /v1/fleet/sensors (fleet.ts - the only place a row's `claim_id` is
+// returned), POST /v1/sentinel/local-poll/:id (local-poll-ingest.ts's
+// `LocalPollIngestBody`, a strict `{ poller_version?, rows }` object).
 
 import type { ObservationRow } from './types.js';
+import { CLI_VERSION } from '../version.generated.js';
 
 export interface RegisterRequest {
   device_id: string;
@@ -15,13 +16,28 @@ export interface RegisterRequest {
   device_label?: string;
 }
 
+// Exactly the fields POST /v1/fleet/local-sensors returns (fleet-local-
+// sensors.ts). There is no `expected_claim_id` here - the server never sends
+// one at registration time; see getSensors() below for where a claim id
+// actually comes from.
 export interface RegisterResponse {
   sensor_source_id: string;
   push_token: string;
   ingest_url: string;
-  /** Stamped on every ownership-establishing write; captured so a later
-   * `uninstall --erase` can pass it back as `expected_claim_id`. */
-  expected_claim_id: string;
+}
+
+// One row of GET /v1/fleet/sensors's `sensors` array (fleet.ts). `claim_id`
+// is null for a sensor whose device has no owner binding (shouldn't happen
+// for a local-poll sensor, but the server's shape allows it).
+export interface SensorListRow {
+  sensor_source_id: string;
+  kind: string;
+  environment_id: string | null;
+  enabled: number;
+  last_ingested_at: string | null;
+  device_id: string | null;
+  device_label: string | null;
+  claim_id: string | null;
 }
 
 export interface PushResult {
@@ -44,8 +60,14 @@ export interface SentinelLocalApiClient {
   /** DELETE /v1/fleet/local-sensors/:id - disables the registration. */
   disable(sensorSourceId: string): Promise<void>;
   /** DELETE /v1/fleet/local-sensors/:id/observations - erases this device's
-   * stored observations. Requires the claim_id captured at registration. */
+   * stored observations. `expectedClaimId` must be the CURRENT claim id
+   * (fetch it fresh via getSensors() - never a value cached at install
+   * time: an admin reassignment mints a new claim, and a stale one must
+   * 409, not silently succeed). */
   eraseObservations(sensorSourceId: string, expectedClaimId: string): Promise<void>;
+  /** GET /v1/fleet/sensors - the tenant's own sensor rows, each carrying its
+   * current `claim_id`. */
+  getSensors(): Promise<SensorListRow[]>;
   /** POST /v1/sentinel/local-poll/:sensor_source_id - pushes a batch. */
   push(sensorSourceId: string, pushToken: string, rows: ObservationRow[]): Promise<PushResult>;
 }
@@ -54,25 +76,40 @@ export interface HttpClientOptions {
   baseUrl: string;
   apiKey: string;
   fetchFn?: typeof fetch;
+  /** Per-request timeout; a hung connection must never halt the daemon
+   * indefinitely. Defaults to 15s. */
+  timeoutMs?: number;
 }
 
-/** The one real implementation, pointed at the live API once the server
- * routes ship. Every call is a thin, direct mapping onto the documented wire
- * contract - no retry/backoff logic here (that belongs to the daemon's
- * outbox loop, which decides WHEN to call `push` again). */
+/** The one real implementation, pointed at the live API. Every call is a
+ * thin, direct mapping onto the documented wire contract - no retry/backoff
+ * logic here (that belongs to the daemon's outbox loop, which decides WHEN
+ * to call `push` again). */
 export class HttpSentinelLocalApiClient implements SentinelLocalApiClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetchFn: typeof fetch;
+  private readonly timeoutMs: number;
 
   constructor(opts: HttpClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.apiKey = opts.apiKey;
     this.fetchFn = opts.fetchFn ?? fetch;
+    this.timeoutMs = opts.timeoutMs ?? 15_000;
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await this.fetchFn(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async register(req: RegisterRequest): Promise<RegisterResponse> {
-    const res = await this.fetchFn(`${this.baseUrl}/v1/fleet/local-sensors`, {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/v1/fleet/local-sensors`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify(req),
@@ -82,7 +119,7 @@ export class HttpSentinelLocalApiClient implements SentinelLocalApiClient {
   }
 
   async disable(sensorSourceId: string): Promise<void> {
-    const res = await this.fetchFn(`${this.baseUrl}/v1/fleet/local-sensors/${encodeURIComponent(sensorSourceId)}`, {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/v1/fleet/local-sensors/${encodeURIComponent(sensorSourceId)}`, {
       method: 'DELETE',
       headers: { authorization: `Bearer ${this.apiKey}` },
     });
@@ -90,7 +127,7 @@ export class HttpSentinelLocalApiClient implements SentinelLocalApiClient {
   }
 
   async eraseObservations(sensorSourceId: string, expectedClaimId: string): Promise<void> {
-    const res = await this.fetchFn(
+    const res = await this.fetchWithTimeout(
       `${this.baseUrl}/v1/fleet/local-sensors/${encodeURIComponent(sensorSourceId)}/observations`,
       {
         method: 'DELETE',
@@ -101,11 +138,24 @@ export class HttpSentinelLocalApiClient implements SentinelLocalApiClient {
     if (!res.ok) throw new SentinelLocalApiError(`erase failed: ${res.status}`, res.status);
   }
 
+  async getSensors(): Promise<SensorListRow[]> {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/v1/fleet/sensors`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${this.apiKey}` },
+    });
+    if (!res.ok) throw new SentinelLocalApiError(`list sensors failed: ${res.status}`, res.status);
+    const body = (await res.json()) as { sensors: SensorListRow[] };
+    return body.sensors ?? [];
+  }
+
   async push(sensorSourceId: string, pushToken: string, rows: ObservationRow[]): Promise<PushResult> {
-    const res = await this.fetchFn(`${this.baseUrl}/v1/sentinel/local-poll/${encodeURIComponent(sensorSourceId)}`, {
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/v1/sentinel/local-poll/${encodeURIComponent(sensorSourceId)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${pushToken}` },
-      body: JSON.stringify({ observations: rows }),
+      // Exactly LocalPollIngestBody's strict shape (local-poll-ingest.ts):
+      // `{ poller_version?, rows }`. An extra key such as a stray
+      // `observations` wrapper 400s the WHOLE batch server-side.
+      body: JSON.stringify({ poller_version: CLI_VERSION, rows }),
     });
     return {
       status: res.status,

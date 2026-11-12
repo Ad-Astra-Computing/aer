@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { HttpSentinelLocalApiClient, SentinelLocalApiError } from './http-client.js';
+import { CLI_VERSION } from '../version.generated.js';
 
-// A tiny fake server keyed by method+path, standing in for the not-yet-built
-// server routes - exercises the documented wire contract against this
-// client's one real implementation.
+// A tiny fake server keyed by method+path, standing in for the real server
+// routes - shapes here are taken directly from the private monorepo's own
+// schemas (local-poll-ingest.ts's LocalPollIngestBody, fleet-local-
+// sensors.ts's responses, fleet.ts's GET /v1/fleet/sensors), never invented.
 function fakeServer(routes: Record<string, { status: number; json?: unknown }>): typeof fetch {
   return (async (url: string | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
@@ -20,17 +22,17 @@ function fakeServer(routes: Record<string, { status: number; json?: unknown }>):
 }
 
 describe('HttpSentinelLocalApiClient.register', () => {
-  it('posts the documented fields and returns the registration response', async () => {
+  it('posts the documented fields and returns exactly the server response shape (no expected_claim_id)', async () => {
     const fetchFn = fakeServer({
       'POST /v1/fleet/local-sensors': {
         status: 201,
-        json: { sensor_source_id: 's1', push_token: 't1', ingest_url: 'https://api.aer.run/v1/sentinel/local-poll/s1', expected_claim_id: 'c1' },
+        json: { sensor_source_id: 's1', push_token: 't1', ingest_url: 'https://api.aer.run/v1/sentinel/local-poll/s1' },
       },
     });
     const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
     const res = await client.register({ device_id: 'd1', consent_version: 'v1', source_platform: 'linux' });
     expect(res.sensor_source_id).toBe('s1');
-    expect(res.expected_claim_id).toBe('c1');
+    expect(res).not.toHaveProperty('expected_claim_id');
   });
 
   it('throws SentinelLocalApiError on a non-2xx response', async () => {
@@ -59,9 +61,51 @@ describe('HttpSentinelLocalApiClient.disable / eraseObservations', () => {
     await client.eraseObservations('s1', 'claim-123');
     expect(capturedBody).toEqual({ expected_claim_id: 'claim-123' });
   });
+
+  it('throws SentinelLocalApiError(409) on device_release_conflict', async () => {
+    const fetchFn = fakeServer({
+      'DELETE /v1/fleet/local-sensors/s1/observations': { status: 409, json: { error: 'device_release_conflict' } },
+    });
+    const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
+    await expect(client.eraseObservations('s1', 'stale-claim')).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe('HttpSentinelLocalApiClient.getSensors', () => {
+  it('GET /v1/fleet/sensors and returns the sensors array, including claim_id', async () => {
+    const fetchFn = fakeServer({
+      'GET /v1/fleet/sensors': {
+        status: 200,
+        json: {
+          sensors: [
+            {
+              sensor_source_id: 's1', kind: 'local_poll', environment_id: null, enabled: 1,
+              last_ingested_at: null, device_id: 'd1', device_label: null, claim_id: 'claim-current',
+            },
+          ],
+        },
+      },
+    });
+    const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
+    const sensors = await client.getSensors();
+    expect(sensors).toHaveLength(1);
+    expect(sensors[0]?.claim_id).toBe('claim-current');
+  });
 });
 
 describe('HttpSentinelLocalApiClient.push', () => {
+  it('sends { poller_version, rows } - never an "observations" wrapper key', async () => {
+    let capturedBody: unknown;
+    const fetchFn = (async (_url: string | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body));
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
+    await client.push('s1', 'push-token', []);
+    expect(capturedBody).toEqual({ poller_version: CLI_VERSION, rows: [] });
+    expect(capturedBody).not.toHaveProperty('observations');
+  });
+
   it('reports retryable for 429/503', async () => {
     const fetchFn = fakeServer({ 'POST /v1/sentinel/local-poll/s1': { status: 429 } });
     const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
@@ -74,5 +118,28 @@ describe('HttpSentinelLocalApiClient.push', () => {
     const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
     const result = await client.push('s1', 'push-token', []);
     expect(result).toEqual({ status: 200, ok: true, retryable: false });
+  });
+});
+
+describe('HttpSentinelLocalApiClient: request timeout', () => {
+  it('aborts the underlying fetch after timeoutMs', async () => {
+    vi.useFakeTimers();
+    try {
+      let sawSignal: AbortSignal | undefined;
+      const fetchFn = ((_url: string | URL, init?: RequestInit) => {
+        sawSignal = init?.signal as AbortSignal | undefined;
+        return new Promise((_resolve, reject) => {
+          sawSignal?.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      }) as unknown as typeof fetch;
+      const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn, timeoutMs: 1000 });
+      const pending = client.push('s1', 'push-token', []);
+      const assertion = expect(pending).rejects.toThrow('aborted');
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+      expect(sawSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
