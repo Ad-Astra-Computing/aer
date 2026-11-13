@@ -145,6 +145,26 @@ describe('runInstall (linux)', () => {
     ).rejects.toThrow(/systemctl/);
     expect(client.disable).toHaveBeenCalledWith('s1');
   });
+
+  it('removes local artifacts it already wrote when local setup fails (should-fix 5)', async () => {
+    const execFn = vi.fn(async () => { throw new Error('systemctl is unavailable'); });
+    const opts = {
+      apiClient: fakeClient(), execFn, env, platform: 'linux' as const,
+      execPath: '/usr/bin/node', scriptPath: '/opt/aer/dist/main.js',
+      consentAcknowledged: true, print: () => {},
+    };
+    await expect(runInstall(opts)).rejects.toThrow(/systemctl/);
+
+    expect(readPushCredential(env)).toBeUndefined();
+    expect(readSentinelLocalConfig(env)).toBeUndefined();
+    expect(existsSync(systemdUnitPath(env))).toBe(false);
+
+    // A retry must not be refused as "already installed" against a sensor
+    // the server has just disabled.
+    const execFnOk = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const result = await runInstall({ ...opts, execFn: execFnOk, apiClient: fakeClient() });
+    expect(result.sensorSourceId).toBe('s1');
+  });
 });
 
 describe('runInstall (macos)', () => {

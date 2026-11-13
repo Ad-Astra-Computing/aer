@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { unlinkSync } from 'node:fs';
 import {
   ensureDeviceId,
   regenerateDeviceId,
@@ -7,6 +8,8 @@ import {
   writeSentinelLocalConfig,
   writePushCredential,
   readSentinelLocalConfig,
+  deletePushCredential,
+  deleteSentinelLocalConfig,
   atomicWriteFile,
 } from './state.js';
 import { captureCodexHome, CodexHomeUnsafeError } from './codex-home-capture.js';
@@ -164,6 +167,17 @@ export async function runInstall(opts: InstallOptions): Promise<InstallResult> {
     } catch {
       // Best effort: the local failure is the one the caller needs to see;
       // a failed rollback attempt must not mask it.
+    }
+    // should-fix 5: also undo whatever local artifacts this attempt already
+    // wrote, or a retry is wrongly refused as "already installed" against a
+    // sensor the server has just disabled. Each removal is best-effort on
+    // its own (a step that never ran leaves nothing to remove).
+    deletePushCredential(env);
+    deleteSentinelLocalConfig(env);
+    try {
+      unlinkSync(platform === 'linux' ? systemdUnitPath(env) : launchdPlistPath(env));
+    } catch {
+      // never written yet, or already gone
     }
     throw err;
   }
