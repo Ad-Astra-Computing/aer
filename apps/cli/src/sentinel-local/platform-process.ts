@@ -42,20 +42,43 @@ export interface ProcessController {
   isActive(): Promise<boolean>;
 }
 
+// B1: `ExecFn` never throws for a plain nonzero exit (systemctl/launchctl
+// failing is ordinary, not an exceptional subprocess-launch failure) - every
+// mutating call that must actually succeed has to check `code` itself and
+// throw a sanitized error carrying the relevant stderr, or install/pause/
+// resume silently "succeed" with no daemon actually running.
+function assertExecOk(cmd: string, args: string[], result: { code: number; stderr: string }): void {
+  if (result.code !== 0) {
+    const detail = result.stderr.trim();
+    throw new Error(
+      `${cmd} ${args.join(' ')} exited ${result.code}${detail.length > 0 ? `: ${detail}` : ''}`,
+    );
+  }
+}
+
 export class SystemdUserController implements ProcessController {
   constructor(private readonly execFn: ExecFn) {}
 
   async enableAndStart(): Promise<void> {
-    await this.execFn('systemctl', ['--user', 'daemon-reload']);
-    await this.execFn('systemctl', ['--user', 'enable', '--now', UNIT_NAME]);
+    const reload = await this.execFn('systemctl', ['--user', 'daemon-reload']);
+    assertExecOk('systemctl', ['--user', 'daemon-reload'], reload);
+    const args = ['--user', 'enable', '--now', UNIT_NAME];
+    const enable = await this.execFn('systemctl', args);
+    assertExecOk('systemctl', args, enable);
   }
   async stop(): Promise<void> {
-    await this.execFn('systemctl', ['--user', 'stop', UNIT_NAME]);
+    const args = ['--user', 'stop', UNIT_NAME];
+    const result = await this.execFn('systemctl', args);
+    assertExecOk('systemctl', args, result);
   }
   async start(): Promise<void> {
-    await this.execFn('systemctl', ['--user', 'start', UNIT_NAME]);
+    const args = ['--user', 'start', UNIT_NAME];
+    const result = await this.execFn('systemctl', args);
+    assertExecOk('systemctl', args, result);
   }
   async disableAndStop(): Promise<void> {
+    // Best-effort: uninstall must proceed even when there is no unit to
+    // disable, so this one intentionally never throws on a nonzero exit.
     await this.execFn('systemctl', ['--user', 'disable', '--now', UNIT_NAME]);
   }
   async isActive(): Promise<boolean> {
@@ -73,15 +96,23 @@ export class LaunchdUserController implements ProcessController {
   }
 
   async enableAndStart(): Promise<void> {
-    await this.execFn('launchctl', ['bootstrap', this.uidGuiDomain(), this.plistPath]);
+    const args = ['bootstrap', this.uidGuiDomain(), this.plistPath];
+    const result = await this.execFn('launchctl', args);
+    assertExecOk('launchctl', args, result);
   }
   async stop(): Promise<void> {
-    await this.execFn('launchctl', ['bootout', `${this.uidGuiDomain()}/${LAUNCHD_LABEL}`]);
+    const args = ['bootout', `${this.uidGuiDomain()}/${LAUNCHD_LABEL}`];
+    const result = await this.execFn('launchctl', args);
+    assertExecOk('launchctl', args, result);
   }
   async start(): Promise<void> {
-    await this.execFn('launchctl', ['bootstrap', this.uidGuiDomain(), this.plistPath]);
+    const args = ['bootstrap', this.uidGuiDomain(), this.plistPath];
+    const result = await this.execFn('launchctl', args);
+    assertExecOk('launchctl', args, result);
   }
   async disableAndStop(): Promise<void> {
+    // Best-effort: uninstall must proceed even when there is no service to
+    // disable, so this one intentionally never throws on a nonzero exit.
     await this.execFn('launchctl', ['bootout', `${this.uidGuiDomain()}/${LAUNCHD_LABEL}`]);
   }
   async isActive(): Promise<boolean> {
