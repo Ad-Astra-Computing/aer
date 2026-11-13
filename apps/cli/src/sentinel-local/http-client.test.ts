@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { HttpSentinelLocalApiClient, SentinelLocalApiError } from './http-client.js';
+import { HttpSentinelLocalApiClient, SentinelLocalApiError, fetchTenantName } from './http-client.js';
 import { CLI_VERSION } from '../version.generated.js';
 
 // A tiny fake server keyed by method+path, standing in for the real server
@@ -35,12 +35,55 @@ describe('HttpSentinelLocalApiClient.register', () => {
     expect(res).not.toHaveProperty('expected_claim_id');
   });
 
-  it('throws SentinelLocalApiError on a non-2xx response', async () => {
+  it('throws SentinelLocalApiError on a non-2xx response with no parseable body', async () => {
     const fetchFn = fakeServer({ 'POST /v1/fleet/local-sensors': { status: 409 } });
     const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
     await expect(
       client.register({ device_id: 'd1', consent_version: 'v1', source_platform: 'linux' }),
     ).rejects.toThrow(SentinelLocalApiError);
+  });
+
+  it('surfaces the server\'s same-claim device_already_registered remedy text (should-fix 3)', async () => {
+    const fetchFn = fakeServer({
+      'POST /v1/fleet/local-sensors': {
+        status: 409,
+        json: {
+          error: 'device_already_registered',
+          sensor_source_id: 's1',
+          message: 'this device id is already registered to sensor s1; if this is a different machine, re-run install with --regenerate-device-id',
+        },
+      },
+    });
+    const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
+    await expect(
+      client.register({ device_id: 'd1', consent_version: 'v1', source_platform: 'linux' }),
+    ).rejects.toMatchObject({ status: 409, message: expect.stringContaining('--regenerate-device-id') });
+  });
+
+  it('surfaces the server\'s stale-other-owner device_already_registered remedy text (should-fix 3)', async () => {
+    const fetchFn = fakeServer({
+      'POST /v1/fleet/local-sensors': {
+        status: 409,
+        json: {
+          error: 'device_already_registered',
+          message: 'a stale registration from a previous owner is blocking this device; ask an admin, or wait for it to clear automatically',
+        },
+      },
+    });
+    const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
+    await expect(
+      client.register({ device_id: 'd1', consent_version: 'v1', source_platform: 'linux' }),
+    ).rejects.toMatchObject({ status: 409, message: expect.stringContaining('ask an admin') });
+  });
+
+  it('surfaces consent_version_outdated with the server\'s current version (should-fix 3)', async () => {
+    const fetchFn = fakeServer({
+      'POST /v1/fleet/local-sensors': { status: 400, json: { error: 'consent_version_outdated', current: 'v2' } },
+    });
+    const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
+    await expect(
+      client.register({ device_id: 'd1', consent_version: 'v1', source_platform: 'linux' }),
+    ).rejects.toMatchObject({ status: 400, message: expect.stringContaining('v2') });
   });
 });
 
@@ -141,5 +184,29 @@ describe('HttpSentinelLocalApiClient: request timeout', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('fetchTenantName', () => {
+  it('reads tenant_name off GET /v1/tenant/lifecycle (blocking 1)', async () => {
+    const fetchFn = fakeServer({
+      'GET /v1/tenant/lifecycle': { status: 200, json: { tenant_name: 'Acme Robotics', suspended_at: null } },
+    });
+    const name = await fetchTenantName({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
+    expect(name).toBe('Acme Robotics');
+  });
+
+  it('throws on a non-2xx response', async () => {
+    const fetchFn = fakeServer({ 'GET /v1/tenant/lifecycle': { status: 401 } });
+    await expect(fetchTenantName({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn })).rejects.toThrow(
+      SentinelLocalApiError,
+    );
+  });
+
+  it('throws when the response has no tenant_name', async () => {
+    const fetchFn = fakeServer({ 'GET /v1/tenant/lifecycle': { status: 200, json: {} } });
+    await expect(fetchTenantName({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn })).rejects.toThrow(
+      SentinelLocalApiError,
+    );
   });
 });

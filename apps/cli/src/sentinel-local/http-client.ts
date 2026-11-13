@@ -55,6 +55,28 @@ export class SentinelLocalApiError extends Error {
   }
 }
 
+// Surfaces fleet-local-sensors.ts's own remedy text on a non-2xx register()
+// instead of a generic "registration failed: 409". Falls back to that
+// generic message when the body isn't JSON or has neither field.
+async function registerErrorMessage(res: Response): Promise<string> {
+  const fallback = `registration failed: ${res.status}`;
+  try {
+    const body = (await res.json()) as { error?: unknown; message?: unknown; current?: unknown };
+    if (typeof body.message === 'string' && body.message.length > 0) {
+      return body.message;
+    }
+    if (body.error === 'consent_version_outdated' && typeof body.current === 'string') {
+      return `consent_version_outdated: the server now requires consent_version ${body.current}; re-run install to accept the current disclosure`;
+    }
+    if (typeof body.error === 'string' && body.error.length > 0) {
+      return body.error;
+    }
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export interface SentinelLocalApiClient {
   register(req: RegisterRequest): Promise<RegisterResponse>;
   /** DELETE /v1/fleet/local-sensors/:id - disables the registration. */
@@ -114,7 +136,7 @@ export class HttpSentinelLocalApiClient implements SentinelLocalApiClient {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify(req),
     });
-    if (!res.ok) throw new SentinelLocalApiError(`registration failed: ${res.status}`, res.status);
+    if (!res.ok) throw new SentinelLocalApiError(await registerErrorMessage(res), res.status);
     return (await res.json()) as RegisterResponse;
   }
 
@@ -162,5 +184,35 @@ export class HttpSentinelLocalApiClient implements SentinelLocalApiClient {
       ok: res.ok,
       retryable: res.status === 429 || res.status === 503,
     };
+  }
+}
+
+// Used by main.ts's install consent disclosure (§10.1) to name the tenant.
+// Not part of SentinelLocalApiClient above; GET /v1/tenant/lifecycle is a
+// read-role route any tenant API key already satisfies.
+export async function fetchTenantName(opts: {
+  baseUrl: string;
+  apiKey: string;
+  fetchFn?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<string> {
+  const baseUrl = opts.baseUrl.replace(/\/+$/, '');
+  const fetchFn = opts.fetchFn ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 15_000);
+  try {
+    const res = await fetchFn(`${baseUrl}/v1/tenant/lifecycle`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${opts.apiKey}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new SentinelLocalApiError(`tenant lookup failed: ${res.status}`, res.status);
+    const body = (await res.json()) as { tenant_name?: unknown };
+    if (typeof body.tenant_name !== 'string' || body.tenant_name.length === 0) {
+      throw new SentinelLocalApiError('tenant lookup returned no tenant_name');
+    }
+    return body.tenant_name;
+  } finally {
+    clearTimeout(timer);
   }
 }
