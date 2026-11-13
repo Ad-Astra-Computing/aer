@@ -187,8 +187,11 @@ export function enumerateLinuxCandidates(overrides: LinuxEnumerateDeps = {}): Ca
 
   const out: CandidateProcess[] = [];
   for (const pid of deps.listPids()) {
+    // S4: fail closed - only proceed when the UID is explicitly confirmed
+    // to be our own. An unreadable/malformed /proc/<pid>/status must never
+    // fall through as if it belonged to us.
     const uid = deps.pidUid(pid);
-    if (uid !== undefined && uid !== myUid) continue; // not our own process
+    if (uid !== myUid) continue;
 
     const comm = deps.readComm(pid);
     if (!comm || !interestingBasename(comm)) continue;

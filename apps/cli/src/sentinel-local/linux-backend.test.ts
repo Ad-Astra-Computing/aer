@@ -154,4 +154,20 @@ describe('enumerateLinuxCandidates', () => {
     });
     expect(candidates).toHaveLength(0);
   });
+
+  // S4: an unreadable/malformed /proc/<pid>/status must fail closed (skip
+  // the PID), never fall through as if it were the invoking user's own.
+  it('skips a PID whose UID cannot be determined (fail closed)', () => {
+    const candidates = enumerateLinuxCandidates({
+      readProcNetTcp: () => tcpBody,
+      readProcNetTcp6: () => 'header',
+      listPids: () => [1],
+      myUid: () => 1000,
+      pidUid: () => undefined, // /proc/<pid>/status unreadable or malformed
+      readComm: () => 'claude',
+      listFds: () => ['4'],
+      readFdLink: () => 'socket:[999]',
+    });
+    expect(candidates).toHaveLength(0);
+  });
 });
