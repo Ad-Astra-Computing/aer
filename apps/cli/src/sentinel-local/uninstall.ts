@@ -42,7 +42,15 @@ export async function runUninstall(opts: UninstallOptions): Promise<void> {
   }
 
   if (credential) {
-    await opts.apiClient.disable(credential.sensorSourceId);
+    try {
+      await opts.apiClient.disable(credential.sensorSourceId);
+    } catch (err) {
+      // A failed server-side disable (a 403 from an admin reassignment, or
+      // no network) must never block local cleanup below: leaving the
+      // unit/plist behind is worse, since launchd's KeepAlive resurrects
+      // the daemon at next login with nothing left able to disable it.
+      print(`Warning: could not disable this sensor server-side (${err instanceof Error ? err.message : String(err)}). Continuing with local cleanup.`);
+    }
     if (opts.erase) {
       // §10.4: the claim id is NEVER cached from install time - fetch the
       // CURRENT one now. An admin reassignment since install mints a new

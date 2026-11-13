@@ -83,6 +83,32 @@ describe('runUninstall', () => {
     ).rejects.toThrow(/409|device_release_conflict/);
   });
 
+  it('still removes local artifacts when the server-side disable() call fails (should-fix 4)', async () => {
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
+    writeSentinelLocalConfig(
+      { deviceId: 'd1', consentVersion: 'v1', installedAt: 'x', sourcePlatform: 'linux', codexHome: { kind: 'unset' } },
+      env,
+    );
+    const unitPath = systemdUnitPath(env);
+    const { atomicWriteFile } = await import('./state.js');
+    atomicWriteFile(unitPath, '[Unit]\n');
+
+    const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const client = fakeClient();
+    (client.disable as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new SentinelLocalApiError('disable failed: 403', 403),
+    );
+    const printed: string[] = [];
+    await expect(
+      runUninstall({ apiClient: client, execFn, env, erase: false, platform: 'linux', print: (l) => printed.push(l) }),
+    ).resolves.toBeUndefined();
+
+    expect(existsSync(unitPath)).toBe(false);
+    expect(readPushCredential(env)).toBeUndefined();
+    expect(readSentinelLocalConfig(env)).toBeUndefined();
+    expect(printed.some((l) => /warning/i.test(l) && l.includes('403'))).toBe(true);
+  });
+
   it('tolerates a missing/broken unit without failing the rest of uninstall', async () => {
     writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
     const execFn = vi.fn(async () => { throw new Error('no such unit'); });
