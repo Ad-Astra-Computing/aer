@@ -577,3 +577,57 @@ describe('aer sentinel-local uninstall auth (should-fix: push token vs tenant au
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('aer sentinel-local install aborts on tenant-name lookup failure (B6)', () => {
+  let dir: string;
+  let originalCwd: string;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const stderr = (): string => errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aer-cli-sentinel-install-b6-'));
+    originalCwd = process.cwd();
+    process.chdir(dir);
+    vi.stubEnv('HOME', dir);
+    vi.stubEnv('AER_TENANT_API_KEY', 'tenant-key-abc');
+    vi.stubEnv('AER_API_KEY', '');
+    vi.stubEnv('AER_BASE_URL', 'https://api.test');
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitCalled(code ?? 0);
+    }) as never);
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // The tenant-lifecycle lookup used for the disclosure's tenant name
+    // fails for every call; nothing else should ever be reached.
+    fetchMock = vi.fn(async () => new Response('', { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('aborts before showing consent or registering, instead of a placeholder name', async () => {
+    await expect(main(['sentinel-local', 'install', '--i-understand-local-monitoring'])).rejects.toThrow(
+      ProcessExitCalled,
+    );
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(stderr()).toMatch(/tenant name/i);
+    // Never fell through to the consent disclosure or a register() call.
+    const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).not.toContain('tenant name unavailable');
+    expect(printed).not.toMatch(/AER Sentinel local-poll sensor/);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/v1/fleet/local-sensors'))).toBe(false);
+  });
+});

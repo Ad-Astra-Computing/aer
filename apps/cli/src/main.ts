@@ -1199,8 +1199,16 @@ async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promis
     let tenantName: string;
     try {
       tenantName = await fetchTenantName({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
-    } catch {
-      tenantName = '(tenant name unavailable)';
+    } catch (err) {
+      // B6: the disclosure's whole point is naming who can see this
+      // invasive sensor's data - a failed lookup must abort before consent
+      // is even shown, never fall back to a placeholder the user would
+      // unknowingly consent against.
+      console.error(
+        'sentinel-local install: could not look up the tenant name to show in the consent ' +
+        `disclosure (${err instanceof Error ? err.message : String(err)}). Aborting; retry once the API is reachable.`,
+      );
+      process.exit(1);
     }
     const consentAcknowledged = await confirmLocalMonitoringConsent(tenantName, { nonInteractive: nonInteractiveConsent });
     if (!consentAcknowledged) {
