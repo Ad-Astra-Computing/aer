@@ -42,7 +42,7 @@ import {
 import { formatUsageHuman, isUsageResponse } from './usage-cmd.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { HttpSentinelLocalApiClient } from './sentinel-local/http-client.js';
+import { HttpSentinelLocalApiClient, fetchTenantName } from './sentinel-local/http-client.js';
 import { runInstall } from './sentinel-local/install.js';
 import { runUninstall } from './sentinel-local/uninstall.js';
 import { runStatus } from './sentinel-local/status.js';
@@ -1118,21 +1118,38 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   usage();
 }
 
-// §10.1's disclosure: shown before any interactive install confirmation, and
-// before a non-interactive install is accepted as one `--i-understand-local-
+// §10.1's disclosure (v6 wording, after five rounds of review corrections to
+// earlier drafts that each undersold what this sensor actually reads and
+// sends). Shown before any interactive install confirmation, and before a
+// non-interactive install is accepted as one `--i-understand-local-
 // monitoring` can skip, but what it says must be read regardless.
-const LOCAL_MONITORING_DISCLOSURE = [
-  'AER Sentinel local-poll sensor - what this installs:',
-  '  Runs as a background daemon on this machine.',
-  '  Reads: process names and command lines of locally running processes that',
-  '    hold open network sockets to AI-provider IPs, classified locally',
-  '    against a closed set of known AI CLI/tool names.',
-  '  Sends upstream: only closed-set labels, counts, booleans, and hashes -',
-  '    never raw process arguments, file paths, or hostnames.',
-];
+export function buildLocalMonitoringDisclosure(tenantName: string): string[] {
+  return [
+    'AER Sentinel local-poll sensor - what this installs:',
+    `This will run continuously in the background on this machine, under tenant "${tenantName}".`,
+    "Every 15 seconds, it reads this machine's own list of open network connections and the names of every process it runs on this machine, to recognize AI coding tools among them.",
+    "For a process it recognizes as an AI coding tool, it also reads that process's working directory and the configuration files AER's hook integrations would use there for any supported tool, to check whether AER's own monitoring hooks are set up for the one it recognized.",
+    'To make that recognition in the first place, it reads the command line of every process holding a network connection (on macOS, every such process; on Linux, those run by Node, Python and similar runtimes): for a process that turns out not to be a recognized AI tool, that command line is discarded immediately and never stored, sent or logged anywhere.',
+    'It never reads the command line of a process that is not holding a network connection at all.',
+    'It never reads file contents beyond that one configuration check, and never sends the file itself, only whether AER hooks appear configured (a label, self-reported by that file, not independently verified).',
+    'What leaves this machine is a closed-set label naming the tool and, where checkable, whether its AER hooks appear configured.',
+    "When the destination is a recognized AI provider, AER additionally receives that provider's name, the destination address and port: matching a provider's own published address range, or a locally-resolved address, is evidence the tool talked to that provider's infrastructure, not proof of which specific traffic it sent (several providers share address space between their API and other properties).",
+    'When a known AI tool talks to an address this machine cannot place, AER receives a timestamped record of that connection, never the address itself.',
+    'None of this is sent anywhere beyond what is described above: no file contents, no raw command line, no full executable path or arguments, no traffic content, for any process, recognized AI tool or not.',
+    "Checking whether a connection matches a known AI provider also causes this machine to look up that provider's address periodically while an AI tool is active, which is itself visible to network monitoring on this machine or network as DNS activity toward AI providers, independent of whatever the tool's own traffic already reveals.",
+    'It never reads browser data or traffic, and classifying a process as a browser stops it from ever being reported on, regardless of what it connects to.',
+    `Anyone with read access to tenant "${tenantName}", including other members of your team, can see what this machine reports.`,
+  ];
+}
 
-async function confirmLocalMonitoringConsent(): Promise<boolean> {
-  for (const line of LOCAL_MONITORING_DISCLOSURE) console.log(line);
+export async function confirmLocalMonitoringConsent(
+  tenantName: string,
+  opts: { nonInteractive: boolean },
+): Promise<boolean> {
+  for (const line of buildLocalMonitoringDisclosure(tenantName)) console.log(line);
+  // should-fix 6: the flag only skips the PROMPT, never the disclosure
+  // above, which every caller just printed regardless of this branch.
+  if (opts.nonInteractive) return true;
   // Never install silently as part of a scripted setup with no explicit
   // signal either way (§10.1): a non-interactive session with no flag is a
   // refusal, not a default "yes".
@@ -1179,7 +1196,13 @@ async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promis
     const deviceLabel = readFlag(args, '--label');
     const regenerateDeviceIdFlag = args.includes('--regenerate-device-id');
     const nonInteractiveConsent = args.includes('--i-understand-local-monitoring');
-    const consentAcknowledged = nonInteractiveConsent || await confirmLocalMonitoringConsent();
+    let tenantName: string;
+    try {
+      tenantName = await fetchTenantName({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
+    } catch {
+      tenantName = '(tenant name unavailable)';
+    }
+    const consentAcknowledged = await confirmLocalMonitoringConsent(tenantName, { nonInteractive: nonInteractiveConsent });
     if (!consentAcknowledged) {
       console.error(
         'sentinel-local install: consent not confirmed; aborting. Re-run and type `yes` at the ' +

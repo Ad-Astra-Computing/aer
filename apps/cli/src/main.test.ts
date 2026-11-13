@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main, resolveEnvironmentChoice } from './main.js';
+import { main, resolveEnvironmentChoice, buildLocalMonitoringDisclosure, confirmLocalMonitoringConsent } from './main.js';
 
 // process.exit really would end the test worker, so every path that reaches
 // it is exercised through this stub, which turns the call into a thrown
@@ -438,5 +438,69 @@ describe('aer download', () => {
     await expect(main(['download', 'aer-1', '-o', '-'])).rejects.toThrow(/CVE-2026-111497/);
     expect(bodyRead).toBe(false);
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildLocalMonitoringDisclosure (blocking 1)', () => {
+  it('names the tenant, twice, in the disclosure', () => {
+    const lines = buildLocalMonitoringDisclosure('Acme Robotics');
+    const text = lines.join('\n');
+    expect(text.match(/Acme Robotics/g)).toHaveLength(2);
+  });
+
+  it('discloses every read the v2 draft wrongly scoped to "AI-provider IPs" only', () => {
+    const text = buildLocalMonitoringDisclosure('Acme Robotics').join('\n');
+    // The command line of every socket-holding process is read BEFORE
+    // classification (macos-backend.ts's ps -ww, linux-backend.ts's
+    // /proc/<pid>/cmdline for interpreter-run processes) - never scoped to
+    // AI-provider destinations only, which the old copy implied.
+    expect(text).toMatch(/command line of every process holding a network connection/);
+    expect(text).not.toMatch(/to AI-provider IPs/);
+    // destination_ip/destination_port leave the machine for a matched row.
+    expect(text).toMatch(/destination address and port/);
+    // The working-directory + hook-config-file read (instrumentation.ts).
+    expect(text).toMatch(/working directory/);
+    expect(text).toMatch(/configuration files/);
+    // The DNS-lookup side channel (§3.2.1's on-demand resolution).
+    expect(text).toMatch(/look up that provider's address periodically/);
+    expect(text).toMatch(/DNS activity/);
+    // The per-connection timestamped record for unmatched port-443 traffic.
+    expect(text).toMatch(/timestamped record of that connection/);
+    // Browsers are excluded by policy, not silently unmentioned.
+    expect(text).toMatch(/never reads browser data or traffic/);
+  });
+});
+
+describe('confirmLocalMonitoringConsent (should-fix 6)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let isTTYStdin: boolean | undefined;
+  let isTTYStdout: boolean | undefined;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    isTTYStdin = process.stdin.isTTY;
+    isTTYStdout = process.stdout.isTTY;
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    (process.stdin as unknown as { isTTY?: boolean }).isTTY = isTTYStdin;
+    (process.stdout as unknown as { isTTY?: boolean }).isTTY = isTTYStdout;
+  });
+
+  it('prints the disclosure even for non-interactive use (the flag only skips the prompt)', async () => {
+    const result = await confirmLocalMonitoringConsent('Acme Robotics', { nonInteractive: true });
+    expect(result).toBe(true);
+    const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain('Acme Robotics');
+    expect(printed).toContain('AER Sentinel local-poll sensor');
+  });
+
+  it('prints the disclosure and refuses a non-TTY session with no flag', async () => {
+    (process.stdin as unknown as { isTTY?: boolean }).isTTY = false;
+    (process.stdout as unknown as { isTTY?: boolean }).isTTY = false;
+    const result = await confirmLocalMonitoringConsent('Acme Robotics', { nonInteractive: false });
+    expect(result).toBe(false);
+    expect(logSpy).toHaveBeenCalled();
   });
 });
