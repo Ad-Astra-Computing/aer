@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { enumerateLinuxCandidates, readLinuxArgv, readLinuxCwd } from './linux-backend.js';
 import { enumerateMacCandidates } from './macos-backend.js';
 import { classifyProcess } from './classify.js';
+import { KNOWN_INTERPRETERS } from './interpreter-tool-table.js';
 import type { NormalizedCandidate } from './poll-tick.js';
 
 const execFileAsync = promisify(execFile);
@@ -22,7 +23,13 @@ export async function enumerateLinux(): Promise<NormalizedCandidate[]> {
   const candidates = enumerateLinuxCandidates();
   const out: NormalizedCandidate[] = [];
   for (const candidate of candidates) {
-    const argv = readLinuxArgv(candidate.pid) ?? [candidate.comm];
+    // Only read /proc/<pid>/cmdline for interpreter basenames, where argv is
+    // needed to find the real tool (classify.ts ignores argv for every
+    // other basename anyway). A browser process's cmdline routinely
+    // contains URLs; the consent disclosure promises it is never read.
+    const argv = KNOWN_INTERPRETERS.has(candidate.comm)
+      ? (readLinuxArgv(candidate.pid) ?? [candidate.comm])
+      : [candidate.comm];
     const classification = classifyProcess(candidate.comm, argv);
     if (!classification || classification.processClass !== 'known_ai_cli' || !classification.tool) continue;
     const cwd = readLinuxCwd(candidate.pid);
