@@ -87,11 +87,16 @@ export async function runPollTick(candidates: NormalizedCandidate[], deps: PollT
       );
       if (!isNew) continue; // same live connection already reported on an earlier tick
 
+      // B2: this socket is OFFERED the once-per-tick trigger budget, but
+      // the budget is only actually consumed if classifyDestination tells
+      // us it really invoked the resolver (an owned-range match or a
+      // non-443 connection never touches DNS at all, so offering it to
+      // them must not burn the trigger for a later socket that needs it).
       const triggeredThisConnection = !triggeredResolutionThisTick;
       const destination = await classifyDestination(socket.remoteAddress, socket.remotePort, deps.resolver, {
         triggeredThisConnection,
       });
-      if (triggeredThisConnection) triggeredResolutionThisTick = true;
+      if (destination.triggeredResolution) triggeredResolutionThisTick = true;
 
       const eligible = destination.evidence !== 'none' || socket.remotePort === 443;
       if (!eligible) continue; // §2.1: no real evidence and not even an unmatched port-443 case -> no row

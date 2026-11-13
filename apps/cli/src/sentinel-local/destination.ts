@@ -10,6 +10,12 @@ import type { FamilyResolver } from './dns-resolver.js';
 export interface DestinationResult {
   evidence: DestinationEvidence;
   family: string | null;
+  /** True only when this call actually invoked the resolver's bounded-wait
+   * trigger (the owned-range short-circuit and the non-443 short-circuit
+   * never touch DNS at all, regardless of `triggeredThisConnection`). The
+   * caller (poll-tick.ts) must consume its once-per-tick trigger budget
+   * from THIS, never from the mere intent to try (B2). */
+  triggeredResolution: boolean;
 }
 
 // `triggeredThisConnection` means this call is the one that should
@@ -22,15 +28,16 @@ export async function classifyDestination(
   opts: { triggeredThisConnection: boolean },
 ): Promise<DestinationResult> {
   const owned = classifyAgainstOwnedRanges(remoteIp);
-  if (owned) return { evidence: 'provider_owned_range', family: owned.family };
+  if (owned) return { evidence: 'provider_owned_range', family: owned.family, triggeredResolution: false };
 
-  if (remotePort !== 443) return { evidence: 'none', family: null };
+  if (remotePort !== 443) return { evidence: 'none', family: null, triggeredResolution: false };
 
   const resolvedSet = opts.triggeredThisConnection
     ? await resolver.resolveAndWait()
     : resolver.currentResolvedSet();
   const resolved = classifyAgainstResolvedSet(remoteIp, resolvedSet);
-  if (resolved) return { evidence: 'resolved_exact_ip', family: resolved.family };
+  const triggeredResolution = opts.triggeredThisConnection;
+  if (resolved) return { evidence: 'resolved_exact_ip', family: resolved.family, triggeredResolution };
 
-  return { evidence: 'none', family: null };
+  return { evidence: 'none', family: null, triggeredResolution };
 }

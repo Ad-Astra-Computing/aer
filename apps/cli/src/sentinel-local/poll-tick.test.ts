@@ -82,6 +82,32 @@ describe('runPollTick', () => {
     expect(rows[0]!.destination_ip).toBe('160.79.104.1');
   });
 
+  it('B2: an owned-range/non-DNS socket first in the tick must not consume the trigger a later unmatched port-443 socket needs', async () => {
+    const lookupFn = vi.fn(async (h: string) => (h === 'api.openai.com' ? [{ address: '9.9.9.9' }] : []));
+    const resolver = new FamilyResolver({ lookupFn });
+    const rows = await runPollTick(
+      [
+        {
+          tool: 'claude_code',
+          sockets: [
+            // First: an owned-range match. Never touches DNS, so it must
+            // not be the one that burns the once-per-tick trigger.
+            { localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 },
+            // Second: an unmatched port-443 connection that actually needs
+            // DNS resolution this tick.
+            { localAddress: '10.0.0.1', localPort: 2, remoteAddress: '9.9.9.9', remotePort: 443 },
+          ],
+        },
+      ],
+      deps({ resolver }),
+    );
+    expect(rows).toHaveLength(2);
+    const resolvedRow = rows.find((r) => r.destination_evidence !== 'provider_owned_range');
+    expect(resolvedRow?.destination_evidence).toBe('resolved_exact_ip');
+    expect(resolvedRow?.destination_family).toBe('openai');
+    expect(lookupFn).toHaveBeenCalled();
+  });
+
   it('deduplicates instrumentation checks per (tool, cwd) across many new connections in one tick', async () => {
     checkInstrumentationMock.mockClear();
     const sockets = [
