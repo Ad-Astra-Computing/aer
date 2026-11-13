@@ -73,6 +73,15 @@ describe('runPollTick', () => {
     expect(rows[0]!.instrumentation).toBeDefined();
   });
 
+  it('normalizes a v4-mapped remote address before sending it as destination_ip', async () => {
+    const rows = await runPollTick(
+      [{ tool: 'claude_code', sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '::ffff:160.79.104.1', remotePort: 443 }] }],
+      deps(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.destination_ip).toBe('160.79.104.1');
+  });
+
   it('deduplicates instrumentation checks per (tool, cwd) across many new connections in one tick', async () => {
     checkInstrumentationMock.mockClear();
     const sockets = [

@@ -8,6 +8,7 @@
 import { classifyDestination } from './destination.js';
 import { checkInstrumentation } from './instrumentation.js';
 import { computeObservationId } from './observation-id.js';
+import { normalizeIp } from './provider-ranges.js';
 import type { FamilyResolver } from './dns-resolver.js';
 import type { ObservationRow, Tool } from './types.js';
 
@@ -112,7 +113,10 @@ export async function runPollTick(candidates: NormalizedCandidate[], deps: PollT
         instrumentation,
       };
       if (destination.evidence !== 'none') {
-        row.destination_ip = socket.remoteAddress;
+        // Use the normalized form on the wire too (never the raw
+        // v4-mapped-in-v6 form a Linux socket reports), matching what the
+        // classifier itself matched against.
+        row.destination_ip = normalizeIp(socket.remoteAddress);
         row.destination_port = socket.remotePort;
       }
       rows.push(row);
