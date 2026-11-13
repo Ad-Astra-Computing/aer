@@ -17,7 +17,13 @@ export function buildLaunchdAgent(opts: LaunchdAgentOptions): { plist: string; r
     Label: LABEL,
     ProgramArguments: [opts.execPath, opts.scriptPath, 'sentinel-local', 'run-daemon'],
     RunAtLoad: true,
-    KeepAlive: true,
+    // SuccessfulExit:false, never a bare `true`: a bare true relaunches on
+    // ANY exit, including the daemon's own deliberate clean exit(0) when
+    // runDaemonForever halts on a 401/403 (the credential is revoked or the
+    // sensor disabled) - that would crash-loop forever, each loop making
+    // one more unauthenticated push attempt against the real API. This is
+    // launchd's equivalent of systemd's Restart=on-failure.
+    KeepAlive: { SuccessfulExit: false },
   };
 
   // launchd's plist is XML, so any value - including one containing `&`,

@@ -12,6 +12,20 @@ describe('buildLaunchdAgent', () => {
     expect(plist).not.toContain('EnvironmentVariables');
   });
 
+  it('sets KeepAlive to SuccessfulExit:false, not a bare true (blocking 2)', () => {
+    // A bare `true` relaunches on ANY exit, including the daemon's own
+    // clean exit(0) on a 401/403 halt (runDaemonForever) - that crash-loops
+    // forever, each loop making one more unauthenticated push attempt.
+    // systemd's Restart=on-failure already gets this right; launchd needs
+    // the equivalent dict form.
+    const { plist } = buildLaunchdAgent({ ...BASE, codexHome: { kind: 'unset' } });
+    expect(plist).toContain('<key>KeepAlive</key>');
+    expect(plist).toContain('<key>SuccessfulExit</key>');
+    expect(plist).toContain('<false/>');
+    // Never the bare boolean form that restarts unconditionally.
+    expect(plist).not.toMatch(/<key>KeepAlive<\/key>\s*<true\/>/);
+  });
+
   it('writes EnvironmentVariables via the real serializer, escaping XML-unsafe characters', () => {
     const { plist, recordedCodexHome } = buildLaunchdAgent({
       ...BASE,
