@@ -117,6 +117,53 @@ describe('runUninstall', () => {
     expect(client.disable).toHaveBeenCalled();
   });
 
+  // S1: local cleanup must run even when the erase network call itself
+  // fails (not just a 409 from the server) - otherwise the unit/plist and
+  // credential are left behind, and on macOS the daemon can resurrect at
+  // the next login.
+  it('still removes local artifacts when getSensors() throws during --erase, and surfaces the failure (S1)', async () => {
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
+    writeSentinelLocalConfig(
+      { deviceId: 'd1', consentVersion: 'v1', installedAt: 'x', sourcePlatform: 'linux', codexHome: { kind: 'unset' } },
+      env,
+    );
+    const unitPath = systemdUnitPath(env);
+    const { atomicWriteFile } = await import('./state.js');
+    atomicWriteFile(unitPath, '[Unit]\n');
+
+    const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const client = fakeClient();
+    (client.getSensors as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network unreachable'));
+
+    await expect(
+      runUninstall({ apiClient: client, execFn, env, erase: true, platform: 'linux', print: () => {} }),
+    ).rejects.toThrow(/network unreachable/);
+
+    expect(existsSync(unitPath)).toBe(false);
+    expect(readPushCredential(env)).toBeUndefined();
+    expect(readSentinelLocalConfig(env)).toBeUndefined();
+  });
+
+  it('still removes local artifacts when eraseObservations() 409s, and surfaces the failure (S1)', async () => {
+    writePushCredential({ sensorSourceId: 's1', pushToken: 't', ingestUrl: 'u' }, env);
+    writeSentinelLocalConfig(
+      { deviceId: 'd1', consentVersion: 'v1', installedAt: 'x', sourcePlatform: 'linux', codexHome: { kind: 'unset' } },
+      env,
+    );
+    const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const client = fakeClient([sensorRow({ claim_id: 'claim-stale' })]);
+    (client.eraseObservations as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new SentinelLocalApiError('erase failed: 409', 409),
+    );
+
+    await expect(
+      runUninstall({ apiClient: client, execFn, env, erase: true, platform: 'linux', print: () => {} }),
+    ).rejects.toThrow(/409|device_release_conflict/);
+
+    expect(readPushCredential(env)).toBeUndefined();
+    expect(readSentinelLocalConfig(env)).toBeUndefined();
+  });
+
   it('is a no-op server-side when there is no push credential at all', async () => {
     const execFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     const client = fakeClient();
