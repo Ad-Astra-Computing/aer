@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInstall, CONSENT_VERSION, resolveScriptPathFromMetaUrl } from './install.js';
-import { readSentinelLocalConfig, readPushCredential } from './state.js';
+import { readSentinelLocalConfig, readPushCredential, readPerInstallKey, perInstallKeyPath, ensurePerInstallKey } from './state.js';
 import { systemdUnitPath, launchdPlistPath } from './platform-process.js';
 import type { SentinelLocalApiClient } from './http-client.js';
 
@@ -164,6 +164,53 @@ describe('runInstall (linux)', () => {
     const execFnOk = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     const result = await runInstall({ ...opts, execFn: execFnOk, apiClient: fakeClient() });
     expect(result.sensorSourceId).toBe('s1');
+  });
+
+  // B1: production systemctl/launchctl failures are a nonzero exit code,
+  // never a thrown rejection - the rollback path must trigger on that too.
+  it('rolls back when enableAndStart exits nonzero without throwing (B1)', async () => {
+    const execFn = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'Failed to enable unit: Unit not found.' }));
+    const client = fakeClient();
+    await expect(
+      runInstall({
+        apiClient: client, execFn, env, platform: 'linux',
+        execPath: '/usr/bin/node', scriptPath: '/opt/aer/dist/main.js',
+        consentAcknowledged: true, print: () => {},
+      }),
+    ).rejects.toThrow(/Unit not found|exited 1/);
+    expect(client.disable).toHaveBeenCalledWith('s1');
+    expect(readPushCredential(env)).toBeUndefined();
+    expect(readSentinelLocalConfig(env)).toBeUndefined();
+    expect(existsSync(systemdUnitPath(env))).toBe(false);
+  });
+
+  // S2: a failed install must not leave behind a per-install key this
+  // attempt minted - or a retry would silently reuse a key from an install
+  // that never completed.
+  it('deletes the per-install key it minted when the install attempt fails (S2)', async () => {
+    const execFn = vi.fn(async () => { throw new Error('systemctl is unavailable'); });
+    expect(existsSync(perInstallKeyPath(env))).toBe(false);
+    await expect(
+      runInstall({
+        apiClient: fakeClient(), execFn, env, platform: 'linux',
+        execPath: '/usr/bin/node', scriptPath: '/opt/aer/dist/main.js',
+        consentAcknowledged: true, print: () => {},
+      }),
+    ).rejects.toThrow(/systemctl/);
+    expect(readPerInstallKey(env)).toBeUndefined();
+  });
+
+  it('does not delete a pre-existing per-install key on a failed install attempt (S2)', async () => {
+    const preexisting = ensurePerInstallKey(env);
+    const execFn = vi.fn(async () => { throw new Error('systemctl is unavailable'); });
+    await expect(
+      runInstall({
+        apiClient: fakeClient(), execFn, env, platform: 'linux',
+        execPath: '/usr/bin/node', scriptPath: '/opt/aer/dist/main.js',
+        consentAcknowledged: true, print: () => {},
+      }),
+    ).rejects.toThrow(/systemctl/);
+    expect(readPerInstallKey(env)).toEqual(preexisting);
   });
 });
 

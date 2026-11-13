@@ -1,14 +1,16 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { unlinkSync } from 'node:fs';
+import { unlinkSync, existsSync } from 'node:fs';
 import {
   ensureDeviceId,
   regenerateDeviceId,
   ensurePerInstallKey,
+  perInstallKeyPath,
   writeSentinelLocalConfig,
   writePushCredential,
   readSentinelLocalConfig,
   deletePushCredential,
+  deletePerInstallKey,
   deleteSentinelLocalConfig,
   atomicWriteFile,
 } from './state.js';
@@ -90,25 +92,42 @@ export async function runInstall(opts: InstallOptions): Promise<InstallResult> {
   }
 
   const deviceId = opts.regenerateDeviceId ? regenerateDeviceId(env) : ensureDeviceId(env);
+  // S2: track whether THIS attempt minted a brand-new per-install key (vs.
+  // reusing one already on disk) so a failed attempt's rollback can delete
+  // only the key it created, never a pre-existing one that belongs to some
+  // other state (the "already installed" guard above already ruled out an
+  // active install at this point).
+  const mintedNewPerInstallKey = !existsSync(perInstallKeyPath(env));
   ensurePerInstallKey(env);
 
   let codexHome;
   try {
     codexHome = captureCodexHome(env);
   } catch (err) {
+    // S2: this attempt minted a key before even reaching registration -
+    // clean it up the same way the post-registration rollback does.
+    if (mintedNewPerInstallKey) deletePerInstallKey(env);
     if (err instanceof CodexHomeUnsafeError) {
       throw new Error(`install aborted: ${err.message}. Unset CODEX_HOME or fix its value and re-run install.`);
     }
     throw err;
   }
 
-  const registration = await opts.apiClient.register({
-    device_id: deviceId,
-    consent_version: CONSENT_VERSION,
-    source_platform: platform,
-    ...(opts.environmentId !== undefined ? { environment_id: opts.environmentId } : {}),
-    ...(opts.deviceLabel !== undefined ? { device_label: opts.deviceLabel } : {}),
-  });
+  let registration;
+  try {
+    registration = await opts.apiClient.register({
+      device_id: deviceId,
+      consent_version: CONSENT_VERSION,
+      source_platform: platform,
+      ...(opts.environmentId !== undefined ? { environment_id: opts.environmentId } : {}),
+      ...(opts.deviceLabel !== undefined ? { device_label: opts.deviceLabel } : {}),
+    });
+  } catch (err) {
+    // S2: registration itself never happened, so there is nothing to
+    // disable server-side - but still clean up a key this attempt minted.
+    if (mintedNewPerInstallKey) deletePerInstallKey(env);
+    throw err;
+  }
 
   // H6: registration has now happened server-side. Any failure from here on
   // must roll it back (disable it) rather than leave an orphaned server-side
@@ -174,6 +193,11 @@ export async function runInstall(opts: InstallOptions): Promise<InstallResult> {
     // its own (a step that never ran leaves nothing to remove).
     deletePushCredential(env);
     deleteSentinelLocalConfig(env);
+    // S2: never leave behind a per-install key THIS attempt minted - a
+    // retry would otherwise silently reuse a key tied to an install that
+    // never completed. A pre-existing key (one this attempt merely reused)
+    // is left alone.
+    if (mintedNewPerInstallKey) deletePerInstallKey(env);
     try {
       unlinkSync(platform === 'linux' ? systemdUnitPath(env) : launchdPlistPath(env));
     } catch {
