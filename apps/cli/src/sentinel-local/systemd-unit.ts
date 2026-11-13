@@ -27,18 +27,22 @@ export class SystemdExecArgUnsafeError extends Error {
 
 /** Escapes one argument for a systemd `ExecStart=` line (systemd.service's
  * "Command Lines" grammar): every literal `%` doubled (specifier expansion),
- * and an argument containing whitespace, a backslash, or a double quote is
- * wrapped in double quotes with its own backslashes and quotes escaped
- * (systemd's quoting is C-style inside `"..."`). A control character or a
- * raw newline is refused outright - never silently mis-escaped - since a
- * newline could inject an entirely separate directive into the unit file. */
+ * every literal `$` doubled (systemd's own independent `$VAR`/`${VAR}`
+ * environment-variable expansion on the ExecStart= line - otherwise a path
+ * containing a literal `$` could be rewritten by variable substitution, or
+ * erased entirely if the referenced variable is unset), and an argument
+ * containing whitespace, a backslash, or a double quote is wrapped in double
+ * quotes with its own backslashes and quotes escaped (systemd's quoting is
+ * C-style inside `"..."`). A control character or a raw newline is refused
+ * outright - never silently mis-escaped - since a newline could inject an
+ * entirely separate directive into the unit file. */
 export function escapeSystemdExecArg(value: string): string {
   if (CONTROL_OR_NEWLINE_RE.test(value)) {
     throw new SystemdExecArgUnsafeError(`argument contains a control character or newline: ${JSON.stringify(value)}`);
   }
-  const percentDoubled = value.replace(/%/g, '%%');
-  if (!NEEDS_QUOTING_RE.test(percentDoubled)) return percentDoubled;
-  const escaped = percentDoubled.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const specifiersDoubled = value.replace(/%/g, '%%').replace(/\$/g, '$$$$');
+  if (!NEEDS_QUOTING_RE.test(specifiersDoubled)) return specifiersDoubled;
+  const escaped = specifiersDoubled.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return `"${escaped}"`;
 }
 

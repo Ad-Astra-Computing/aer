@@ -52,6 +52,18 @@ describe('escapeSystemdExecArg', () => {
     expect(escapeSystemdExecArg('/opt/100%-codex')).toBe('/opt/100%%-codex');
   });
 
+  // B5 follow-up: ExecStart= also undergoes systemd's own $VAR/${VAR}
+  // environment-variable expansion, independent of %-specifier expansion.
+  // A literal `$` must round-trip as a literal `$`, not get substituted
+  // or silently erased if the referenced variable is unset.
+  it('doubles every literal $', () => {
+    expect(escapeSystemdExecArg('/opt/a$b/node')).toBe('/opt/a$$b/node');
+  });
+
+  it('doubles every literal $ in a ${...}-shaped substring', () => {
+    expect(escapeSystemdExecArg('/opt/${HOME}/node')).toBe('/opt/$${HOME}/node');
+  });
+
   it('escapes backslash and double-quote inside a quoted argument', () => {
     expect(escapeSystemdExecArg('/opt/a\\b"c')).toBe('"/opt/a\\\\b\\"c"');
   });
