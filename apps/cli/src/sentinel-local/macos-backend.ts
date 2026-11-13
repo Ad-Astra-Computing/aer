@@ -1,8 +1,9 @@
 // macOS backend: exactly 3 subprocess calls per poll tick (design doc §8.2),
-// each scoped to the smallest PID set it needs: `lsof -nP -a -i -F pcnPTt
-// +c 0` (socket-holding PIDs, no path/argv), a scoped `ps -ww` for argv, then
-// a scoped `lsof -d cwd` for only the PIDs classified as a known AI CLI.
-// Never run lsof/ps unscoped: slow, and leaks unrelated argv for no reason.
+// each scoped to the smallest PID set it needs: `lsof -nP -a -iTCP -F pcnPTt
+// +c 0` (socket-holding PIDs, no path/argv, TCP-only - v1 never reads
+// UDP/QUIC), a scoped `ps -ww` for argv, then a scoped `lsof -d cwd` for
+// only the PIDs classified as a known AI CLI. Never run lsof/ps unscoped:
+// slow, and leaks unrelated argv for no reason.
 
 import { classifyProcess, basenameOf } from './classify.js';
 import type { Tool } from './types.js';
@@ -37,7 +38,7 @@ function stripBrackets(addr: string): string {
 }
 
 /**
- * Parses `lsof -nP -a -i -F pcnPTt +c 0` output: `-F` field-mode emits one
+ * Parses `lsof -nP -a -iTCP -F pcnPTt +c 0` output: `-F` field-mode emits one
  * line per field, `p<pid>`/`c<command>`/`n<name>` among them, with a new `p`
  * line starting each process's record. The `n` field for a TCP socket looks
  * like `<local>-><remote>` (e.g. `10.0.0.5:54321->160.79.104.1:443`, or for
@@ -49,6 +50,11 @@ export function parseLsofSocketList(output: string): MacSocket[] {
   const out: MacSocket[] = [];
   let pid: number | undefined;
   let comm: string | undefined;
+  // B4: v1 is TCP-only (same restriction as the Linux backend, which only
+  // ever reads /proc/net/tcp{,6}). `-iTCP` on the invocation already keeps
+  // UDP/QUIC out of the real lsof output; this is defense in depth against
+  // a record whose protocol field explicitly says otherwise.
+  let protocol: string | undefined;
   for (const raw of output.split('\n')) {
     const line = raw.trimEnd();
     if (line.length === 0) continue;
@@ -57,10 +63,14 @@ export function parseLsofSocketList(output: string): MacSocket[] {
     if (tag === 'p') {
       pid = Number(value);
       comm = undefined;
+      protocol = undefined;
     } else if (tag === 'c') {
       comm = value;
+    } else if (tag === 'P') {
+      protocol = value;
     } else if (tag === 'n') {
       if (pid === undefined || comm === undefined) continue;
+      if (protocol !== undefined && protocol !== 'TCP') continue;
       const m = value.match(/^(\S+):(\d+)->(\S+):(\d+)/);
       if (!m) continue;
       const [, localAddress, localPortStr, remoteAddress, remotePortStr] = m;
@@ -128,7 +138,9 @@ export function parseLsofCwd(output: string): Map<number, string> {
 /** Runs the exact 3 scoped subprocess calls and returns classified
  * candidates with sockets, argv, and (for known_ai_cli only) cwd. */
 export async function enumerateMacCandidates(execFn: ExecFn): Promise<MacCandidate[]> {
-  const lsofOut = await execFn('lsof', ['-nP', '-a', '-i', '-F', 'pcnPTt', '+c', '0']);
+  // B4: -iTCP, never bare -i, so UDP/QUIC sockets never enter the
+  // enumeration at all (v1 is TCP-only, same as the Linux backend).
+  const lsofOut = await execFn('lsof', ['-nP', '-a', '-iTCP', '-F', 'pcnPTt', '+c', '0']);
   const sockets = parseLsofSocketList(lsofOut);
   const byPid = groupByPid(sockets);
   if (byPid.size === 0) return [];

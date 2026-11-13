@@ -29,6 +29,22 @@ describe('parseLsofSocketList', () => {
     expect(parseLsofSocketList(output)).toHaveLength(0);
   });
 
+  it('skips a UDP/QUIC record, keeping only TCP (B4)', () => {
+    const output = [
+      'p123',
+      'cclaude',
+      'PTCP',
+      'n10.0.0.5:54321->160.79.104.1:443',
+      'p456',
+      'cquic-thing',
+      'PUDP',
+      'n10.0.0.5:54322->1.1.1.1:443',
+    ].join('\n');
+    const sockets = parseLsofSocketList(output);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]).toMatchObject({ pid: 123, comm: 'claude' });
+  });
+
   it('strips brackets from a bracketed IPv6 connection (B7)', () => {
     const output = [
       'p123',
@@ -72,7 +88,7 @@ describe('enumerateMacCandidates: exactly 3 scoped subprocess calls', () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const execFn = vi.fn(async (cmd: string, args: string[]) => {
       calls.push({ cmd, args });
-      if (cmd === 'lsof' && args.includes('-i')) {
+      if (cmd === 'lsof' && args.includes('-iTCP')) {
         return [
           'p123', 'cclaude', 'n10.0.0.5:1->160.79.104.1:443',
           'p456', 'cchrome', 'n10.0.0.5:2->1.1.1.1:443',
@@ -92,8 +108,9 @@ describe('enumerateMacCandidates: exactly 3 scoped subprocess calls', () => {
 
     const candidates = await enumerateMacCandidates(execFn);
     expect(calls).toHaveLength(3);
-    // call 1: unscoped socket enumeration (the one call allowed to be broad)
-    expect(calls[0]!.args).toContain('-i');
+    // call 1: unscoped socket enumeration (the one call allowed to be
+    // broad), scoped to TCP only (B4) - never UDP/QUIC.
+    expect(calls[0]!.args).toContain('-iTCP');
     // call 2: scoped ps, only the PIDs from call 1
     expect(calls[1]!.cmd).toBe('ps');
     expect(calls[1]!.args.join(' ')).toContain('123,456');
@@ -112,7 +129,7 @@ describe('enumerateMacCandidates: exactly 3 scoped subprocess calls', () => {
 
   it('skips the cwd call entirely when no PID classifies as a known AI CLI', async () => {
     const execFn = vi.fn(async (cmd: string, args: string[]) => {
-      if (cmd === 'lsof' && args.includes('-i')) return ['p1', 'cchrome', 'n1:1->1.1.1.1:443'].join('\n');
+      if (cmd === 'lsof' && args.includes('-iTCP')) return ['p1', 'cchrome', 'n1:1->1.1.1.1:443'].join('\n');
       if (cmd === 'ps') return ['1 chrome chrome --type=renderer'].join('\n');
       throw new Error('cwd call should not run');
     });
