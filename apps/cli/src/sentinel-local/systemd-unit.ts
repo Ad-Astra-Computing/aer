@@ -14,6 +14,34 @@ export interface SystemdUnitOptions {
   codexHome: CodexHomeCapture;
 }
 
+// eslint-disable-next-line no-control-regex
+const CONTROL_OR_NEWLINE_RE = /[\x00-\x1f\x7f]/;
+const NEEDS_QUOTING_RE = /[\s"\\]/;
+
+export class SystemdExecArgUnsafeError extends Error {
+  constructor(public readonly reason: string) {
+    super(`refusing to write an ExecStart= argument: ${reason}`);
+    this.name = 'SystemdExecArgUnsafeError';
+  }
+}
+
+/** Escapes one argument for a systemd `ExecStart=` line (systemd.service's
+ * "Command Lines" grammar): every literal `%` doubled (specifier expansion),
+ * and an argument containing whitespace, a backslash, or a double quote is
+ * wrapped in double quotes with its own backslashes and quotes escaped
+ * (systemd's quoting is C-style inside `"..."`). A control character or a
+ * raw newline is refused outright - never silently mis-escaped - since a
+ * newline could inject an entirely separate directive into the unit file. */
+export function escapeSystemdExecArg(value: string): string {
+  if (CONTROL_OR_NEWLINE_RE.test(value)) {
+    throw new SystemdExecArgUnsafeError(`argument contains a control character or newline: ${JSON.stringify(value)}`);
+  }
+  const percentDoubled = value.replace(/%/g, '%%');
+  if (!NEEDS_QUOTING_RE.test(percentDoubled)) return percentDoubled;
+  const escaped = percentDoubled.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
 /** Returns the unit file contents, plus the (possibly revised) CodexHomeCapture
  * actually safe to persist in sentinel-local.json: a capture that could not
  * be escaped into the unit (double-quote case) downgrades to not_checkable
@@ -26,7 +54,7 @@ export function buildSystemdUnit(opts: SystemdUnitOptions): { unit: string; reco
     '',
     '[Service]',
     'Type=simple',
-    `ExecStart=${opts.execPath} ${opts.scriptPath} sentinel-local run-daemon`,
+    `ExecStart=${[escapeSystemdExecArg(opts.execPath), escapeSystemdExecArg(opts.scriptPath), 'sentinel-local', 'run-daemon'].join(' ')}`,
     'Restart=on-failure',
     'RestartSec=5',
   ];
