@@ -91,8 +91,8 @@ describe('runDaemonTick', () => {
     expect(state.halted).toBeUndefined();
   });
 
-  it('halts on a 401/403 and stops attempting further pushes (H1)', async () => {
-    const push = vi.fn(async () => ({ status: 403, ok: false, retryable: false }));
+  it('halts on a 401 and stops attempting further pushes (H1)', async () => {
+    const push = vi.fn(async () => ({ status: 401, ok: false, retryable: false }));
     const client = makeClient(push);
     const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
     let state = await runDaemonTick(initialDaemonState(), {
@@ -109,6 +109,32 @@ describe('runDaemonTick', () => {
       enumerate: async () => [], env, now: () => new Date(10 * 60_000),
     });
     expect(push).not.toHaveBeenCalled();
+  });
+
+  it('backs off (never halts permanently) on a 403 tenant_suspended/tenant_deleted (should-fix 7)', async () => {
+    // A billing hold is reversible: a 403 here means tenant_suspended or
+    // tenant_deleted (push-auth.ts's sensorPushAuthStatus), never a revoked
+    // credential - that's 401. Halting permanently on 403 would force a
+    // full re-install after a billing issue clears on its own.
+    const push = vi.fn(async () => ({ status: 403, ok: false, retryable: false }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    let state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [candidate], env, now: () => new Date(0),
+    });
+    expect(state.halted).toBeUndefined();
+    expect(state.backoffMs).toBeGreaterThan(0);
+    expect(readOutbox(env).rows).toHaveLength(1); // left queued, never dropped
+
+    // A later tick, once backoff has elapsed, tries again (unlike a 401 halt).
+    push.mockClear();
+    push.mockImplementation(async () => ({ status: 200, ok: true, retryable: false }));
+    state = await runDaemonTick(state, {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [], env, now: () => new Date(10 * 60_000),
+    });
+    expect(push).toHaveBeenCalledTimes(1);
   });
 
   it('respects the push cadence: does not push again before the interval elapses', async () => {

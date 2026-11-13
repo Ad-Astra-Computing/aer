@@ -29,9 +29,11 @@ export interface DaemonState {
   tick: number;
   lastPushAt: number;
   backoffMs: number;
-  /** Set when the server has rejected a push with 401/403: the credential
-   * is no longer valid, so retrying forever would just waste cycles. Once
-   * set, further ticks stop attempting to push (H1). */
+  /** Set when the server has rejected a push with 401: the credential is no
+   * longer valid, so retrying forever would just waste cycles. Once set,
+   * further ticks stop attempting to push (H1). A 403 (tenant_suspended or
+   * tenant_deleted) is deliberately NOT included here - that is a reversible
+   * billing condition handled via backoff instead (should-fix 7). */
   halted?: { reason: string } | undefined;
 }
 
@@ -87,11 +89,18 @@ export async function runDaemonTick(state: DaemonState, deps: DaemonDeps): Promi
       // forever can never succeed - drop it and count it instead.
       dropFromOutboxFront(outbox.rows.length, deps.env);
       backoffMs = 0;
-    } else if (result.status === 401 || result.status === 403) {
+    } else if (result.status === 401) {
       // The push token is no longer valid (revoked, or the sensor was
       // disabled server-side). Retrying forever wastes cycles for no
       // possible success - stop and let the operator re-install.
       halted = { reason: `push rejected with ${result.status}` };
+    } else if (result.status === 403) {
+      // push-auth.ts's sensorPushAuthStatus only ever returns 403 for
+      // tenant_suspended or tenant_deleted - never a bad credential (that's
+      // 401). A billing hold is reversible, so back off and keep retrying
+      // on the normal schedule rather than halting permanently: halting
+      // here would force a full re-install just to clear a billing issue.
+      backoffMs = backoffMs === 0 ? 10_000 : Math.min(backoffMs * 2, MAX_BACKOFF_MS);
     }
     // Any other non-retryable status (e.g. 409) is left in the outbox for
     // the next tick - we never silently drop data except via the outbox's
