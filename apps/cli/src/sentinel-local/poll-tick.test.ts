@@ -108,6 +108,39 @@ describe('runPollTick', () => {
     expect(lookupFn).toHaveBeenCalled();
   });
 
+  it('B3: a closed connection reused with the same 4-tuple is re-emitted as new', async () => {
+    const seenSet = new ConnectionSeenSet();
+    const socket = { localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 };
+    const candidate = { tool: 'claude_code' as const, sockets: [socket] };
+
+    const first = await runPollTick([candidate], deps({ seenSet, tick: 1 }));
+    expect(first).toHaveLength(1);
+
+    // Tick 2: the connection has closed (disappears from this tick's live
+    // socket list) - nothing to report, and the seen-set entry should be
+    // evicted since the 4-tuple is no longer live.
+    const second = await runPollTick([], deps({ seenSet, tick: 2 }));
+    expect(second).toHaveLength(0);
+    expect(seenSet.size).toBe(0);
+
+    // Tick 3: the OS reuses the same local ephemeral port for a brand new
+    // connection to the same remote endpoint. Must be treated as new, not
+    // silently suppressed as "already seen".
+    const third = await runPollTick([candidate], deps({ seenSet, tick: 3 }));
+    expect(third).toHaveLength(1);
+  });
+
+  it('B3: the seen-set does not grow unboundedly as old connections close across many ticks', async () => {
+    const seenSet = new ConnectionSeenSet();
+    for (let i = 0; i < 50; i++) {
+      const socket = { localAddress: '10.0.0.1', localPort: i, remoteAddress: '160.79.104.1', remotePort: 443 };
+      await runPollTick([{ tool: 'claude_code' as const, sockets: [socket] }], deps({ seenSet, tick: i }));
+    }
+    // Each tick's connection is gone by the next tick (never included
+    // again), so the set should settle at 1 live entry, never 50.
+    expect(seenSet.size).toBe(1);
+  });
+
   it('deduplicates instrumentation checks per (tool, cwd) across many new connections in one tick', async () => {
     checkInstrumentationMock.mockClear();
     const sockets = [

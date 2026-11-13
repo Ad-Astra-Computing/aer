@@ -44,6 +44,28 @@ export class ConnectionSeenSet {
     this.firstSeenTick.set(k, tick);
     return { firstSeenTick: tick, isNew: true };
   }
+
+  /** B3: evicts every tracked 4-tuple that is NOT in `liveKeys` (this
+   * tick's own enumerated sockets, via `keyFor`). Without this the set only
+   * ever grows (unbounded memory on a long-running daemon), and a closed
+   * connection whose local ephemeral port is later reused for a NEW
+   * connection to the same remote endpoint is wrongly treated as already
+   * seen for the daemon's whole lifetime. Must be called with a real,
+   * successfully-enumerated live set for the tick - never with an empty
+   * set standing in for a failed enumeration, or everything evicts at once. */
+  evictStale(liveKeys: ReadonlySet<string>): void {
+    for (const k of this.firstSeenTick.keys()) {
+      if (!liveKeys.has(k)) this.firstSeenTick.delete(k);
+    }
+  }
+
+  keyFor(local: string, localPort: number, remote: string, remotePort: number): string {
+    return this.key(local, localPort, remote, remotePort);
+  }
+
+  get size(): number {
+    return this.firstSeenTick.size;
+  }
 }
 
 export interface PollTickDeps {
@@ -127,6 +149,18 @@ export async function runPollTick(candidates: NormalizedCandidate[], deps: PollT
       rows.push(row);
     }
   }
+
+  // B3: evict anything no longer live, using THIS tick's own enumerated
+  // sockets as the live set - a connection that closes and is later
+  // reused on the same 4-tuple is then treated as new again, and the set
+  // does not grow forever across ticks of entirely different connections.
+  const liveKeys = new Set<string>();
+  for (const candidate of candidates) {
+    for (const socket of candidate.sockets) {
+      liveKeys.add(deps.seenSet.keyFor(socket.localAddress, socket.localPort, socket.remoteAddress, socket.remotePort));
+    }
+  }
+  deps.seenSet.evictStale(liveKeys);
 
   return rows;
 }
