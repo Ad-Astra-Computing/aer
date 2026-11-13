@@ -46,6 +46,11 @@ export interface PushResult {
   ok: boolean;
   /** True for 429/503 - caller backs off exponentially. */
   retryable: boolean;
+  /** The `error` field of a non-2xx JSON body, when present - e.g.
+   * `tenant_suspended` or `tenant_deleted` on a 403 (push-auth.ts's
+   * `sensorPushAuthStatus`). Undefined when the body isn't JSON or has no
+   * `error` string (S3). */
+  errorCode?: string;
 }
 
 export class SentinelLocalApiError extends Error {
@@ -179,10 +184,20 @@ export class HttpSentinelLocalApiClient implements SentinelLocalApiClient {
       // `observations` wrapper 400s the WHOLE batch server-side.
       body: JSON.stringify({ poller_version: CLI_VERSION, rows }),
     });
+    let errorCode: string | undefined;
+    if (!res.ok) {
+      try {
+        const body = (await res.json()) as { error?: unknown };
+        if (typeof body.error === 'string') errorCode = body.error;
+      } catch {
+        // Not a JSON body: no error code to surface, status alone decides.
+      }
+    }
     return {
       status: res.status,
       ok: res.ok,
       retryable: res.status === 429 || res.status === 503,
+      ...(errorCode !== undefined ? { errorCode } : {}),
     };
   }
 }

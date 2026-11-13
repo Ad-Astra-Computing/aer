@@ -162,6 +162,16 @@ describe('HttpSentinelLocalApiClient.push', () => {
     const result = await client.push('s1', 'push-token', []);
     expect(result).toEqual({ status: 200, ok: true, retryable: false });
   });
+
+  // S3: push-auth.ts's sensorPushAuthStatus returns 403 for both
+  // tenant_suspended (reversible) and tenant_deleted (terminal) - the
+  // caller needs the body's `error` code to tell them apart.
+  it('surfaces the error code from a 403 body', async () => {
+    const fetchFn = fakeServer({ 'POST /v1/sentinel/local-poll/s1': { status: 403, json: { error: 'tenant_deleted' } } });
+    const client = new HttpSentinelLocalApiClient({ baseUrl: 'https://api.aer.run', apiKey: 'k', fetchFn });
+    const result = await client.push('s1', 'push-token', []);
+    expect(result).toEqual({ status: 403, ok: false, retryable: false, errorCode: 'tenant_deleted' });
+  });
 });
 
 describe('HttpSentinelLocalApiClient: request timeout', () => {

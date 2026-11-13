@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runDaemonTick, initialDaemonState } from './daemon.js';
+import { runDaemonTick, initialDaemonState, runDaemonForever } from './daemon.js';
 import { readOutbox } from './state.js';
 import type { SentinelLocalApiClient } from './http-client.js';
 
@@ -135,6 +135,60 @@ describe('runDaemonTick', () => {
       enumerate: async () => [], env, now: () => new Date(10 * 60_000),
     });
     expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it('halts (terminal) on a 403 tenant_deleted, unlike tenant_suspended (S3)', async () => {
+    const push = vi.fn(async () => ({ status: 403, ok: false, retryable: false, errorCode: 'tenant_deleted' }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    let state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [candidate], env, now: () => new Date(0),
+    });
+    expect(state.halted).toBeDefined();
+    expect(readOutbox(env).rows).toHaveLength(1); // left queued, never dropped
+
+    // A later tick never retries, same as a 401 halt.
+    push.mockClear();
+    state = await runDaemonTick(state, {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [], env, now: () => new Date(10 * 60_000),
+    });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('backs off (never halts) on a 403 with no distinguishing error code', async () => {
+    const push = vi.fn(async () => ({ status: 403, ok: false, retryable: false }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    const state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [candidate], env, now: () => new Date(0),
+    });
+    expect(state.halted).toBeUndefined();
+    expect(state.backoffMs).toBeGreaterThan(0);
+  });
+
+  // S5: the real remedy for a terminal halt (401, or 403 tenant_deleted) is
+  // never a plain re-run of `install` - runInstall refuses outright while
+  // sentinel-local.json still exists, so that advice is guaranteed to fail.
+  it('tells the user to uninstall before re-installing on a terminal halt (S5)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const push = vi.fn(async () => ({ status: 401, ok: false, retryable: false }));
+      const client = makeClient(push);
+      const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+      await runDaemonForever({
+        perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+        enumerate: async () => [candidate], env, pollIntervalMs: 1,
+      });
+      const printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).toContain('uninstall');
+      expect(printed).toContain('install');
+      expect(printed).toContain('outbox');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it('respects the push cadence: does not push again before the interval elapses', async () => {
