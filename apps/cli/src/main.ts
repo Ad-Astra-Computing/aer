@@ -1228,9 +1228,20 @@ async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promis
   }
 
   if (sub === 'uninstall') {
-    const opts = requireTenantAuth('aer sentinel-local uninstall');
-    const apiClient = new HttpSentinelLocalApiClient({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
     const erase = args.includes('--erase');
+    let apiClient: HttpSentinelLocalApiClient;
+    if (erase) {
+      // --erase also needs GET /v1/fleet/sensors and the erase route,
+      // neither of which accepts a push token: real tenant scope needed.
+      const opts = requireTenantAuth('aer sentinel-local uninstall --erase');
+      apiClient = new HttpSentinelLocalApiClient({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
+    } else {
+      // The disable route accepts the sensor's own stored push token, so
+      // plain uninstall never needs a live tenant login (same as run-daemon).
+      const credential = readPushCredential(process.env);
+      const baseUrl = credential ? new URL(credential.ingestUrl).origin : DEFAULT_BASE_URL;
+      apiClient = new HttpSentinelLocalApiClient({ baseUrl, apiKey: credential?.pushToken ?? '' });
+    }
     try {
       await runUninstall({ apiClient, execFn: sentinelLocalExecFn, erase, print: (l) => console.log(l) });
     } catch (err) {

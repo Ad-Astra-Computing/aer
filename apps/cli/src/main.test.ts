@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, resolveEnvironmentChoice, buildLocalMonitoringDisclosure, confirmLocalMonitoringConsent } from './main.js';
+import { writePushCredential } from './sentinel-local/state.js';
 
 // process.exit really would end the test worker, so every path that reaches
 // it is exercised through this stub, which turns the call into a thrown
@@ -502,5 +503,77 @@ describe('confirmLocalMonitoringConsent (should-fix 6)', () => {
     const result = await confirmLocalMonitoringConsent('Acme Robotics', { nonInteractive: false });
     expect(result).toBe(false);
     expect(logSpy).toHaveBeenCalled();
+  });
+});
+
+describe('aer sentinel-local uninstall auth (should-fix: push token vs tenant auth)', () => {
+  let dir: string;
+  let originalCwd: string;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const stderr = (): string => errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aer-cli-sentinel-uninstall-'));
+    originalCwd = process.cwd();
+    process.chdir(dir);
+    vi.stubEnv('HOME', dir);
+    vi.stubEnv('AER_TENANT_API_KEY', '');
+    vi.stubEnv('AER_API_KEY', '');
+    vi.stubEnv('AER_BASE_URL', '');
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitCalled(code ?? 0);
+    }) as never);
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/v1/fleet/local-sensors/')) {
+        return new Response(JSON.stringify({ sensor_source_id: 's1', enabled: false }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ sensors: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('plain uninstall disables the sensor with only the stored push token, no tenant auth needed', async () => {
+    writePushCredential(
+      { sensorSourceId: 's1', pushToken: 'push-token-abc', ingestUrl: 'https://api.test/v1/sentinel/local-poll/s1' },
+      process.env,
+    );
+
+    await main(['sentinel-local', 'uninstall']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const disableCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/v1/fleet/local-sensors/s1') && !String(url).includes('observations'));
+    expect(disableCall).toBeDefined();
+    const [, init] = disableCall as [string, RequestInit];
+    expect(init.method).toBe('DELETE');
+    expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer push-token-abc');
+  });
+
+  it('--erase still requires a live tenant login, even with a push credential on disk', async () => {
+    writePushCredential(
+      { sensorSourceId: 's1', pushToken: 'push-token-abc', ingestUrl: 'https://api.test/v1/sentinel/local-poll/s1' },
+      process.env,
+    );
+
+    await expect(main(['sentinel-local', 'uninstall', '--erase'])).rejects.toThrow(ProcessExitCalled);
+
+    expect(exitSpy).toHaveBeenCalledWith(64);
+    expect(stderr()).toContain('tenant API key');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
