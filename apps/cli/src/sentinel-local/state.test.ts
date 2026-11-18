@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, symlinkSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -17,6 +17,8 @@ import {
   OUTBOX_CAP,
   StateSymlinkError,
   atomicWriteFile,
+  ensurePerInstallKey,
+  perInstallKeyPath,
 } from './state.js';
 
 let dir: string;
@@ -61,6 +63,37 @@ describe('sentinel-local.json', () => {
     const read = readSentinelLocalConfig(env);
     expect(read?.deviceId).toBe('d1');
     expect(read?.codexHome).toEqual({ kind: 'unset' });
+  });
+});
+
+describe('ensurePerInstallKey', () => {
+  it('mints a new key and reports minted:true when none exists', () => {
+    const result = ensurePerInstallKey(env);
+    expect(result.minted).toBe(true);
+    expect(result.key).toHaveLength(32);
+  });
+
+  it('reuses a valid existing key and reports minted:false', () => {
+    const first = ensurePerInstallKey(env);
+    const second = ensurePerInstallKey(env);
+    expect(second.minted).toBe(false);
+    expect(second.key).toEqual(first.key);
+  });
+
+  it('replaces an empty key file and reports minted:true', () => {
+    mkdirSync(join(dir, '.config', 'aer'), { recursive: true });
+    writeFileSync(perInstallKeyPath(env), '');
+    const result = ensurePerInstallKey(env);
+    expect(result.minted).toBe(true);
+    expect(result.key).toHaveLength(32);
+  });
+
+  it('replaces a malformed key file and reports minted:true', () => {
+    mkdirSync(join(dir, '.config', 'aer'), { recursive: true });
+    writeFileSync(perInstallKeyPath(env), 'not-hex\n');
+    const result = ensurePerInstallKey(env);
+    expect(result.minted).toBe(true);
+    expect(result.key).toHaveLength(32);
   });
 });
 

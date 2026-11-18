@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInstall, CONSENT_VERSION, resolveScriptPathFromMetaUrl } from './install.js';
@@ -201,7 +201,7 @@ describe('runInstall (linux)', () => {
   });
 
   it('does not delete a pre-existing per-install key on a failed install attempt (S2)', async () => {
-    const preexisting = ensurePerInstallKey(env);
+    const preexisting = ensurePerInstallKey(env).key;
     const execFn = vi.fn(async () => { throw new Error('systemctl is unavailable'); });
     await expect(
       runInstall({
@@ -211,6 +211,20 @@ describe('runInstall (linux)', () => {
       }),
     ).rejects.toThrow(/systemctl/);
     expect(readPerInstallKey(env)).toEqual(preexisting);
+  });
+
+  it('deletes a replacement key minted over an empty pre-existing file on a failed install (S2)', async () => {
+    mkdirSync(join(dir, '.config', 'aer'), { recursive: true });
+    writeFileSync(perInstallKeyPath(env), '');
+    const execFn = vi.fn(async () => { throw new Error('systemctl is unavailable'); });
+    await expect(
+      runInstall({
+        apiClient: fakeClient(), execFn, env, platform: 'linux',
+        execPath: '/usr/bin/node', scriptPath: '/opt/aer/dist/main.js',
+        consentAcknowledged: true, print: () => {},
+      }),
+    ).rejects.toThrow(/systemctl/);
+    expect(readPerInstallKey(env)).toBeUndefined();
   });
 });
 

@@ -1,11 +1,10 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { unlinkSync, existsSync } from 'node:fs';
+import { unlinkSync } from 'node:fs';
 import {
   ensureDeviceId,
   regenerateDeviceId,
   ensurePerInstallKey,
-  perInstallKeyPath,
   writeSentinelLocalConfig,
   writePushCredential,
   readSentinelLocalConfig,
@@ -92,13 +91,8 @@ export async function runInstall(opts: InstallOptions): Promise<InstallResult> {
   }
 
   const deviceId = opts.regenerateDeviceId ? regenerateDeviceId(env) : ensureDeviceId(env);
-  // S2: track whether THIS attempt minted a brand-new per-install key (vs.
-  // reusing one already on disk) so a failed attempt's rollback can delete
-  // only the key it created, never a pre-existing one that belongs to some
-  // other state (the "already installed" guard above already ruled out an
-  // active install at this point).
-  const mintedNewPerInstallKey = !existsSync(perInstallKeyPath(env));
-  ensurePerInstallKey(env);
+  // Rollback below deletes this key only if this call actually minted it.
+  const mintedNewPerInstallKey = ensurePerInstallKey(env).minted;
 
   let codexHome;
   try {

@@ -158,16 +158,24 @@ export function perInstallKeyPath(env?: Record<string, string | undefined>): str
   return join(configDir(env), 'sentinel-local-key');
 }
 
-export function ensurePerInstallKey(env?: Record<string, string | undefined>): Buffer {
+export interface PerInstallKeyResult {
+  key: Buffer;
+  /** True if this call generated or replaced the key on disk. */
+  minted: boolean;
+}
+
+export function ensurePerInstallKey(
+  env?: Record<string, string | undefined>,
+): PerInstallKeyResult {
   const file = perInstallKeyPath(env);
   assertNotSymlink(file);
   if (existsSync(file)) {
     const hex = readFileSync(file, 'utf8').trim();
-    if (/^[0-9a-f]{64}$/.test(hex)) return Buffer.from(hex, 'hex');
+    if (/^[0-9a-f]{64}$/.test(hex)) return { key: Buffer.from(hex, 'hex'), minted: false };
   }
   const key = randomBytes(32);
   atomicWriteFile(file, key.toString('hex') + '\n');
-  return key;
+  return { key, minted: true };
 }
 
 export function readPerInstallKey(env?: Record<string, string | undefined>): Buffer | undefined {
