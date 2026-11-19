@@ -40,6 +40,27 @@ import {
   getUsage,
 } from './tenant-ops.js';
 import { formatUsageHuman, isUsageResponse } from './usage-cmd.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { HttpSentinelLocalApiClient, fetchTenantName } from './sentinel-local/http-client.js';
+import { runInstall } from './sentinel-local/install.js';
+import { runUninstall } from './sentinel-local/uninstall.js';
+import { runStatus } from './sentinel-local/status.js';
+import { runPause, runResume } from './sentinel-local/pause-resume.js';
+import { runDaemonForever } from './sentinel-local/daemon.js';
+import { readPushCredential, readPerInstallKey } from './sentinel-local/state.js';
+import { enumerateForPlatform } from './sentinel-local/real-enumerate.js';
+
+const execFileAsync = promisify(execFile);
+async function sentinelLocalExecFn(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync(cmd, args);
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    const e = err as { code?: number; stdout?: string; stderr?: string };
+    return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+  }
+}
 
 const USAGE_TEXT = [
   'Usage:',
@@ -86,6 +107,13 @@ const USAGE_TEXT = [
   '  aer webhooks rotate <webhook-id>',
   '  aer webhooks delete <webhook-id>',
   '  aer webhooks deliveries <webhook-id> [--limit N]',
+  '  aer sentinel-local install [--env <id>] [--label <name>] [--i-understand-local-monitoring] [--regenerate-device-id]',
+  '           (Linux/macOS only: installs the local-poll network sensor as a user daemon;',
+  '            requires interactive confirmation of what it reads/sends, or the',
+  '            --i-understand-local-monitoring flag for non-interactive use)',
+  '  aer sentinel-local uninstall [--erase]',
+  '  aer sentinel-local status [--json]',
+  '  aer sentinel-local pause | resume    (local daemon stop/start only; never changes server state)',
   '',
   '  Pass --help (or -h) after any command to print this text and exit, without',
   '  writing anything or making a network call.',
@@ -1082,6 +1110,187 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     usage();
   }
 
+  if (command === 'sentinel-local') {
+    await cmdSentinelLocal(sub, rest.filter((x): x is string => x !== undefined));
+    return;
+  }
+
   usage();
+}
+
+// §10.1's disclosure (v6 wording, after five rounds of review corrections to
+// earlier drafts that each undersold what this sensor actually reads and
+// sends). Shown before any interactive install confirmation, and before a
+// non-interactive install is accepted as one `--i-understand-local-
+// monitoring` can skip, but what it says must be read regardless.
+export function buildLocalMonitoringDisclosure(tenantName: string): string[] {
+  return [
+    'AER Sentinel local-poll sensor - what this installs:',
+    `This will run continuously in the background on this machine, under tenant "${tenantName}".`,
+    "Every 15 seconds, it reads this machine's own list of open network connections and the names of every process it runs on this machine, to recognize AI coding tools among them.",
+    "For a process it recognizes as an AI coding tool, it also reads that process's working directory and the configuration files AER's hook integrations would use there for any supported tool, to check whether AER's own monitoring hooks are set up for the one it recognized.",
+    'To make that recognition in the first place, it reads the command line of every process holding a network connection (on macOS, every such process; on Linux, those run by Node, Python and similar runtimes): for a process that turns out not to be a recognized AI tool, that command line is discarded immediately and never stored, sent or logged anywhere.',
+    'It never reads the command line of a process that is not holding a network connection at all.',
+    'It never reads file contents beyond that one configuration check, and never sends the file itself, only whether AER hooks appear configured (a label, self-reported by that file, not independently verified).',
+    'What leaves this machine is a closed-set label naming the tool and, where checkable, whether its AER hooks appear configured.',
+    "When the destination is a recognized AI provider, AER additionally receives that provider's name, the destination address and port: matching a provider's own published address range, or a locally-resolved address, is evidence the tool talked to that provider's infrastructure, not proof of which specific traffic it sent (several providers share address space between their API and other properties).",
+    'When a known AI tool talks to an address this machine cannot place, AER receives a timestamped record of that connection, never the address itself.',
+    'None of this is sent anywhere beyond what is described above: no file contents, no raw command line, no full executable path or arguments, no traffic content, for any process, recognized AI tool or not.',
+    "Checking whether a connection matches a known AI provider also causes this machine to look up that provider's address periodically while an AI tool is active, which is itself visible to network monitoring on this machine or network as DNS activity toward AI providers, independent of whatever the tool's own traffic already reveals.",
+    'It never reads browser data or traffic, and classifying a process as a browser stops it from ever being reported on, regardless of what it connects to.',
+    `Anyone with read access to tenant "${tenantName}", including other members of your team, can see what this machine reports.`,
+  ];
+}
+
+export async function confirmLocalMonitoringConsent(
+  tenantName: string,
+  opts: { nonInteractive: boolean },
+): Promise<boolean> {
+  for (const line of buildLocalMonitoringDisclosure(tenantName)) console.log(line);
+  // should-fix 6: the flag only skips the PROMPT, never the disclosure
+  // above, which every caller just printed regardless of this branch.
+  if (opts.nonInteractive) return true;
+  // Never install silently as part of a scripted setup with no explicit
+  // signal either way (§10.1): a non-interactive session with no flag is a
+  // refusal, not a default "yes".
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question("Type 'yes' to confirm and install: ");
+    return answer.trim().toLowerCase() === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+// H3: the resident daemon process only ever needs the push token (stored
+// locally at install time) to call push() - it must never load the tenant
+// API key into a long-running background process. The base URL it talks to
+// is derived from the stored ingest_url's own origin, never re-resolved
+// from env/project config (which is also how it would end up needing the
+// tenant key via resolveAuth/projectConfig in the first place).
+async function cmdSentinelLocal(sub: string | undefined, args: string[]): Promise<void> {
+  if (sub === 'run-daemon') {
+    const credential = readPushCredential(process.env);
+    const perInstallKey = readPerInstallKey(process.env);
+    if (!credential || !perInstallKey) {
+      console.error('sentinel-local run-daemon: not installed. Run `aer sentinel-local install` first.');
+      process.exit(1);
+    }
+    const baseUrl = new URL(credential.ingestUrl).origin;
+    const apiClient = new HttpSentinelLocalApiClient({ baseUrl, apiKey: '' });
+    await runDaemonForever({
+      perInstallKey,
+      sensorSourceId: credential.sensorSourceId,
+      pushToken: credential.pushToken,
+      apiClient,
+      enumerate: enumerateForPlatform(),
+    });
+    return;
+  }
+
+  if (sub === 'install') {
+    const opts = requireTenantAuth('aer sentinel-local install');
+    const apiClient = new HttpSentinelLocalApiClient({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
+    const environmentId = readFlag(args, '--env');
+    const deviceLabel = readFlag(args, '--label');
+    const regenerateDeviceIdFlag = args.includes('--regenerate-device-id');
+    const nonInteractiveConsent = args.includes('--i-understand-local-monitoring');
+    let tenantName: string;
+    try {
+      tenantName = await fetchTenantName({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
+    } catch (err) {
+      // B6: the disclosure's whole point is naming who can see this
+      // invasive sensor's data - a failed lookup must abort before consent
+      // is even shown, never fall back to a placeholder the user would
+      // unknowingly consent against.
+      console.error(
+        'sentinel-local install: could not look up the tenant name to show in the consent ' +
+        `disclosure (${err instanceof Error ? err.message : String(err)}). Aborting; retry once the API is reachable.`,
+      );
+      process.exit(1);
+    }
+    const consentAcknowledged = await confirmLocalMonitoringConsent(tenantName, { nonInteractive: nonInteractiveConsent });
+    if (!consentAcknowledged) {
+      console.error(
+        'sentinel-local install: consent not confirmed; aborting. Re-run and type `yes` at the ' +
+        'prompt, or pass --i-understand-local-monitoring for non-interactive use.',
+      );
+      process.exit(1);
+    }
+    try {
+      await runInstall({
+        apiClient,
+        execFn: sentinelLocalExecFn,
+        consentAcknowledged,
+        ...(environmentId !== undefined ? { environmentId } : {}),
+        ...(deviceLabel !== undefined ? { deviceLabel } : {}),
+        ...(regenerateDeviceIdFlag ? { regenerateDeviceId: true } : {}),
+        print: (l) => console.log(l),
+      });
+    } catch (err) {
+      console.error(formatCliError(err));
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'uninstall') {
+    const erase = args.includes('--erase');
+    let apiClient: HttpSentinelLocalApiClient;
+    if (erase) {
+      // --erase also needs GET /v1/fleet/sensors and the erase route,
+      // neither of which accepts a push token: real tenant scope needed.
+      const opts = requireTenantAuth('aer sentinel-local uninstall --erase');
+      apiClient = new HttpSentinelLocalApiClient({ baseUrl: opts.baseUrl, apiKey: opts.apiKey });
+    } else {
+      // The disable route accepts the sensor's own stored push token, so
+      // plain uninstall never needs a live tenant login (same as run-daemon).
+      const credential = readPushCredential(process.env);
+      const baseUrl = credential ? new URL(credential.ingestUrl).origin : DEFAULT_BASE_URL;
+      apiClient = new HttpSentinelLocalApiClient({ baseUrl, apiKey: credential?.pushToken ?? '' });
+    }
+    try {
+      await runUninstall({ apiClient, execFn: sentinelLocalExecFn, erase, print: (l) => console.log(l) });
+    } catch (err) {
+      console.error(formatCliError(err));
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'status') {
+    const report = await runStatus({ execFn: sentinelLocalExecFn });
+    if (args.includes('--json')) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(`installed:        ${report.installed}`);
+      console.log(`unit file exists: ${report.unitExists}`);
+      console.log(`daemon active:    ${report.daemonActive ?? 'unknown'}`);
+      console.log(`device id:        ${report.deviceId ?? '(none)'}`);
+      console.log(`sensor source id: ${report.sensorSourceId ?? '(none)'}`);
+      console.log(`outbox depth:     ${report.outboxDepth}`);
+      console.log(`dropped rows:     ${report.droppedCount}`);
+      if (report.codexHome) {
+        console.log(`CODEX_HOME:       recorded=${report.codexHome.recordedValue ?? report.codexHome.recorded} current=${report.codexHome.current ?? '(unset)'}${report.codexHome.stale ? ' [STALE: re-run install]' : ''}`);
+      }
+    }
+    return;
+  }
+
+  if (sub === 'pause') {
+    await runPause({ execFn: sentinelLocalExecFn });
+    console.log('Paused the local-poll daemon (local only; the server registration is unchanged).');
+    return;
+  }
+
+  if (sub === 'resume') {
+    await runResume({ execFn: sentinelLocalExecFn });
+    console.log('Resumed the local-poll daemon.');
+    return;
+  }
+
+  console.error('Usage: aer sentinel-local <install|uninstall|status|pause|resume> [options]');
+  process.exit(64);
 }
 

@@ -1,0 +1,208 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runDaemonTick, initialDaemonState, runDaemonForever } from './daemon.js';
+import { readOutbox } from './state.js';
+import type { SentinelLocalApiClient } from './http-client.js';
+
+let dir: string;
+let env: Record<string, string | undefined>;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'aer-sentinel-daemon-test-'));
+  env = { HOME: dir };
+});
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+const KEY = Buffer.from('b'.repeat(64), 'hex');
+
+function makeClient(pushImpl: SentinelLocalApiClient['push']): SentinelLocalApiClient {
+  return {
+    register: vi.fn(),
+    disable: vi.fn(),
+    eraseObservations: vi.fn(),
+    getSensors: vi.fn(async () => []),
+    push: pushImpl,
+  };
+}
+
+describe('runDaemonTick', () => {
+  it('appends new rows to the outbox and pushes immediately on first data', async () => {
+    const push = vi.fn(async () => ({ status: 200, ok: true, retryable: false }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    const state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY,
+      sensorSourceId: 's1',
+      pushToken: 'tok',
+      apiClient: client,
+      enumerate: async () => [candidate],
+      env,
+    });
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(readOutbox(env).rows).toHaveLength(0); // pushed successfully, outbox drained
+    expect(state.backoffMs).toBe(0);
+  });
+
+  it('never pushes when there is no new data', async () => {
+    const push = vi.fn(async () => ({ status: 200, ok: true, retryable: false }));
+    const client = makeClient(push);
+    await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY,
+      sensorSourceId: 's1',
+      pushToken: 'tok',
+      apiClient: client,
+      enumerate: async () => [],
+      env,
+    });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('backs off exponentially on a 429 and keeps the rows queued', async () => {
+    const push = vi.fn(async () => ({ status: 429, ok: false, retryable: true }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    const state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY,
+      sensorSourceId: 's1',
+      pushToken: 'tok',
+      apiClient: client,
+      enumerate: async () => [candidate],
+      env,
+    });
+    expect(state.backoffMs).toBeGreaterThan(0);
+    expect(readOutbox(env).rows).toHaveLength(1); // not drained: push failed
+  });
+
+  it('drops the whole batch on a 400 (malformed envelope) instead of retrying forever (H1)', async () => {
+    const push = vi.fn(async () => ({ status: 400, ok: false, retryable: false }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    const state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [candidate], env,
+    });
+    expect(readOutbox(env).rows).toHaveLength(0);
+    expect(readOutbox(env).droppedCount).toBe(1);
+    expect(state.halted).toBeUndefined();
+  });
+
+  it('halts on a 401 and stops attempting further pushes (H1)', async () => {
+    const push = vi.fn(async () => ({ status: 401, ok: false, retryable: false }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    let state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [candidate], env,
+    });
+    expect(state.halted).toBeDefined();
+    expect(readOutbox(env).rows).toHaveLength(1); // left queued, never dropped
+
+    // A second tick, even with cadence/backoff satisfied, never calls push again.
+    push.mockClear();
+    state = await runDaemonTick(state, {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [], env, now: () => new Date(10 * 60_000),
+    });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('backs off (never halts permanently) on a 403 tenant_suspended/tenant_deleted (should-fix 7)', async () => {
+    // A billing hold is reversible: a 403 here means tenant_suspended or
+    // tenant_deleted (push-auth.ts's sensorPushAuthStatus), never a revoked
+    // credential - that's 401. Halting permanently on 403 would force a
+    // full re-install after a billing issue clears on its own.
+    const push = vi.fn(async () => ({ status: 403, ok: false, retryable: false }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    let state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [candidate], env, now: () => new Date(0),
+    });
+    expect(state.halted).toBeUndefined();
+    expect(state.backoffMs).toBeGreaterThan(0);
+    expect(readOutbox(env).rows).toHaveLength(1); // left queued, never dropped
+
+    // A later tick, once backoff has elapsed, tries again (unlike a 401 halt).
+    push.mockClear();
+    push.mockImplementation(async () => ({ status: 200, ok: true, retryable: false }));
+    state = await runDaemonTick(state, {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [], env, now: () => new Date(10 * 60_000),
+    });
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it('halts (terminal) on a 403 tenant_deleted, unlike tenant_suspended (S3)', async () => {
+    const push = vi.fn(async () => ({ status: 403, ok: false, retryable: false, errorCode: 'tenant_deleted' }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    let state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [candidate], env, now: () => new Date(0),
+    });
+    expect(state.halted).toBeDefined();
+    expect(readOutbox(env).rows).toHaveLength(1); // left queued, never dropped
+
+    // A later tick never retries, same as a 401 halt.
+    push.mockClear();
+    state = await runDaemonTick(state, {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [], env, now: () => new Date(10 * 60_000),
+    });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('backs off (never halts) on a 403 with no distinguishing error code', async () => {
+    const push = vi.fn(async () => ({ status: 403, ok: false, retryable: false }));
+    const client = makeClient(push);
+    const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    const state = await runDaemonTick(initialDaemonState(), {
+      perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+      enumerate: async () => [candidate], env, now: () => new Date(0),
+    });
+    expect(state.halted).toBeUndefined();
+    expect(state.backoffMs).toBeGreaterThan(0);
+  });
+
+  // S5: the real remedy for a terminal halt (401, or 403 tenant_deleted) is
+  // never a plain re-run of `install` - runInstall refuses outright while
+  // sentinel-local.json still exists, so that advice is guaranteed to fail.
+  it('tells the user to uninstall before re-installing on a terminal halt (S5)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const push = vi.fn(async () => ({ status: 401, ok: false, retryable: false }));
+      const client = makeClient(push);
+      const candidate = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+      await runDaemonForever({
+        perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client,
+        enumerate: async () => [candidate], env, pollIntervalMs: 1,
+      });
+      const printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).toContain('uninstall');
+      expect(printed).toContain('install');
+      expect(printed).toContain('outbox');
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('respects the push cadence: does not push again before the interval elapses', async () => {
+    const push = vi.fn(async () => ({ status: 200, ok: true, retryable: false }));
+    const client = makeClient(push);
+    const candidate1 = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 1, remoteAddress: '160.79.104.1', remotePort: 443 }] };
+    const candidate2 = { tool: 'claude_code' as const, sockets: [{ localAddress: '10.0.0.1', localPort: 2, remoteAddress: '160.79.104.2', remotePort: 443 }] };
+    let t = 0;
+    const now = () => new Date(t);
+    let state = initialDaemonState();
+    state = await runDaemonTick(state, { perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client, enumerate: async () => [candidate1], env, now });
+    t += 1000; // 1s later: well within the 60s push cadence
+    state = await runDaemonTick(state, { perInstallKey: KEY, sensorSourceId: 's1', pushToken: 'tok', apiClient: client, enumerate: async () => [candidate2], env, now });
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(readOutbox(env).rows).toHaveLength(1); // candidate2's row queued, not yet pushed
+  });
+});

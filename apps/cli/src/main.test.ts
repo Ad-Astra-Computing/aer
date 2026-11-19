@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main, resolveEnvironmentChoice } from './main.js';
+import { main, resolveEnvironmentChoice, buildLocalMonitoringDisclosure, confirmLocalMonitoringConsent } from './main.js';
+import { writePushCredential } from './sentinel-local/state.js';
 
 // process.exit really would end the test worker, so every path that reaches
 // it is exercised through this stub, which turns the call into a thrown
@@ -438,5 +439,195 @@ describe('aer download', () => {
     await expect(main(['download', 'aer-1', '-o', '-'])).rejects.toThrow(/CVE-2026-111497/);
     expect(bodyRead).toBe(false);
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildLocalMonitoringDisclosure (blocking 1)', () => {
+  it('names the tenant, twice, in the disclosure', () => {
+    const lines = buildLocalMonitoringDisclosure('Acme Robotics');
+    const text = lines.join('\n');
+    expect(text.match(/Acme Robotics/g)).toHaveLength(2);
+  });
+
+  it('discloses every read the v2 draft wrongly scoped to "AI-provider IPs" only', () => {
+    const text = buildLocalMonitoringDisclosure('Acme Robotics').join('\n');
+    // The command line of every socket-holding process is read BEFORE
+    // classification (macos-backend.ts's ps -ww, linux-backend.ts's
+    // /proc/<pid>/cmdline for interpreter-run processes) - never scoped to
+    // AI-provider destinations only, which the old copy implied.
+    expect(text).toMatch(/command line of every process holding a network connection/);
+    expect(text).not.toMatch(/to AI-provider IPs/);
+    // destination_ip/destination_port leave the machine for a matched row.
+    expect(text).toMatch(/destination address and port/);
+    // The working-directory + hook-config-file read (instrumentation.ts).
+    expect(text).toMatch(/working directory/);
+    expect(text).toMatch(/configuration files/);
+    // The DNS-lookup side channel (§3.2.1's on-demand resolution).
+    expect(text).toMatch(/look up that provider's address periodically/);
+    expect(text).toMatch(/DNS activity/);
+    // The per-connection timestamped record for unmatched port-443 traffic.
+    expect(text).toMatch(/timestamped record of that connection/);
+    // Browsers are excluded by policy, not silently unmentioned.
+    expect(text).toMatch(/never reads browser data or traffic/);
+  });
+});
+
+describe('confirmLocalMonitoringConsent (should-fix 6)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let isTTYStdin: boolean | undefined;
+  let isTTYStdout: boolean | undefined;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    isTTYStdin = process.stdin.isTTY;
+    isTTYStdout = process.stdout.isTTY;
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    (process.stdin as unknown as { isTTY?: boolean }).isTTY = isTTYStdin;
+    (process.stdout as unknown as { isTTY?: boolean }).isTTY = isTTYStdout;
+  });
+
+  it('prints the disclosure even for non-interactive use (the flag only skips the prompt)', async () => {
+    const result = await confirmLocalMonitoringConsent('Acme Robotics', { nonInteractive: true });
+    expect(result).toBe(true);
+    const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain('Acme Robotics');
+    expect(printed).toContain('AER Sentinel local-poll sensor');
+  });
+
+  it('prints the disclosure and refuses a non-TTY session with no flag', async () => {
+    (process.stdin as unknown as { isTTY?: boolean }).isTTY = false;
+    (process.stdout as unknown as { isTTY?: boolean }).isTTY = false;
+    const result = await confirmLocalMonitoringConsent('Acme Robotics', { nonInteractive: false });
+    expect(result).toBe(false);
+    expect(logSpy).toHaveBeenCalled();
+  });
+});
+
+describe('aer sentinel-local uninstall auth (should-fix: push token vs tenant auth)', () => {
+  let dir: string;
+  let originalCwd: string;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const stderr = (): string => errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aer-cli-sentinel-uninstall-'));
+    originalCwd = process.cwd();
+    process.chdir(dir);
+    vi.stubEnv('HOME', dir);
+    vi.stubEnv('AER_TENANT_API_KEY', '');
+    vi.stubEnv('AER_API_KEY', '');
+    vi.stubEnv('AER_BASE_URL', '');
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitCalled(code ?? 0);
+    }) as never);
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/v1/fleet/local-sensors/')) {
+        return new Response(JSON.stringify({ sensor_source_id: 's1', enabled: false }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ sensors: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('plain uninstall disables the sensor with only the stored push token, no tenant auth needed', async () => {
+    writePushCredential(
+      { sensorSourceId: 's1', pushToken: 'push-token-abc', ingestUrl: 'https://api.test/v1/sentinel/local-poll/s1' },
+      process.env,
+    );
+
+    await main(['sentinel-local', 'uninstall']);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const disableCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/v1/fleet/local-sensors/s1') && !String(url).includes('observations'));
+    expect(disableCall).toBeDefined();
+    const [, init] = disableCall as [string, RequestInit];
+    expect(init.method).toBe('DELETE');
+    expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer push-token-abc');
+  });
+
+  it('--erase still requires a live tenant login, even with a push credential on disk', async () => {
+    writePushCredential(
+      { sensorSourceId: 's1', pushToken: 'push-token-abc', ingestUrl: 'https://api.test/v1/sentinel/local-poll/s1' },
+      process.env,
+    );
+
+    await expect(main(['sentinel-local', 'uninstall', '--erase'])).rejects.toThrow(ProcessExitCalled);
+
+    expect(exitSpy).toHaveBeenCalledWith(64);
+    expect(stderr()).toContain('tenant API key');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('aer sentinel-local install aborts on tenant-name lookup failure (B6)', () => {
+  let dir: string;
+  let originalCwd: string;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const stderr = (): string => errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aer-cli-sentinel-install-b6-'));
+    originalCwd = process.cwd();
+    process.chdir(dir);
+    vi.stubEnv('HOME', dir);
+    vi.stubEnv('AER_TENANT_API_KEY', 'tenant-key-abc');
+    vi.stubEnv('AER_API_KEY', '');
+    vi.stubEnv('AER_BASE_URL', 'https://api.test');
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new ProcessExitCalled(code ?? 0);
+    }) as never);
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // The tenant-lifecycle lookup used for the disclosure's tenant name
+    // fails for every call; nothing else should ever be reached.
+    fetchMock = vi.fn(async () => new Response('', { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('aborts before showing consent or registering, instead of a placeholder name', async () => {
+    await expect(main(['sentinel-local', 'install', '--i-understand-local-monitoring'])).rejects.toThrow(
+      ProcessExitCalled,
+    );
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(stderr()).toMatch(/tenant name/i);
+    // Never fell through to the consent disclosure or a register() call.
+    const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).not.toContain('tenant name unavailable');
+    expect(printed).not.toMatch(/AER Sentinel local-poll sensor/);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/v1/fleet/local-sensors'))).toBe(false);
   });
 });
