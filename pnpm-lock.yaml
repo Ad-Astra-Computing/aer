@@ -9,7 +9,7 @@ overrides:
   qs: '>=6.16.0'
   proxy-addr: ^2.0.8
   shell-quote: ^1.11.0
-  hono: ^4.13.13
+  hono: ^4.13.16
   source-map-js: ^1.2.2
 
 importers:
@@ -118,8 +118,8 @@ importers:
         specifier: ^22.20.4
         version: 22.20.4
       hono:
-        specifier: ^4.13.13
-        version: 4.13.16
+        specifier: ^4.13.16
+        version: 4.13.19
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -159,8 +159,8 @@ importers:
         specifier: ^22.20.4
         version: 22.20.4
       hono:
-        specifier: ^4.13.13
-        version: 4.13.16
+        specifier: ^4.13.16
+        version: 4.13.19
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -730,7 +730,7 @@ packages:
     resolution: {integrity: sha512-Sk4NQd3GFY0WZWCzndwFMPwJhtD0y9qjsQ+pjID0/03nK9pxyBCUoUHCho8QYBLBVhi0ssL8UkNPHqbgSOFPIQ==}
     engines: {node: '>=20'}
     peerDependencies:
-      hono: ^4.13.13
+      hono: ^4.13.16
 
   '@inquirer/ansi@2.0.7':
     resolution: {integrity: sha512-3eTuUO1vH2cZm2ZKHeQxnOqlTi9EfZDGgIe3BL3I4u+rJHocr9Fz86M4fjYABPvFnQG/gGK551HqDiIcETwU6Q==}
@@ -1546,10 +1546,6 @@ packages:
 
   headers-polyfill@5.0.1:
     resolution: {integrity: sha512-1TJ6Fih/b8h5TIcv+1+Hw0PDQWJTKDKzFZzcKOiW1wJza3XoAQlkCuXLbymPYB8+ZQyw8mHvdw560e8zVFIWyA==}
-
-  hono@4.13.16:
-    resolution: {integrity: sha512-AOLOEhvrV+iH92xXCnFr/5+3KjPKcI3xP63XJtX5spAnkznPdHijlIsUTpi7/9EhWqrTCekw5c5zh1K+YsVw7A==}
-    engines: {node: '>=16.9.0'}
 
   hono@4.13.19:
     resolution: {integrity: sha512-KmXvQAXwcAHV+muzbIwoJ23niEB5nMoDVr9WcRkU8mvjUECm/1+7v4Jgp7P7a+H6MLFrh+vXrGonGrGS+RQfkA==}
@@ -3266,8 +3262,6 @@ snapshots:
     dependencies:
       '@types/set-cookie-parser': 2.4.10
       set-cookie-parser: 3.1.2
-
-  hono@4.13.16: {}
 
   hono@4.13.19: {}
 
