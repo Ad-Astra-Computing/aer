@@ -47,8 +47,8 @@
         # "got:" value back in.
         pnpmDepsHashes = {
           x86_64-linux = "sha256-XX6g0H80BchFCYdw8HjtNhqKXVf/8Ua/nySryMypxkU=";
-          aarch64-darwin = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-          aarch64-linux = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          aarch64-darwin = "sha256-Pidrfi2zjYAv+kuFQbwCx3u9UdKMb9GenxFfB+mw8sQ=";
+          aarch64-linux = "sha256-0b3+YAPW0aLUJlzP7K1WidNsCs5xAqh6JSzoITLTD38=";
         };
 
         pnpmDeps = pkgs.fetchPnpmDeps {
