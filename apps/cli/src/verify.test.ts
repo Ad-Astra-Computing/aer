@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupServer } from 'msw/node';
-import { http, HttpResponse } from 'msw';
+import { http, HttpResponse, getResponse } from 'msw';
 import { generateKeyPairSync, sign as nodeCryptoSign, createHash } from 'node:crypto';
 import { verifyAer } from './verify.js';
 import { canonicalHash, stripIntegrity } from '@aer/schemas';
@@ -76,8 +76,26 @@ const server = setupServer(
   }),
 );
 
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
-afterAll(() => server.close());
+// Resolve requests against the handlers directly instead of relying on msw's
+// global fetch patch: under CI load that patch occasionally missed a request,
+// which then went to real DNS for test.local (EAI_AGAIN).
+const mswFetch: typeof fetch = async (input, init) => {
+  const request = new Request(input, init);
+  const response = await getResponse(server.listHandlers(), request);
+  if (!response) throw new Error(`unhandled request: ${request.method} ${request.url}`);
+  return response;
+};
+const verify = (opts: Parameters<typeof verifyAer>[0]) => verifyAer({ fetchImpl: mswFetch, ...opts });
+
+const realFetch = globalThis.fetch;
+beforeAll(() => {
+  globalThis.fetch = (() => {
+    throw new Error('verify tests must not reach the global fetch');
+  }) as typeof fetch;
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+});
 
 describe('verifyAer', () => {
   it('encodes a path-traversal-shaped aer id as one opaque URL segment', async () => {
@@ -88,14 +106,14 @@ describe('verifyAer', () => {
         return HttpResponse.json({ error: 'not_found' }, { status: 404 });
       }),
     );
-    await expect(verifyAer({ baseUrl: 'http://test.local', aerId: '../../v1/admin/tenants' })).rejects.toThrow();
+    await expect(verify({ baseUrl: 'http://test.local', aerId: '../../v1/admin/tenants' })).rejects.toThrow();
     expect(requestedPaths[0]).toBe('/v1/aers/..%2F..%2Fv1%2Fadmin%2Ftenants/bundle');
     server.resetHandlers();
   });
 
   it('returns verified=true for a valid bundle signed by a PINNED key', async () => {
     currentBundle = buildBundle();
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });
     expect(result.hash_match).toBe(true);
     expect(result.signature_valid).toBe(true);
     expect(result.verified).toBe(true);
@@ -105,7 +123,7 @@ describe('verifyAer', () => {
   it('verifies FALSE for a mathematically-valid bundle whose key is NOT pinned (blocker 2)', async () => {
     currentBundle = buildBundle();
     // No trustRoot override → the builtin root does not pin this test key.
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID });
     expect(result.hash_match).toBe(true);
     expect(result.signature_valid).toBe(true); // signature is mathematically valid…
     expect(result.verified).toBe(false); // …but the key is untrusted, so the verdict is false
@@ -117,7 +135,7 @@ describe('verifyAer', () => {
     // Mutate the bundle without updating integrity
     (tampered as Record<string, unknown>)['agent_version'] = '9.9.9';
     currentBundle = tampered;
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID });
     expect(result.hash_match).toBe(false);
     expect(result.verified).toBe(false);
   });
@@ -128,7 +146,7 @@ describe('verifyAer', () => {
     (bundle.integrity as Record<string, string>)['signature'] =
       Buffer.from('x'.repeat(64)).toString('base64');
     currentBundle = bundle;
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID });
     // hash should still match (we didn't change the bundle body)
     expect(result.hash_match).toBe(true);
     expect(result.signature_valid).toBe(false);
@@ -140,7 +158,7 @@ describe('verifyAer', () => {
     // The key endpoint returns a different key's pubkey than the id names.
     keyEndpointPubKeyHex = otherPubKeyHex;
     try {
-      const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID });
+      const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID });
       expect(result.verified).toBe(false);
       expect(result.signature_valid).toBe(false);
       expect(result.reason).toBe('key_id_binding_mismatch');
@@ -156,7 +174,7 @@ describe('verifyAer', () => {
         return HttpResponse.json({ error: 'not_found' }, { status: 404 });
       }),
     );
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID });
     expect(result.signature_valid).toBe(false);
     expect(result.verified).toBe(false);
     expect(result.reason).toContain('key_not_found');
@@ -170,7 +188,7 @@ describe('verifyAer', () => {
         return HttpResponse.json({ error: 'not_found' }, { status: 404 });
       }),
     );
-    await expect(verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
+    await expect(verify({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
       'failed to fetch bundle',
     );
     server.resetHandlers();
@@ -191,7 +209,7 @@ describe('verifyAer', () => {
       }),
     );
     try {
-      await expect(verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
+      await expect(verify({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
         /CVE-2026-111497/,
       );
     } finally {
@@ -209,7 +227,7 @@ describe('verifyAer', () => {
       }),
     );
     try {
-      await expect(verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
+      await expect(verify({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
         /CVE-2026-111497/,
       );
     } finally {
@@ -227,7 +245,7 @@ describe('verifyAer', () => {
       }),
     );
     try {
-      await expect(verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
+      await expect(verify({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
         /CVE-2026-111497/,
       );
     } finally {
@@ -248,7 +266,7 @@ describe('verifyAer', () => {
       }),
     );
     try {
-      await expect(verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
+      await expect(verify({ baseUrl: 'http://test.local', aerId: AER_ID })).rejects.toThrow(
         /CVE-2026-111497/,
       );
     } finally {
@@ -258,14 +276,14 @@ describe('verifyAer', () => {
 
   it('reports the strip-integrity canonical hash in the result', async () => {
     currentBundle = buildBundle();
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID });
     const expected = canonicalHash(stripIntegrity(currentBundle));
     expect(result.canonical_hash).toBe(expected);
   });
 
   it('reports anchor_status none when the bundle does not claim anchoring', async () => {
     currentBundle = buildBundle({}); // integrity.anchored = false
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });
     expect(result.anchor_status).toBe('none');
     expect(result.anchored).toBe(false);
     expect(result.verified).toBe(true);
@@ -278,7 +296,7 @@ describe('verifyAer', () => {
     // Re-sign is unnecessary: integrity.anchored is unsigned display metadata that
     // the verifier reads only as a CLAIM, never trusts.
     currentBundle = bundle;
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });
     expect(result.anchor_status).toBe('claimed');
     expect(result.anchored).toBe(false); // claimed is NOT cryptographically verified
     expect(result.verified).toBe(true); // but the signature merits still hold
@@ -294,7 +312,7 @@ describe('verifyAer', () => {
         return HttpResponse.json({ schema_version: 'aer-anchor-evidence.v1', projection_status: 'malformed' });
       }),
     );
-    const result = await verifyAer({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });
+    const result = await verify({ baseUrl: 'http://test.local', aerId: AER_ID, trustRoot: TRUST });
     expect(result.anchor_status).toBe('invalid');
     expect(result.anchored).toBe(false);
     expect(result.verified).toBe(false); // corrupt anchor evidence downgrades the verdict
